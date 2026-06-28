@@ -35,9 +35,9 @@ The custom event kind used for Moments content is `1818`.
 
 Because the whole app is one file, there's no build step.
 
-**Locally:** open `moments-home.html` in a browser. (Some browsers restrict camera or download APIs on `file://`; serving over `http` avoids that — e.g. `python3 -m http.server` then open the printed URL.)
+**Locally:** open `index.html` in a browser. (Some browsers restrict camera or download APIs on `file://`; serving over `http` avoids that — e.g. `python3 -m http.server` then open the printed URL.)
 
-**Self-hosting:** upload `moments-home.html` to any static host (Netlify, Cloudflare Pages, GitHub Pages, an S3 bucket, your own server). Rename it to `index.html` if you want it served at the domain root. No backend is required.
+**Self-hosting:** upload `index.html` to any static host (Netlify, Cloudflare Pages, GitHub Pages, an S3 bucket, your own server). Rename it to `index.html` if you want it served at the domain root. No backend is required.
 
 That's the whole deployment story. There is no database, no API server, no environment configuration.
 

@@ -73,7 +73,7 @@ This is a personal project shared as open source. Feel free to fork it, self-hos
 
 If you'd like to contribute changes, open an issue first to discuss the idea. Because the app is security-sensitive and intentionally minimal, changes that affect the cryptography, the data model, or the threat model will get extra scrutiny — please describe the security implications of anything you propose in those areas.
 
-There is no build pipeline: edit `moments-home.html` directly and test in a real browser (ideally a real mobile browser, since that's the primary target).
+There is no build pipeline: edit `index.html` directly and test in a real browser (ideally a real mobile browser, since that's the primary target).
 
 ---
 

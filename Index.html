@@ -762,7 +762,7 @@ async function handleRemoteEvent(netId, ev){
       const idx=net.posts.findIndex(p=>p.id===t[1]);
       if(idx>=0 && net.posts[idx].authorPk===ev.pubkey){ net.posts.splice(idx,1); changed=true; }
     }});
-    if(changed){ saveData(); if(A.activeNetId===netId && _allowSyncRender && !syncRenderBlocked()) renderApp(); }
+    if(changed){ saveData(); if(A.activeNetId===netId && _allowSyncRender && !syncRenderBlocked()) renderSoon(); }
     return;
   }
 
@@ -780,7 +780,7 @@ async function handleRemoteEvent(netId, ev){
       // If the owner left, clear ownership so the network no longer shows an absent
       // owner (this also enables the take-ownership recovery flow for remaining members).
       if(net.ownerPk && net.ownerPk===pk){ net.ownerPk=null; }
-      saveData(); if(A.activeNetId===netId && _allowSyncRender && !syncRenderBlocked()) renderApp();
+      saveData(); if(A.activeNetId===netId && _allowSyncRender && !syncRenderBlocked()) renderSoon();
     }
     return;
   }
@@ -925,7 +925,11 @@ async function handleRemoteEvent(netId, ev){
   // (pull-to-refresh or initial load). Background live events update state silently.
   if(changed){
     saveData();
-    if(A.activeNetId===netId && _allowSyncRender && !syncRenderBlocked()) renderApp();
+    // Debounced: during a sync window many events can stream in over several
+    // seconds (esp. on a slow/flapping connection). renderSoon() caps repaints
+    // to one per ~180ms instead of one per event, preventing the feed from
+    // continuously re-rendering (which resets scroll and flickers).
+    if(A.activeNetId===netId && _allowSyncRender && !syncRenderBlocked()) renderSoon();
   }
 }
 let _allowSyncRender=false;   // true only during initial network load / pull-to-refresh
@@ -2004,7 +2008,7 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
-  { v:'0.7', date:'June 2026', title:'Names, calm feed & avatars', changes:[
+  { v:'0.7', date:'July 2026', title:'Names, calm feed & avatars', changes:[
     ['new','Edit the caption on a photo you\u2019ve already posted \u2014 tap the \u22ef menu'],
     ['new','Post text-only moments, not just photos'],
     ['new','Create polls and vote on group decisions \u2014 highest vote wins'],

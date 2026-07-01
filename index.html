@@ -1707,20 +1707,18 @@ function photoBox(net, post){
   }
   return { attr, style:`background:${post.bg||C.surfaceHigh};display:flex;align-items:center;justify-content:center`, inner:(post.emoji||'') };
 }
-// Swap a decrypted post photo into the feed in place (no re-render).
-// If the photo isn't currently shown via a tagged element (e.g. it's open in the
-// full-screen viewer or profile grid), fall back to a debounced render.
+// Swap a decrypted post photo into every place it's shown (feed, post view,
+// profile grid — all tagged with data-photo), in place, without re-rendering.
+// If no tagged element is on screen, do nothing: the URL is cached and the next
+// real render will use it. (Never force a full re-render here — that rebuilds the
+// whole feed and re-decodes every image, which is what caused the load-time flicker.)
 function applyPhotoToDom(sha, url){
   const safe=safeMediaUrl(url);
   if(!sha || !safe) return;
-  let found=0;
   try{
     const sel='[data-photo="'+(window.CSS&&CSS.escape?CSS.escape(String(sha)):String(sha))+'"]';
-    const els=document.querySelectorAll(sel);
-    found=els.length;
-    els.forEach(el=>{ el.style.background="url('"+safe+"') center/cover no-repeat #000"; });
+    document.querySelectorAll(sel).forEach(el=>{ el.style.background="url('"+safe+"') center/cover no-repeat #000"; });
   }catch(_){}
-  if(!found) renderSoon();
 }
 
 
@@ -2713,21 +2711,20 @@ function avatarHTML(mem, size, radius, fontSize, borderWidth){
   return `<div class="mom-av" data-av="${esc(id)}" style="${base};background:${color}22;display:flex;align-items:center;justify-content:center;font-size:${fs}px;font-weight:700;color:${color};font-family:'Playfair Display',serif">${esc(initial)}</div>`;
 }
 // Swap a decrypted avatar into every place it's shown, without re-rendering the feed
+// Swap a decrypted avatar into every place it's shown (all avatars carry data-av),
+// in place, without re-rendering. If none are on screen, do nothing — the URL is
+// cached and the next real render will use it.
 function applyAvatarToDom(memberId, url){
   const safe=safeMediaUrl(url);
   if(!memberId || !safe) return;
-  let found=0;
   try{
     const sel='.mom-av[data-av="'+(window.CSS&&CSS.escape?CSS.escape(String(memberId)):String(memberId))+'"]';
-    const els=document.querySelectorAll(sel);
-    found=els.length;
-    els.forEach(el=>{
+    document.querySelectorAll(sel).forEach(el=>{
       el.style.background="url('"+safe+"') center/cover no-repeat #000";
       el.style.display=''; el.style.alignItems=''; el.style.justifyContent='';
       el.textContent='';
     });
   }catch(_){}
-  if(!found) renderSoon();
 }
 
 function makeCode(){
@@ -3777,7 +3774,7 @@ function buildProfile(net){
   const grid = myPosts.length===0
     ? `<div style="text-align:center;color:${C.muted};font-size:13px;padding:40px 0">No photos yet</div>`
     : `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${myPosts.map(p=>`
-        <div onclick="openPostView('${p.id}')" style="border-radius:16px;height:155px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()};position:relative;overflow:hidden">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
+        <div onclick="openPostView('${p.id}')" ${(()=>{const pb=photoBox(net,p);return pb.attr;})()} style="border-radius:16px;height:155px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()};position:relative;overflow:hidden">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
           <div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.5));padding:8px 10px;color:#FAF8F5;font-size:11px;font-family:'Playfair Display',serif">${esc(p.caption)}</div>
         </div>`).join('')}</div>`;
 

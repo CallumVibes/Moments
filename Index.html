@@ -519,6 +519,53 @@ async function schnorrSign(msg32, skBytes){
   return bytesToHex(sig);
 }
 
+// Recover the full curve point from an x-only coordinate (BIP-340 lift_x).
+// secp256k1 has p ≡ 3 (mod 4), so the square root is y = c^((p+1)/4).
+function liftX(x){
+  if(x<=0n || x>=P) return null;
+  const c=modp(modpow(x,3n,P)+7n);              // y² = x³ + 7
+  const y=modpow(c,(P+1n)/4n,P);
+  if(modp(y*y)!==c) return null;                // x is not on the curve
+  return [x, (y%2n===0n)? y : P-y];             // choose the even-y point
+}
+
+// BIP-340 schnorr verification. pubHex = 32-byte x-only pubkey, msg32 = message
+// bytes (the event id), sigHex = 64-byte signature. Returns true iff valid.
+async function schnorrVerify(pubHex, msg32, sigHex){
+  try{
+    if(!pubHex || pubHex.length!==64 || !sigHex || sigHex.length!==128) return false;
+    const px=BigInt('0x'+pubHex);
+    const P0=liftX(px); if(!P0) return false;
+    const sig=hexToBytes(sigHex);
+    const r=bytesToBig(sig.slice(0,32));
+    const s=bytesToBig(sig.slice(32,64));
+    if(r>=P || s>=N) return false;
+    const e=bytesToBig(await taggedHash('BIP0340/challenge',
+      concatBytes(bigToBytes32(r), bigToBytes32(px), msg32)))%N;
+    // R = s·G − e·P  =  s·G + (n−e)·P
+    const sG=scalarMult(s,[Gx,Gy]);
+    const eP=scalarMult((N-e)%N, P0);
+    const R=pointAdd(sG, eP);
+    if(!R) return false;                          // point at infinity
+    if(R[1]%2n!==0n) return false;                // R.y must be even
+    return R[0]===r;                              // R.x must equal r
+  }catch(_){ return false; }
+}
+
+// Verify a whole Nostr event: recompute its id from the canonical serialization
+// and check the schnorr signature against the claimed pubkey. Rejects forgeries
+// and tampered events from a malicious or buggy relay.
+async function verifyEvent(ev){
+  try{
+    if(!ev || !ev.id || !ev.pubkey || !ev.sig || typeof ev.content!=='string') return false;
+    if(!/^[0-9a-f]{64}$/.test(ev.id) || !/^[0-9a-f]{64}$/.test(ev.pubkey) || !/^[0-9a-f]{128}$/.test(ev.sig)) return false;
+    const serial=JSON.stringify([0, ev.pubkey, ev.created_at, ev.kind, ev.tags||[], ev.content]);
+    const idBytes=await sha256(strToBytes(serial));
+    if(bytesToHex(idBytes)!==ev.id) return false;  // id must match the content (no tampering)
+    return await schnorrVerify(ev.pubkey, idBytes, ev.sig);
+  }catch(_){ return false; }
+}
+
 // Build a signed Nostr event
 async function makeNostrEvent(kind, tags, content){
   if(!_sk) throw new Error('no key');
@@ -700,6 +747,9 @@ function markSeen(id){
 }
 async function handleRemoteEvent(netId, ev){
   if(!A || !ev || !ev.id) return;
+  // Reject anything whose signature doesn't verify, or whose id doesn't match its
+  // contents — a relay (or anyone) could otherwise inject forged/tampered events.
+  if(!(await verifyEvent(ev))) return;
   if(!markSeen(ev.id)) return;
   const net=A.networks[netId]; if(!net) return;
 
@@ -935,7 +985,10 @@ function reconcileNetwork(netId){
     if(m.avatarEnc && (!m.avatar || !String(m.avatar).startsWith('blob:'))){ ensureAvatar(net, m); }
   });
   if(changed){ saveData(); }
-  if(A.activeNetId===netId && (_allowSyncRender || _renderAfterReconcile) && !syncRenderBlocked()) renderApp();
+  // Coalesce renders: several relays each fire their own EOSE (especially after a
+  // reconnect), which would otherwise repaint the feed many times in a row and
+  // flicker. renderSoon() collapses them into a single repaint.
+  if(A.activeNetId===netId && (_allowSyncRender || _renderAfterReconcile) && !syncRenderBlocked()) renderSoon();
 }
 // Always compute the displayed time from the numeric timestamp so it stays live
 function fmtTime(post){
@@ -1526,11 +1579,34 @@ const _imgPending={};  // ciphertext sha256 -> in-flight guard
 const _blurCache={};   // blurhash string -> placeholder data URL
 
 // Returns a displayable (plaintext) URL for a post, decrypting lazily if needed.
+// Sanitize a URL before it's interpolated into CSS url('…') or an HTML src=…
+// attribute. Rejects anything that isn't a plain http(s) URL, and any URL
+// containing characters that could break out of those contexts (quotes,
+// parentheses, angle brackets, backslash, whitespace/newlines). Returns '' if
+// unsafe. This guards against poisoned image/avatar URLs from remote peers too,
+// not just locally-pasted ones.
+function safeUrl(u){
+  if(typeof u!=='string') return '';
+  const s=u.trim();
+  if(!/^https?:\/\//i.test(s)) return '';
+  if(/["'()<>\\]/.test(s) || /[\s]/.test(s)) return '';
+  return s;
+}
+// Like safeUrl but also permits a self-generated data:image URL (posters,
+// blurhash previews). Still rejects anything with characters that could break
+// out of a CSS url('…') context. Returns '' if unsafe.
+function safeCssUrl(u){
+  if(typeof u!=='string') return '';
+  const s=u.trim();
+  if(/["'()<>\\]/.test(s) || /\s/.test(s)) return '';
+  if(/^data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i.test(s)) return s;
+  return safeUrl(s);
+}
 function photoSrc(net, post){
-  if(post.image) return post.image;                 // local/plaintext (author or pasted link)
+  if(post.image) return safeUrl(post.image);        // remote/plaintext (author or pasted link) — sanitized
   const e=post.enc;
   if(e && e.sha256){
-    if(_imgCache[e.sha256]) return _imgCache[e.sha256];
+    if(_imgCache[e.sha256]) return _imgCache[e.sha256];   // locally-created blob: URL, safe
     ensurePhoto(net, post);                          // fire-and-forget fetch+decrypt
   }
   return null;
@@ -1606,7 +1682,7 @@ function photoBox(net, post){
   const src=photoSrc(net, post);
   if(isVideo(post)){
     // Prefer the lightweight poster still in the feed; only the viewer plays the clip
-    const poster=(post.enc&&post.enc.poster)||null;
+    const poster=safeCssUrl((post.enc&&post.enc.poster)||'');
     const bg = poster ? `background:url('${poster}') center/cover no-repeat #000`
              : (post.enc&&post.enc.blurhash ? (()=>{ const b=blurhashToDataURL(post.enc.blurhash); return b?`background:url('${b}') center/cover no-repeat #000`:'background:#000'; })()
              : 'background:#000');
@@ -1627,13 +1703,14 @@ function photoBox(net, post){
 // If the photo isn't currently shown via a tagged element (e.g. it's open in the
 // full-screen viewer or profile grid), fall back to a debounced render.
 function applyPhotoToDom(sha, url){
-  if(!sha || !url) return;
+  const safe=safeMediaUrl(url);
+  if(!sha || !safe) return;
   let found=0;
   try{
     const sel='[data-photo="'+(window.CSS&&CSS.escape?CSS.escape(String(sha)):String(sha))+'"]';
     const els=document.querySelectorAll(sel);
     found=els.length;
-    els.forEach(el=>{ el.style.background="url('"+url+"') center/cover no-repeat #000"; });
+    els.forEach(el=>{ el.style.background="url('"+safe+"') center/cover no-repeat #000"; });
   }catch(_){}
   if(!found) renderSoon();
 }
@@ -1934,6 +2011,8 @@ const CHANGELOG=[
     ['fix','Faster, flicker-free loading \u2014 the feed now settles instantly instead of flashing on open'],
     ['fix','New members\u2019 chosen display names now show to everyone right away, instead of "Friend" until their first post'],
     ['fix','Leaving a network now removes you for everyone \u2014 and if the owner leaves, ownership is released'],
+    ['fix','Incoming posts are now cryptographically signature-verified \u2014 forged or tampered events are rejected'],
+    ['fix','Image and avatar links are now sanitized \u2014 closes a cross-site-scripting risk from malicious URLs'],
     ['change','The feed now only refreshes when you pull down \u2014 no surprise background updates'],
     ['fix','Feed no longer jumps to the top on its own'],
     ['change','No more random emoji avatars \u2014 your initial is shown until you pick a profile picture'],
@@ -2599,13 +2678,24 @@ function backFromJoin(){
 function currentNet(){ return A.activeNetId ? A.networks[A.activeNetId] : null; }
 function memberIn(net,id){ return net.members.find(m=>m.id===id) || {}; }
 // Render a member avatar: profile picture if present, otherwise the coloured emoji tile
+// Like safeCssUrl but also permits a locally-created blob: object URL (decrypted
+// photos/avatars). blob: URLs are minted by this app via URL.createObjectURL, so
+// they can't carry attacker-controlled characters.
+function safeMediaUrl(u){
+  if(typeof u!=='string') return '';
+  const s=u.trim();
+  if(/["'()<>\\]/.test(s) || /\s/.test(s)) return '';
+  if(/^blob:https?:\/\//i.test(s)) return s;
+  return safeCssUrl(s);
+}
 function avatarHTML(mem, size, radius, fontSize, borderWidth){
   const bw=borderWidth||2;
   const color=(mem&&mem.color)||C.warm;
   const id=(mem&&mem.id)?String(mem.id):'';
   const base=`width:${size}px;height:${size}px;border-radius:${radius}px;flex-shrink:0;border:${bw}px solid ${color}`;
-  if(mem && mem.avatar){
-    return `<div class="mom-av" data-av="${esc(id)}" style="${base};background:url('${mem.avatar}') center/cover no-repeat #000"></div>`;
+  const av=mem&&mem.avatar?safeMediaUrl(mem.avatar):'';
+  if(av){
+    return `<div class="mom-av" data-av="${esc(id)}" style="${base};background:url('${av}') center/cover no-repeat #000"></div>`;
   }
   // No picture yet → show the first character of the display name.
   // If an encrypted avatar is still decrypting, it'll be swapped in here in place.
@@ -2616,14 +2706,15 @@ function avatarHTML(mem, size, radius, fontSize, borderWidth){
 }
 // Swap a decrypted avatar into every place it's shown, without re-rendering the feed
 function applyAvatarToDom(memberId, url){
-  if(!memberId || !url) return;
+  const safe=safeMediaUrl(url);
+  if(!memberId || !safe) return;
   let found=0;
   try{
     const sel='.mom-av[data-av="'+(window.CSS&&CSS.escape?CSS.escape(String(memberId)):String(memberId))+'"]';
     const els=document.querySelectorAll(sel);
     found=els.length;
     els.forEach(el=>{
-      el.style.background="url('"+url+"') center/cover no-repeat #000";
+      el.style.background="url('"+safe+"') center/cover no-repeat #000";
       el.style.display=''; el.style.alignItems=''; el.style.justifyContent='';
       el.textContent='';
     });
@@ -3226,7 +3317,7 @@ async function onDropPhoto(e){
 function usePhotoUrl(){
   const inp=document.getElementById('photo-url-input');
   const url=(inp&&inp.value.trim())||'';
-  if(!/^https?:\/\//i.test(url)){ const e=document.getElementById('upload-err'); if(e) e.textContent='Paste a valid image link (https://…).'; return; }
+  if(!safeUrl(url)){ const e=document.getElementById('upload-err'); if(e) e.textContent='Paste a valid image link (https://…).'; return; }
   if(!A.pendingPhoto) A.pendingPhoto={image:null,caption:'',blob:null};
   A.pendingPhoto.image=url; A.pendingPhoto.blob=null; A.pendingPhoto.remote=true; renderApp();
 }
@@ -3246,7 +3337,7 @@ async function onDropAvatar(e){
 function useAvatarUrl(){
   const inp=document.getElementById('avatar-url-input');
   const url=(inp&&inp.value.trim())||'';
-  if(!/^https?:\/\//i.test(url) || !A.profileDraft) return;
+  if(!safeUrl(url) || !A.profileDraft) return;
   // External link — used as-is (already public by the user's choice), no encryption
   A.profileDraft.avatar=url; A.profileDraft.avatarBlob=null; A.profileDraft.avatarExternal=true; renderApp();
 }
@@ -3528,7 +3619,7 @@ function buildMyPage(net){
   const pp=A.pendingPhoto||{image:null,caption:''};
   const uploading=!!A.uploading;
   const picker = pp.image
-    ? `<div style="position:relative;border-radius:14px;height:150px;background:url('${pp.image}') center/cover no-repeat #000;margin-bottom:12px">
+    ? `<div style="position:relative;border-radius:14px;height:150px;background:url('${safeMediaUrl(pp.image)}') center/cover no-repeat #000;margin-bottom:12px">
          <button onclick="onClearPhoto()" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);border:none;color:#fff;border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:14px">✕</button>
        </div>`
     : `<div ondragover="event.preventDefault()" ondrop="onDropPhoto(event)" style="position:relative;border:2px dashed ${C.accentBorder};border-radius:14px;height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:${C.accent};font-size:12px;font-weight:600;margin-bottom:10px;text-align:center;padding:0 12px">
@@ -3609,7 +3700,7 @@ function buildMyPage(net){
   // Profile header (avatar, name, bio) + Edit
   const prof=A.profile||{name:'You',bio:'',avatar:null};
   const headerAvatar = prof.avatar
-    ? `background:url('${prof.avatar}') center/cover no-repeat #000`
+    ? `background:url('${safeMediaUrl(prof.avatar)}') center/cover no-repeat #000`
     : `background:${C.warm}22;display:flex;align-items:center;justify-content:center;font-size:28px`;
   const header = `
     <div style="display:flex;align-items:flex-start;gap:14px;margin-bottom:6px">
@@ -3631,7 +3722,7 @@ function buildMyPage(net){
     <div style="background:${C.surface};border-radius:22px;padding:20px;margin:12px 0 18px;border:1.5px solid ${C.accentBorder}">
       <div style="color:${C.text};font-size:15px;font-weight:600;margin-bottom:16px">Edit profile</div>
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
-        <div ondragover="event.preventDefault()" ondrop="onDropAvatar(event)" style="position:relative;width:64px;height:64px;border-radius:20px;${pd.avatar?`background:url('${pd.avatar}') center/cover no-repeat #000`:`background:${C.warm}22;display:flex;align-items:center;justify-content:center;font-size:28px`};border:2px solid ${C.warm};overflow:hidden;flex-shrink:0">
+        <div ondragover="event.preventDefault()" ondrop="onDropAvatar(event)" style="position:relative;width:64px;height:64px;border-radius:20px;${pd.avatar?`background:url('${safeMediaUrl(pd.avatar)}') center/cover no-repeat #000`:`background:${C.warm}22;display:flex;align-items:center;justify-content:center;font-size:28px`};border:2px solid ${C.warm};overflow:hidden;flex-shrink:0">
           ${pd.avatar?'':'🧡'}
           <input type="file" accept="image/*" onchange="onPickProfilePic(this)" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer"/>
         </div>
@@ -3669,7 +3760,7 @@ function buildMyPage(net){
 function buildProfile(net){
   const mem=memberIn(net,A.profileId);
   const myPosts=net.posts.filter(p=>p.memberId===mem.id);
-  const stats=[["Photos",myPosts.length],["Likes",myPosts.reduce((a,p)=>a+p.likes,0)]];
+  const stats=[["Posts",myPosts.length]];
   const statHtml=stats.map((s,i)=>`
     <div style="flex:1;padding:14px 0;text-align:center;border-right:${i<stats.length-1?'1px solid var(--c-border)':'none'}">
       <div style="color:${C.text};font-size:20px;font-weight:700;font-family:'Playfair Display',serif">${s[1]}</div>
@@ -4054,10 +4145,11 @@ function buildPostView(net){
         const pb=photoBox(net,post);
         const src=photoSrc(net,post);
         if(isVideo(post)){
-          const posterAttr=(post.enc&&post.enc.poster)?`poster="${post.enc.poster}"`:'';
+          const psafe=safeCssUrl((post.enc&&post.enc.poster)||'');
+          const posterAttr=psafe?`poster="${psafe}"`:'';
           if(src) return `<video src="${src}" controls autoplay playsinline ${posterAttr} style="width:100%;border-radius:18px;max-height:420px;background:#000"></video>`;
           // still decrypting — show poster with a spinner overlay
-          const pbg=(post.enc&&post.enc.poster)?`background:url('${post.enc.poster}') center/cover no-repeat #000`:'background:#000';
+          const pbg=psafe?`background:url('${psafe}') center/cover no-repeat #000`:'background:#000';
           return `<div style="border-radius:18px;width:100%;aspect-ratio:1;${pbg};display:flex;align-items:center;justify-content:center"><div style="color:rgba(255,255,255,.85);font-size:13px;background:rgba(0,0,0,.45);padding:8px 14px;border-radius:20px">Loading video…</div></div>`;
         }
         return `<div onclick="openZoomCurrent()" ${pb.attr} style="border-radius:18px;width:100%;aspect-ratio:1;cursor:zoom-in;${pb.style}">${pb.inner}</div>`;

@@ -745,11 +745,21 @@ function markSeen(id){
   A.seen[id]=true;
   return true;
 }
+const _verifying={};   // event id → currently being verified (concurrent duplicate guard)
 async function handleRemoteEvent(netId, ev){
   if(!A || !ev || !ev.id) return;
-  // Reject anything whose signature doesn't verify, or whose id doesn't match its
-  // contents — a relay (or anyone) could otherwise inject forged/tampered events.
-  if(!(await verifyEvent(ev))) return;
+  // Dedup cheaply BEFORE the expensive signature check: with 5 relays every event
+  // arrives ~5 times, and verifying each copy (pure-JS schnorr) saturates the main
+  // thread during load. Already-seen ids are dropped instantly; copies that arrive
+  // while the first is still being verified are dropped by the in-flight guard.
+  // We only mark an id as *seen* after its signature PASSES — so a tampered copy
+  // from a bad relay can never block the legitimate copy from an honest one.
+  if(A.seen && A.seen[ev.id]) return;
+  if(_verifying[ev.id]) return;
+  _verifying[ev.id]=true;
+  let ok=false;
+  try{ ok=await verifyEvent(ev); }finally{ delete _verifying[ev.id]; }
+  if(!ok) return;
   if(!markSeen(ev.id)) return;
   const net=A.networks[netId]; if(!net) return;
 
@@ -1622,6 +1632,7 @@ function photoSrc(net, post){
 // Coalesce many decrypt-finished callbacks into a single repaint (prevents
 // the feed flickering as photos/avatars pop in one-by-one during load).
 let _renderSoonTimer=null;
+let _lastFrameHTML='';   // renderApp skips DOM writes when output is unchanged
 function renderSoon(){
   if(_renderSoonTimer) return;
   _renderSoonTimer=setTimeout(()=>{ _renderSoonTimer=null; if(!syncRenderBlocked()) renderApp(); }, 180);
@@ -1840,6 +1851,7 @@ function blurhashToDataURL(hash,w,h){
 }
 
 async function enterApp(npub){
+  _lastFrameHTML='';   // force the first paint of this session
   document.querySelector('nav').style.display='none';
   document.querySelector('.hero').style.display='none';
   document.querySelector('.footer-tag').style.display='none';
@@ -1948,6 +1960,7 @@ function syncMe(){
 }
 
 function logout(){
+  _lastFrameHTML='';
   if(typeof closeZoom==='function') closeZoom();
   if(_scanTimer){ clearInterval(_scanTimer); _scanTimer=null; }
   if(_connTimer){ clearInterval(_connTimer); _connTimer=null; }
@@ -4247,7 +4260,8 @@ function renderApp(){
   }
 
   if(showJoin){
-    document.getElementById('app-frame').innerHTML = header + buildJoinScreen() + (A.showScanner?buildScanner():"");
+    const jh = header + buildJoinScreen() + (A.showScanner?buildScanner():"");
+    if(jh!==_lastFrameHTML){ _lastFrameHTML=jh; document.getElementById('app-frame').innerHTML = jh; }
     if(A.showScanner && _camStream){ const v=document.getElementById('scan-video'); if(v && v.srcObject!==_camStream){ v.srcObject=_camStream; v.play().catch(()=>{}); } }
     const ni=document.getElementById('join-name-input'); if(ni && !A.activeNetId && !A.showScanner) ni.focus();
     return;
@@ -4276,7 +4290,7 @@ function renderApp(){
     </div>`;
   const tabs = navTab(A.tab===0, "⊞", "Feed", "setTab(0)", feedBadge) + camBtn + navTab(A.tab===2, "◎", "My Page", "setTab(2)");
 
-  document.getElementById('app-frame').innerHTML = header + `
+  const frameHTML = header + `
     ${A.showNetPicker?buildNetPicker():""}
     <div style="flex:1;display:flex;flex-direction:column;position:relative;overflow:hidden">
       ${(!A.profile.keyBackedUp && !A.nudgeDismissed && A.tab!==1)?buildBackupNudge():""}
@@ -4302,6 +4316,13 @@ function renderApp(){
     <div style="position:absolute;bottom:0;left:0;right:0;background:var(--c-navBg);backdrop-filter:blur(20px);border-top:1px solid var(--c-border);padding:10px 0 18px;display:flex;justify-content:space-around;z-index:30">
       ${tabs}
     </div>`;
+  // If nothing visible actually changed, don't touch the DOM at all.
+  // Re-assigning identical innerHTML still destroys and rebuilds every element,
+  // forcing all images to re-decode (a visible black flash on photos). This guard
+  // makes every no-op render — whatever triggered it — completely invisible.
+  if(frameHTML===_lastFrameHTML) return;
+  _lastFrameHTML=frameHTML;
+  document.getElementById('app-frame').innerHTML = frameHTML;
 
   if(A.replyPostId){
     const ri=document.getElementById('reply-input');

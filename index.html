@@ -855,7 +855,10 @@ async function handleRemoteEvent(netId, ev){
     }
   } else if(payload.t==='reply'){
     const parent=net.posts.find(p=>p.id===payload.e);
-    if(parent && !parent.replies.find(r=>r.id===ev.id)){
+    // Ignore replies that were deleted (tombstoned) by their own author — the
+    // relay backfill re-delivers the original reply event on every refresh.
+    if(net.replyDel && net.replyDel[ev.id]===pk){ /* deleted by its author — stay gone */ }
+    else if(parent && !parent.replies.find(r=>r.id===ev.id)){
       parent.replies.push({ id:ev.id, memberId:memId, text:payload.text||'' });
       changed=true;
       // notify if replying to our post and we're not already reading it
@@ -867,6 +870,15 @@ async function handleRemoteEvent(netId, ev){
       }
     }
   } else if(payload.t==='reply-delete'){
+    // Tombstone the deletion so the reply stays gone even when relays re-deliver
+    // the original reply event on a later refresh (delivery order isn't guaranteed).
+    // The tombstone records WHO deleted; it only takes effect against a reply
+    // actually authored by that same person (checked wherever it's honoured), so
+    // nobody can delete someone else's comment by publishing a fake tombstone.
+    if(payload.r){
+      if(!net.replyDel) net.replyDel={};
+      if(net.replyDel[payload.r]!==pk){ net.replyDel[payload.r]=pk; changed=true; }
+    }
     const parent=net.posts.find(p=>p.id===payload.e);
     if(parent && payload.r){
       const ri=parent.replies.findIndex(r=>r.id===payload.r && (r.memberId===memId||(mine&&r.memberId==='u1')));
@@ -993,6 +1005,21 @@ function reconcileNetwork(netId){
     const before=net.posts.length;
     net.posts=net.posts.filter(p=>!(net.deleted[p.id]===p.authorPk));
     if(net.posts.length!==before) changed=true;
+  }
+  // Re-apply reply deletions the same way (a deleted comment must stay deleted
+  // even if its original event was re-added before the tombstone was known).
+  // A tombstone only applies when the deleter IS the reply's author.
+  if(net.replyDel){
+    const myPk=myPubkey();
+    (net.posts||[]).forEach(p=>{
+      if(!p.replies || !p.replies.length) return;
+      const before=p.replies.length;
+      p.replies=p.replies.filter(r=>{
+        const authorPk=(r.memberId==='u1')?myPk:r.memberId;
+        return net.replyDel[r.id]!==authorPk;
+      });
+      if(p.replies.length!==before) changed=true;
+    });
   }
   // Re-decrypt encrypted avatars whose object URLs were lost on reload
   (net.members||[]).forEach(m=>{
@@ -2967,6 +2994,8 @@ function deleteComment(postId, replyId){
   const post=net.posts.find(p=>p.id===postId); if(!post) return;
   const idx=post.replies.findIndex(r=>r.id===replyId); if(idx<0) return;
   post.replies.splice(idx,1);
+  if(!net.replyDel) net.replyDel={};
+  net.replyDel[replyId]=myPubkey()||'self';   // tombstone: keep it gone across refreshes
   saveData(); renderApp();
   publishReplyDelete(net.id, postId, replyId);
 }
@@ -2977,6 +3006,8 @@ function deleteReply(postId, replyId){
   const ri=post.replies.findIndex(r=>r.id===replyId&&(r.memberId==='u1'||r.authorPk===myPk));
   if(ri<0) return;
   post.replies.splice(ri,1);
+  if(!net.replyDel) net.replyDel={};
+  net.replyDel[replyId]=myPk||'self';   // tombstone: keep it gone across refreshes
   if(A.replyPostId===postId||A.viewPostId===postId) renderApp(); else { saveData(); renderApp(); }
   saveData();
   publishReplyDelete(net.id, postId, replyId);

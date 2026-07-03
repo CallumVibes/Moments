@@ -79,6 +79,6 @@ There is no build pipeline: edit `index.html` directly and test in a real browse
 
 ## License
 
-[MIT](LICENSE) © 2026 Callum Field
+[MIT](LICENSE) © 2026 CallumVibes
 
 Contact: callum@nostr.fan

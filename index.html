@@ -472,11 +472,16 @@ async function blossomUpload(blob){
   const authHeader='Nostr '+btoa(JSON.stringify(auth));
   let lastErr=null;
   for(const server of BLOSSOM_SERVERS){
+    // Abort a server that stalls, so one dead host can't leave the post stuck on
+    // "Posting…" forever. We still try the next server after a timeout.
+    const ctl=new AbortController();
+    const to=setTimeout(()=>{ try{ ctl.abort(); }catch(_){} }, 20000);
     try{
       const res=await fetch(server.replace(/\/$/,'')+'/upload',{
         method:'PUT',
         headers:{ 'Authorization':authHeader, 'Content-Type': blob.type||'application/octet-stream' },
-        body:buf
+        body:buf,
+        signal:ctl.signal
       });
       if(res.ok){
         const d=await res.json().catch(()=>null);
@@ -487,7 +492,9 @@ async function blossomUpload(blob){
         const body=await res.text().catch(()=>'');
         lastErr=new Error(short(server)+' → '+res.status+(body?(' '+body.slice(0,80)):''));
       }
-    }catch(e){ lastErr=new Error(short(server)+' → '+(e&&e.message||'network error')); }
+    }catch(e){
+      lastErr=new Error(short(server)+' → '+(e&&e.name==='AbortError'?'timed out':(e&&e.message||'network error')));
+    }finally{ clearTimeout(to); }
   }
   throw lastErr||new Error('all upload servers failed');
 }
@@ -3330,6 +3337,13 @@ async function sharePhoto(){
 
 // Encrypt+upload (if needed) then publish; drives post.status: sending → sent | failed
 const _retryBlobs={};   // postId -> {blob, dataUrl}  (runtime only)
+// Resolve a promise but give up after ms, returning a fallback instead of hanging.
+function withTimeout(promise, ms, fallback){
+  return Promise.race([
+    Promise.resolve(promise).catch(()=>fallback),
+    new Promise(res=>setTimeout(()=>res(fallback), ms))
+  ]);
+}
 async function attemptPublish(netId, post){
   const net=A.networks[netId]; if(!net) return;
   post.status='sending'; renderApp();
@@ -3339,14 +3353,16 @@ async function attemptPublish(netId, post){
       const rb=_retryBlobs[post.id];
       const mime=rb.blob.type||'image/jpeg';
       const isVid=mime.startsWith('video/');
-      // For video, derive blurhash + dimensions from the poster still (if we have one)
+      // For video, derive blurhash + dimensions from the poster still (if we have one).
+      // These decode steps are time-bounded so a browser that stalls on decode can't
+      // leave the post stuck on "Posting…" — we fall back to no-preview and still upload.
       let poster=rb.poster||null;
       let info;
       if(isVid){
-        if(!poster){ try{ const p=await videoPoster(rb.dataUrl); if(p){ poster=p.dataUrl; } }catch(_){} }
-        info = poster ? await analyzeImage(poster) : {w:0,h:0,blurhash:''};
+        if(!poster){ try{ const p=await withTimeout(videoPoster(rb.dataUrl), 8000, null); if(p){ poster=p.dataUrl; } }catch(_){} }
+        info = poster ? await withTimeout(analyzeImage(poster), 8000, {w:0,h:0,blurhash:''}) : {w:0,h:0,blurhash:''};
       } else {
-        info = await analyzeImage(rb.dataUrl);
+        info = await withTimeout(analyzeImage(rb.dataUrl), 8000, {w:0,h:0,blurhash:''});
       }
       const keys=A.netKeys[netId] || await deriveNetwork(net.code); A.netKeys[netId]=keys;
       const plain=new Uint8Array(await rb.blob.arrayBuffer());

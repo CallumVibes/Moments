@@ -537,13 +537,14 @@ const Relay=(()=>{
       // (re)send every active subscription and flush any queued events
       Object.entries(subs).forEach(([id,s])=> send(ws,['REQ',id,...s.filters]));
       const q=queue; queue=[]; q.forEach(e=> send(ws,['EVENT',e]));
+      try{ if(typeof updateConnDot==='function') updateConnDot(); }catch(_){}   // reflect "connected" right away
     };
     ws.onmessage=ev=>{
       let m; try{ m=JSON.parse(ev.data); }catch(_){ return; }
       if(m[0]==='EVENT'){ const s=subs[m[1]]; if(s) s.onEvent(m[2]); }
       else if(m[0]==='EOSE'){ const s=subs[m[1]]; if(s&&s.onEose) s.onEose(); }
     };
-    ws.onclose=()=>{ scheduleReconnect(url); };
+    ws.onclose=()=>{ scheduleReconnect(url); try{ if(typeof updateConnDot==='function') updateConnDot(); }catch(_){} };
     ws.onerror=()=>{ try{ ws.close(); }catch(_){} };
   }
   function scheduleReconnect(url){
@@ -771,7 +772,7 @@ async function handleRemoteEvent(netId, ev){
     // relay backfill re-delivers the original reply event on every refresh.
     if(net.replyDel && net.replyDel[ev.id]===pk){ /* deleted by its author — stay gone */ }
     else if(parent && !parent.replies.find(r=>r.id===ev.id)){
-      parent.replies.push({ id:ev.id, memberId:memId, text:payload.text||'' });
+      parent.replies.push({ id:ev.id, memberId:memId, text:payload.text||'', ts:payload.ts||ev.created_at||Math.floor(Date.now()/1000) });
       changed=true;
       // notify if replying to our post and we're not already reading it
       const myPk=myPubkey();
@@ -828,11 +829,16 @@ async function handleRemoteEvent(netId, ev){
       }
     }
   } else if(payload.t==='meta'){
-    if(payload.owner && !net.ownerPk){ net.ownerPk=payload.owner; changed=true; }
+    // A meta event may only claim ownership for the pubkey that actually signed it.
+    // This blocks anyone from spoofing owner:<someoneElse> to seize control.
+    const claimsOwner = payload.owner && payload.owner===pk;
+    // Establish the owner only from a self-consistent meta (signer == claimed owner).
+    if(claimsOwner && !net.ownerPk){ net.ownerPk=pk; changed=true; }
     if((payload.ts||0) > (net.nameTs||0) && payload.name && net.name!==payload.name){ net.name=payload.name; net.nameTs=payload.ts; changed=true; }
     else if((payload.ts||0) > (net.nameTs||0) && payload.name){ net.nameTs=payload.ts; }
-    // Sync password from owner (null means no password)
-    if(payload.owner === net.ownerPk || !net.ownerPk){ const np=payload.password||null; if(net.password!==np){ net.password=np; changed=true; } }
+    // Password may only be set/changed by the established owner (and only once an
+    // owner is known — before that, no one can set it).
+    if(net.ownerPk && pk===net.ownerPk){ const np=payload.password||null; if(net.password!==np){ net.password=np; changed=true; } }
     // Flush any buffered removal events now that we know who the owner is
     if(net.ownerPk && net._pendingRemoves && net._pendingRemoves.length){
       net._pendingRemoves.filter(r=>r.senderPk===net.ownerPk).forEach(r=>applyRemoval(net, r.pk, netId));
@@ -1642,15 +1648,19 @@ async function ensureAvatar(net, mem){
   try{
     const keys=A.netKeys[net.id] || await deriveNetwork(net.code); A.netKeys[net.id]=keys;
     let ct=null;
-    try{ const cached=await idbGet('img:'+e.sha256); if(cached) ct=new Uint8Array(await cached.arrayBuffer()); }catch(_){}
+    try{ const cached=await idbGet('av:'+e.sha256); if(cached) ct=new Uint8Array(await cached.arrayBuffer()); }catch(_){}
     if(!ct){
       const res=await fetch(e.url); if(!res.ok) throw new Error('fetch '+res.status);
       const buf=await res.arrayBuffer(); ct=new Uint8Array(buf);
-      try{ await idbSet('img:'+e.sha256, new Blob([buf],{type:'application/octet-stream'})); }catch(_){}
+      try{ await idbSet('av:'+e.sha256, new Blob([buf],{type:'application/octet-stream'})); }catch(_){}
     }
     const iv=hexToBytes(e.iv);
     const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv}, keys.groupKey, ct);
     const objUrl=URL.createObjectURL(new Blob([pt],{type:e.mime||'image/jpeg'}));
+    // Revoke the member's previous blob URL (if any) so it doesn't leak memory.
+    if(mem.avatar && String(mem.avatar).startsWith('blob:') && mem.avatar!==objUrl){
+      try{ URL.revokeObjectURL(mem.avatar); }catch(_){}
+    }
     _imgCache[key]=objUrl;
     mem.avatar=objUrl;
     applyAvatarToDom(mem.id, objUrl);   // swap in place — no feed re-render (no flicker)
@@ -1871,7 +1881,7 @@ async function enterApp(npub){
   };
 
   Relay.connect();
-  if(!_connTimer) _connTimer=setInterval(updateConnDot, 2500);
+  if(!_connTimer) _connTimer=setInterval(updateConnDot, 1000);
   // No periodic auto-sync: new posts are fetched on app focus/return and via pull-to-refresh.
   // Keep a slow, quiet retry purely for *your own* posts that failed to upload.
   if(!_syncTimer) _syncTimer=setInterval(()=>{ try{ if(Relay.isConnected()) flushFailedPosts(); }catch(_){} }, 30000);
@@ -1888,9 +1898,9 @@ async function enterApp(npub){
     }catch(_){}
   }, 30000);
   document.getElementById('app-screen').classList.add('active');
-  renderApp();
 
-  // Load this identity's locally-stored data (profile, photos, networks)
+  // Load this identity's locally-stored data (profile, photos, networks) BEFORE the
+  // first paint, so we don't flash an empty app and then repaint with content.
   try{
     if(!_dbReady){ _db=await idbOpen(); _dbReady=true; }
     const saved=await idbGet(dataKey());
@@ -1995,11 +2005,15 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.8', date:'July 2026', title:'Trust & polish', changes:[
+    ['new','New Activity tab on My Page — see who liked and commented on your posts'],
     ['new','Tap a member — their avatar on a post or up top — to see their profile and bio'],
     ['new','Text posts now show when they were shared, just like photos'],
+    ['new','A clear notice now appears when you’re offline — your posts and likes are saved and sync when you reconnect'],
     ['change','Posts older than a week now show their date instead of counting up the days'],
     ['change','Better support for screen readers — buttons now describe what they do'],
+    ['change','The app opens straight to your feed now, without a blank flash on startup'],
     ['fix','Cryptography now runs on independently audited libraries — the same keys and logins as before, on a stronger foundation'],
+    ['fix','Only a network’s creator can set or change its password'],
     ['fix','Photos upload faster and more reliably — a stalled server no longer leaves posts stuck on "Posting…"'],
     ['fix','Deleted comments stay deleted — they no longer reappear after a refresh'],
     ['fix','The feed no longer flickers when your connection drops and reconnects'],
@@ -2950,16 +2964,6 @@ function toggleLike(pid){
 }
 function setReplyDraft(v){ A.replyDraft=v; }
 
-function deleteComment(postId, replyId){
-  const net=currentNet(); if(!net) return;
-  const post=net.posts.find(p=>p.id===postId); if(!post) return;
-  const idx=post.replies.findIndex(r=>r.id===replyId); if(idx<0) return;
-  post.replies.splice(idx,1);
-  if(!net.replyDel) net.replyDel={};
-  net.replyDel[replyId]=myPubkey()||'self';   // tombstone: keep it gone across refreshes
-  saveData(); renderApp();
-  publishReplyDelete(net.id, postId, replyId);
-}
 function deleteReply(postId, replyId){
   const net=currentNet(); if(!net) return;
   const post=net.posts.find(p=>p.id===postId); if(!post) return;
@@ -2969,8 +2973,7 @@ function deleteReply(postId, replyId){
   post.replies.splice(ri,1);
   if(!net.replyDel) net.replyDel={};
   net.replyDel[replyId]=myPk||'self';   // tombstone: keep it gone across refreshes
-  if(A.replyPostId===postId||A.viewPostId===postId) renderApp(); else { saveData(); renderApp(); }
-  saveData();
+  saveData(); renderApp();
   publishReplyDelete(net.id, postId, replyId);
 }
 async function publishReplyDelete(netId, postId, replyId){
@@ -3234,7 +3237,7 @@ function submitReply(){
   const text=(A.replyDraft||"").trim();
   if(!p||!text) return;
   const localId="r"+Date.now();
-  p.replies.push({ id:localId, memberId:"u1", text });
+  p.replies.push({ id:localId, memberId:"u1", text, ts:Math.floor(Date.now()/1000) });
   A.replyDraft=""; saveData(); renderApp();
   // publish to relays (ignore network failures)
   publishReply(net.id, p.id, text).then(evId=>{
@@ -3472,6 +3475,9 @@ function _qRem(data,div){ const d=div.length; const r=new Array(d).fill(0); for(
 const _QV={1:{size:21,data:19,ec:7,align:[]},2:{size:25,data:34,ec:10,align:[6,18]},3:{size:29,data:55,ec:15,align:[6,22]},4:{size:33,data:80,ec:20,align:[6,26]}};
 function qrModules(text){
   const bytes=[...new TextEncoder().encode(text)];
+  // Version 4 (EC-L, byte mode) is our max. If the text won't fit, bail rather than
+  // emit a truncated, unscannable QR — the caller shows a text fallback instead.
+  if(bytes.length+2 > _QV[4].data) return null;
   let ver=1; for(const v of [1,2,3,4]){ if(bytes.length+2<=_QV[v].data){ ver=v; break; } ver=v; }
   const cfg=_QV[ver]; const n=cfg.size;
   let bits=[]; const push=(val,nb)=>{ for(let i=nb-1;i>=0;i--) bits.push((val>>i)&1); };
@@ -3498,7 +3504,12 @@ function qrModules(text){
   return {n,m};
 }
 function qrSVG(text, size){
-  const {n,m}=qrModules(text);
+  const res=qrModules(text);
+  if(!res){
+    // Invite link too long for a scannable code — show a friendly fallback.
+    return `<div style="width:${size}px;height:${size}px;border-radius:10px;background:#FAF8F5;color:#0F0F14;display:flex;align-items:center;justify-content:center;text-align:center;padding:18px;font-size:12px;line-height:1.5;box-sizing:border-box">Use the code below to join — this invite is too long for a QR code.</div>`;
+  }
+  const {n,m}=res;
   const quiet=2; const total=n+quiet*2; const cell=size/total;
   let rects='';
   for(let r=0;r<n;r++) for(let c=0;c<n;c++){ if(m[r][c]===1) rects+=`<rect x="${(c+quiet)*cell}" y="${(r+quiet)*cell}" width="${cell}" height="${cell}" fill="#0F0F14"/>`; }
@@ -3585,6 +3596,10 @@ function buildFeed(net){
   return `
   <div style="flex:1;position:relative;display:flex;flex-direction:column;overflow:hidden">
     <div id="feed-scroll" class="hide-scroll" style="flex:1;overflow-y:auto;padding-bottom:80px">
+      <div id="offline-banner" style="display:${Relay.isConnected()?'none':'flex'};align-items:center;gap:8px;margin:6px 16px 0;padding:9px 13px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.28);border-radius:12px;color:#f87171;font-size:12px;line-height:1.4">
+        <span style="flex-shrink:0">⚠</span>
+        <span>You're offline. New posts and likes are saved and will sync when you reconnect.</span>
+      </div>
       <div style="padding:4px 20px 14px;display:flex;align-items:center;gap:10px">
         <div style="display:flex">${memberStrip}</div>
         <button onclick="setTab(1)" style="background:none;border:none;padding:0;cursor:pointer;color:${C.textDim};font-size:12px;text-align:left" aria-label="See all members">${esc(net.name)} · ${net.members.length} member${net.members.length>1?'s':''}</button>
@@ -3653,6 +3668,64 @@ function buildNetwork(net){
     </button>`:''}
     <button onclick="leaveNetwork('${net.id}')" style="width:100%;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:16px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;margin-top:14px">Leave network</button>
   </div>`;
+}
+
+function setMyTab(t){ A.myTab=t; renderApp(); }
+
+// Gather recent likes + comments OTHERS made on my posts, newest first.
+function buildActivity(net){
+  const myPk=myPubkey();
+  const isMine = p => p.memberId==='u1' || p.authorPk===myPk;
+  const items=[];
+  (net.posts||[]).filter(isMine).forEach(p=>{
+    const label = p.caption ? p.caption.slice(0,40) : (p.poll?'your poll':(p.image||p.enc?'your photo':'your post'));
+    // Likes from others
+    if(p.likeBy){
+      Object.keys(p.likeBy).forEach(pk=>{
+        const l=p.likeBy[pk];
+        if(l && l.v && pk!==myPk && pk!=='u1'){
+          items.push({ kind:'like', pk, ts:l.ts||0, postId:p.id, label });
+        }
+      });
+    }
+    // Comments from others
+    (p.replies||[]).forEach(r=>{
+      if(r.memberId!=='u1' && r.memberId!==myPk){
+        items.push({ kind:'comment', pk:r.memberId, ts:r.ts||0, postId:p.id, label, text:r.text||'' });
+      }
+    });
+  });
+  items.sort((a,b)=>(b.ts||0)-(a.ts||0));
+
+  if(!items.length){
+    return `<div style="text-align:center;padding:44px 24px;line-height:1.7">
+      <div style="font-size:36px;margin-bottom:8px">💬</div>
+      <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:4px">No activity yet</div>
+      <div style="color:${C.muted};font-size:13px">When people like or comment on your posts, you’ll see it here.</div>
+    </div>`;
+  }
+
+  return `<div style="display:flex;flex-direction:column;gap:8px">${items.slice(0,60).map(it=>{
+    const mem=memberIn(net,it.pk);
+    const name=esc(mem.name||'Someone');
+    const when=it.ts?esc(relTime(it.ts*1000)):'';
+    const verb = it.kind==='like'
+      ? `<span style="color:${C.warm}">♥ liked</span>`
+      : `<span style="color:${C.accent}">💬 commented on</span>`;
+    const extra = it.kind==='comment' && it.text
+      ? `<div style="color:${C.textDim};font-size:13px;margin-top:3px;white-space:pre-wrap;word-break:break-word">“${esc(it.text.slice(0,140))}”</div>`
+      : '';
+    return `<button onclick="openPostView('${it.postId}')" style="text-align:left;background:${C.surface};border:none;border-radius:14px;padding:12px 14px;cursor:pointer;display:flex;gap:11px;align-items:flex-start;width:100%">
+      <div style="flex-shrink:0">${avatarHTML(mem,34,11,15,1.5)}</div>
+      <div style="flex:1;min-width:0">
+        <div style="color:${C.text};font-size:13px;line-height:1.5">
+          <strong style="font-weight:700">${name}</strong> ${verb} <span style="color:${C.muted}">${esc(it.label)}${it.label.length>=40?'…':''}</span>
+        </div>
+        ${extra}
+        ${when?`<div style="color:${C.muted};font-size:11px;margin-top:3px">${when}</div>`:''}
+      </div>
+    </button>`;
+  }).join('')}</div>`;
 }
 
 function buildMyPage(net){
@@ -3736,7 +3809,12 @@ function buildMyPage(net){
         </div>`).join('')}</div>` : '';
 
   const grid = myPosts.length===0
-    ? `<div style="text-align:center;color:${C.muted};font-size:13px;padding:40px 0">Nothing yet — tap “New post”.</div>`
+    ? `<div style="text-align:center;padding:44px 24px;line-height:1.7">
+         <div style="font-size:36px;margin-bottom:8px">✏️</div>
+         <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:4px">Nothing here yet</div>
+         <div style="color:${C.muted};font-size:13px;margin-bottom:18px">Your photos and posts will show up here.</div>
+         <button onclick="addPhotoQuick()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:12px 22px;font-size:14px;font-weight:700;cursor:pointer">Share your first moment</button>
+       </div>`
     : photoGrid + textList;
 
   // Profile header (avatar, name, bio) + Edit
@@ -3787,15 +3865,22 @@ function buildMyPage(net){
       </div>
     </div>` : "";
 
+  const myTab = A.myTab==='activity' ? 'activity' : 'posts';
+  const subTabs = `
+    <div style="display:flex;gap:8px;margin:4px 0 16px">
+      <button onclick="setMyTab('posts')" style="flex:1;background:${myTab==='posts'?C.accentDim:'transparent'};border:1px solid ${myTab==='posts'?C.accentBorder:'var(--c-border)'};color:${myTab==='posts'?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">Posts</button>
+      <button onclick="setMyTab('activity')" style="flex:1;background:${myTab==='activity'?C.accentDim:'transparent'};border:1px solid ${myTab==='activity'?C.accentBorder:'var(--c-border)'};color:${myTab==='activity'?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">Activity</button>
+    </div>`;
+
   return `
   <div class="hide-scroll" style="flex:1;overflow-y:auto;padding:16px 16px 80px">
     ${header}
     ${editPanel}
-    <button onclick="openUpload()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:16px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;margin:14px 0 20px;display:flex;align-items:center;justify-content:center;gap:8px">
+    ${myTab==='posts' ? `<button onclick="openUpload()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:16px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;margin:14px 0 8px;display:flex;align-items:center;justify-content:center;gap:8px">
       <span style="font-size:18px">＋</span> New post
-    </button>
-    ${upload}
-    ${grid}
+    </button>` : ''}
+    ${subTabs}
+    ${myTab==='posts' ? (upload + grid) : buildActivity(net)}
   </div>`;
 }
 
@@ -4368,12 +4453,16 @@ function renderApp(){
 }
 
 function updateConnDot(){
-  const d=document.getElementById('conn-dot');
-  if(!d) return;
   const on=Relay.isConnected();
-  d.style.background = on ? '#FF8C42' : '#ef4444';
-  d.style.boxShadow = on ? '0 0 6px #FF8C42' : 'none';
-  d.title = on ? 'Connected' : 'Offline — changes sync when reconnected';
+  const d=document.getElementById('conn-dot');
+  if(d){
+    d.style.background = on ? '#FF8C42' : '#ef4444';
+    d.style.boxShadow = on ? '0 0 6px #FF8C42' : 'none';
+    d.title = on ? 'Connected' : 'Offline — changes sync when reconnected';
+  }
+  // Show/hide the feed's offline banner in place (no re-render → no flicker)
+  const b=document.getElementById('offline-banner');
+  if(b) b.style.display = on ? 'none' : 'flex';
 }
 
 // Transient in-app notification — lives on #app-screen so it survives feed re-renders

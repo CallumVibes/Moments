@@ -2648,6 +2648,7 @@ async function startPhotoCamera(){
     }catch(_){ A.camZoomMax=4; A._camHwZoom=null; }
     const v=document.getElementById('cam-video');
     if(v){ v.srcObject=_photoStream; v.style.transform=''; v.style.transformOrigin='center center'; await v.play().catch(()=>{}); }
+    renderApp();   // now that camZoomMax is known, paint the zoom slider
   }catch(err){
     A.cameraError = (err && err.name==='NotAllowedError') ? 'denied' : 'no-camera';
     renderApp();

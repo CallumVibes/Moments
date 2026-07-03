@@ -82,3 +82,4 @@ There is no build pipeline: edit `index.html` directly and test in a real browse
 [MIT](LICENSE) © 2026 CallumVibes
 
 Contact: callum@nostr.fan
+npub: npub15qc45zlcpftk8e9865h0g5k2zyl3grddr028fdr9plh7ksu7wdwqqmkr83

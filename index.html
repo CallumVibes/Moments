@@ -482,11 +482,16 @@ async function blossomUpload(blob){
         const d=await res.json().catch(()=>null);
         if(d && d.url) return d.url;
         if(d && d.sha256) return server.replace(/\/$/,'')+'/'+d.sha256;
-      } else { lastErr=new Error(server+' → '+res.status); }
-    }catch(e){ lastErr=e; }
+        lastErr=new Error(short(server)+' → ok but no url');
+      } else {
+        const body=await res.text().catch(()=>'');
+        lastErr=new Error(short(server)+' → '+res.status+(body?(' '+body.slice(0,80)):''));
+      }
+    }catch(e){ lastErr=new Error(short(server)+' → '+(e&&e.message||'network error')); }
   }
-  throw lastErr||new Error('upload failed');
+  throw lastErr||new Error('all upload servers failed');
 }
+function short(u){ return u.replace(/^https?:\/\//,'').replace(/\/$/,''); }
 
 /* ════════════════════════════════════════════
    RELAYS + NETWORK ENCRYPTION (cross-device sync)
@@ -1854,6 +1859,12 @@ async function enterApp(npub){
       if(saved.networks && Object.keys(saved.networks).length){
         A.networks=saved.networks;
         A.activeNetId=saved.activeNetId && saved.networks[saved.activeNetId] ? saved.activeNetId : Object.keys(saved.networks)[0];
+        // A post left mid-upload in a previous session ('sending') can't resume —
+        // its photo bytes lived only in memory (_retryBlobs), which is gone now.
+        // Mark it failed so it shows a Retry button instead of a stuck "Posting…".
+        Object.values(A.networks).forEach(net=>{
+          (net.posts||[]).forEach(p=>{ if(p.status==='sending') p.status='failed'; });
+        });
       }
       syncMe();
     }
@@ -3356,7 +3367,13 @@ async function attemptPublish(netId, post){
     const res=await publishPost(netId, post);
     if(res && res.id){ post.id=res.id; if(A.seen) A.seen[res.id]=true; }
     post.status = (res && res.delivered) ? 'sent' : 'failed';
-  }catch(e){ post.status='failed'; }
+  }catch(e){
+    post.status='failed';
+    const msg=String(e && (e.message||e));
+    A._lastPostError=msg;
+    try{ console.error('[moments] post failed:', msg); }catch(_){}
+    try{ showToast('Post failed: '+msg); }catch(_){}
+  }
   if(post.status==='sent' && _retryBlobs[post.id]) delete _retryBlobs[post.id];
   saveData(); renderApp();
 }

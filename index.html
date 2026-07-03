@@ -470,33 +470,47 @@ async function blossomUpload(blob){
   const now=Math.floor(Date.now()/1000);
   const auth=await makeNostrEvent(24242, [['t','upload'],['x',hashHex],['expiration',String(now+3600)]], 'Upload a moment');
   const authHeader='Nostr '+btoa(JSON.stringify(auth));
-  let lastErr=null;
-  for(const server of BLOSSOM_SERVERS){
-    // Abort a server that stalls, so one dead host can't leave the post stuck on
-    // "Posting…" forever. We still try the next server after a timeout.
-    const ctl=new AbortController();
-    const to=setTimeout(()=>{ try{ ctl.abort(); }catch(_){} }, 20000);
-    try{
-      const res=await fetch(server.replace(/\/$/,'')+'/upload',{
-        method:'PUT',
-        headers:{ 'Authorization':authHeader, 'Content-Type': blob.type||'application/octet-stream' },
-        body:buf,
-        signal:ctl.signal
-      });
+  const ct=blob.type||'application/octet-stream';
+
+  // Upload to ALL servers at once and take the first success. A healthy host
+  // answers in a second or two, so we no longer wait out a slow/stalled one
+  // before trying the next. (Bonus: more hosts keep a copy → better durability.)
+  const controllers=[];
+  const errors=[];
+  function tryServer(server){
+    const ctl=new AbortController(); controllers.push(ctl);
+    const to=setTimeout(()=>{ try{ ctl.abort(); }catch(_){} }, 15000);   // backstop, not the usual path
+    return fetch(server.replace(/\/$/,'')+'/upload',{
+      method:'PUT',
+      headers:{ 'Authorization':authHeader, 'Content-Type':ct },
+      body:buf,
+      signal:ctl.signal
+    }).then(async res=>{
+      clearTimeout(to);
       if(res.ok){
         const d=await res.json().catch(()=>null);
         if(d && d.url) return d.url;
         if(d && d.sha256) return server.replace(/\/$/,'')+'/'+d.sha256;
-        lastErr=new Error(short(server)+' → ok but no url');
-      } else {
-        const body=await res.text().catch(()=>'');
-        lastErr=new Error(short(server)+' → '+res.status+(body?(' '+body.slice(0,80)):''));
+        throw new Error(short(server)+' → ok but no url');
       }
-    }catch(e){
-      lastErr=new Error(short(server)+' → '+(e&&e.name==='AbortError'?'timed out':(e&&e.message||'network error')));
-    }finally{ clearTimeout(to); }
+      const body=await res.text().catch(()=>'');
+      throw new Error(short(server)+' → '+res.status+(body?(' '+body.slice(0,80)):''));
+    }).catch(e=>{
+      clearTimeout(to);
+      throw new Error(short(server)+' → '+(e&&e.name==='AbortError'?'timed out':(e&&e.message||'network error')));
+    });
   }
-  throw lastErr||new Error('all upload servers failed');
+
+  // Promise.any resolves on the first fulfilled upload; reject only if ALL fail.
+  const attempts=BLOSSOM_SERVERS.map(s=>tryServer(s).catch(e=>{ errors.push(e.message||String(e)); throw e; }));
+  try{
+    const url=await Promise.any(attempts);
+    // Got one — abort the still-running uploads to save the user's bandwidth.
+    controllers.forEach(c=>{ try{ c.abort(); }catch(_){} });
+    return url;
+  }catch(_){
+    throw new Error(errors.length?errors.join(' · '):'all upload servers failed');
+  }
 }
 function short(u){ return u.replace(/^https?:\/\//,'').replace(/\/$/,''); }
 
@@ -724,6 +738,7 @@ async function handleRemoteEvent(netId, ev){
       if(payload.name && mem.name!==payload.name){ mem.name=payload.name; changed=true; }
       if(payload.avatar && mem.avatar!==payload.avatar){ mem.avatar=payload.avatar; mem.avatarEnc=null; changed=true; }
       if(payload.avatarEnc && JSON.stringify(mem.avatarEnc)!==JSON.stringify(payload.avatarEnc)){ mem.avatarEnc=payload.avatarEnc; ensureAvatar(net, mem); changed=true; }
+      if(payload.avatarRemoved && (mem.avatar || mem.avatarEnc)){ mem.avatar=null; mem.avatarEnc=null; changed=true; }  // they cleared their picture
       if(payload.bio!==undefined && mem.bio!==payload.bio){ mem.bio=payload.bio; changed=true; }
     }
   }
@@ -882,6 +897,16 @@ function applyRemoval(net, targetPk, netId){
   net.members=net.members.filter(m=>m.id!==targetPk);
   purgeMemberPhotos(net, targetPk);
   net.posts=net.posts.filter(p=>p.authorPk!==targetPk);
+  // Also scrub the removed member's traces left inside OTHER people's posts:
+  // their replies, likes, and poll votes. Otherwise stale entries linger (e.g.
+  // their like still counts, their comment still shows, their vote still tallies).
+  (net.posts||[]).forEach(p=>{
+    if(p.replies && p.replies.length){
+      p.replies=p.replies.filter(r=>r.memberId!==targetPk);
+    }
+    if(p.likeBy && p.likeBy[targetPk]) delete p.likeBy[targetPk];
+    if(p.voteBy && p.voteBy[targetPk]) delete p.voteBy[targetPk];
+  });
 }
 
 // Full consistency sweep after the initial relay backfill (EOSE)
@@ -895,6 +920,12 @@ function reconcileNetwork(netId){
       net.members=net.members.filter(m=>m.id!==pk);
       net.posts=net.posts.filter(p=>p.authorPk!==pk);
       if(net.members.length!==memBefore||net.posts.length!==postBefore) changed=true;
+      // Scrub their leftovers inside other people's posts (re-delivered on backfill).
+      (net.posts||[]).forEach(p=>{
+        if(p.replies && p.replies.some(r=>r.memberId===pk)){ p.replies=p.replies.filter(r=>r.memberId!==pk); changed=true; }
+        if(p.likeBy && p.likeBy[pk]){ delete p.likeBy[pk]; changed=true; }
+        if(p.voteBy && p.voteBy[pk]){ delete p.voteBy[pk]; changed=true; }
+      });
     });
   }
   // Re-apply all known deletions (catches posts added before their delete event)
@@ -1061,6 +1092,7 @@ async function publishProfile(){
       const payload={ v:1, t:'profile', name, bio, ts:Math.floor(Date.now()/1000) };
       if(aEnc && aEnc.ext) payload.avatar=aEnc.ext;          // external public link
       else if(aEnc) payload.avatarEnc=stripSrc(aEnc);         // encrypted-on-Blossom avatar
+      else payload.avatarRemoved=true;                        // no avatar → tell others to clear any old one
       const content=await encJSON(keys.groupKey, payload);
       const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
       markSeen(ev.id);
@@ -1075,7 +1107,7 @@ function stripSrc(m){ const {_srcBlob,...rest}=m; return rest; }
 ════════════════════════════════════════════ */
 let _nsec='', _npub='', _fileNsec='';
 let _avatarBlob=null;   // source bytes of the current avatar, for per-network encryption (runtime only)
-const _avatarEncCache={};  // netId -> {url,iv,sha256} of the encrypted avatar already uploaded for that net
+let _avatarEncCache={};  // netId -> {url,iv,sha256} of the encrypted avatar already uploaded for that net
 
 // ── Landing page theme (light default, persisted to localStorage) ──
 function applyLandingTheme(){
@@ -1961,10 +1993,11 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.8', date:'July 2026', title:'Trust & polish', changes:[
-    ['fix','Cryptography now runs on independently audited libraries \\u2014 the same keys and logins as before, on a stronger foundation'],
-    ['fix','Deleted comments stay deleted \\u2014 they no longer reappear after a refresh'],
+    ['fix','Cryptography now runs on independently audited libraries — the same keys and logins as before, on a stronger foundation'],
+    ['fix','Photos upload faster and more reliably — a stalled server no longer leaves posts stuck on "Posting…"'],
+    ['fix','Deleted comments stay deleted — they no longer reappear after a refresh'],
     ['fix','The feed no longer flickers when your connection drops and reconnects'],
-    ['fix','Invite links keep the password private \\u2014 it\\u2019s no longer exposed in server logs or referrers'],
+    ['fix','Invite links keep the password private — it’s no longer exposed in server logs or referrers'],
   ]},
   { v:'0.7', date:'July 2026', title:'Names, calm feed & avatars', changes:[
     ['new','Edit the caption on a photo you\u2019ve already posted \u2014 tap the \u22ef menu'],
@@ -3214,7 +3247,15 @@ function openEditProfile(){ A.editProfile=true; A.profileDraft={...A.profile}; r
 function cancelEditProfile(){ A.editProfile=false; A.profileDraft=null; A.savingPic=false; renderApp(); }
 function setDraftName(v){ if(A.profileDraft) A.profileDraft.name=v; }
 function setDraftBio(v){ if(A.profileDraft) A.profileDraft.bio=v; }
-function clearDraftAvatar(){ if(A.profileDraft) A.profileDraft.avatar=null; renderApp(); }
+function clearDraftAvatar(){
+  if(A.profileDraft){
+    A.profileDraft.avatar=null;
+    A.profileDraft.avatarBlob=null;        // drop the source bytes too, or the old pic re-uploads
+    A.profileDraft.avatarExternal=false;
+    A.profileDraft.avatarCleared=true;     // explicit removal — saveProfile must not fall back to the old blob
+  }
+  renderApp();
+}
 async function onPickProfilePic(input){
   const file=input.files && input.files[0];
   if(!file || !A.profileDraft) return;
@@ -3230,7 +3271,15 @@ async function onPickProfilePic(input){
 function saveProfile(){
   if(!A.profileDraft) return;
   A.profile={ name:(A.profileDraft.name||'').trim()||'You', bio:(A.profileDraft.bio||'').trim(), avatar:A.profileDraft.avatar||null, avatarExternal:!!A.profileDraft.avatarExternal, keyBackedUp:!!(A.profile&&A.profile.keyBackedUp), theme:(A.profile&&A.profile.theme)||'light' };
-  _avatarBlob = A.profileDraft.avatarBlob || _avatarBlob;  // keep source bytes for per-network encryption
+  if(A.profileDraft.avatarCleared){
+    // User removed their picture — drop the source bytes and any cached encrypted
+    // copies so the old avatar isn't re-uploaded to networks.
+    _avatarBlob=null;
+    _avatarEncCache={};
+  } else if(A.profileDraft.avatarBlob){
+    _avatarBlob=A.profileDraft.avatarBlob;   // new picture chosen
+    _avatarEncCache={};                       // invalidate old encrypted copies
+  } // else: unchanged — keep the existing _avatarBlob
   syncMe();
   A.editProfile=false; A.profileDraft=null; A.savingPic=false;
   saveData(); renderApp();

@@ -2932,11 +2932,14 @@ function closeScanner(){
   if(_scanTimer){ clearInterval(_scanTimer); _scanTimer=null; }
   if(_camStream){ _camStream.getTracks().forEach(t=>t.stop()); _camStream=null; }
   if(_scanCanvas){ _scanCanvas=null; }
+  _barcodeDetector=null;
   renderApp();
 }
 
-// jsQR — loaded once from cdnjs on first scanner open
-let _jsQR=null, _scanCanvas=null;
+// QR decoding. Prefer the browser's built-in BarcodeDetector (offline, no download,
+// and better at real camera frames). Fall back to jsQR from a CDN only if the native
+// API isn't available.
+let _jsQR=null, _scanCanvas=null, _barcodeDetector=null;
 function loadJsQR(){
   if(_jsQR) return Promise.resolve(_jsQR);
   return new Promise(resolve=>{
@@ -2956,10 +2959,21 @@ async function startCamera(){
     _camStream=await navigator.mediaDevices.getUserMedia({ video:{facingMode:{ideal:'environment'}}, audio:false });
     const v=document.getElementById('scan-video');
     if(v){ v.srcObject=_camStream; await v.play().catch(()=>{}); }
+
+    // 1) Native detector — built into modern mobile browsers, works offline.
+    if('BarcodeDetector' in window){
+      try{
+        const fmts = await window.BarcodeDetector.getSupportedFormats?.();
+        if(!fmts || fmts.includes('qr_code')){
+          _barcodeDetector=new window.BarcodeDetector({ formats:['qr_code'] });
+          _scanTimer=setInterval(()=>scanTickNative(), 300);
+          return;
+        }
+      }catch(_){ /* fall through to jsQR */ }
+    }
+    // 2) Fallback: jsQR from CDN (needs a connection the first time).
     const jsqr=await loadJsQR();
     if(!jsqr){
-      // The QR decoder is fetched from a CDN on first use; if that fetch fails
-      // (offline or blocked), scanning can't work — tell the user to type the code.
       A.scanError='Scanner needs a connection the first time. You can type the code below instead.';
       renderApp();
       return;
@@ -2971,6 +2985,20 @@ async function startCamera(){
       :'Could not open the camera. Type the code below instead.';
     renderApp();
   }
+}
+
+// Native BarcodeDetector path — decodes straight from the video element.
+async function scanTickNative(){
+  if(!_barcodeDetector) return;
+  const v=document.getElementById('scan-video');
+  if(!v||v.readyState<2||!v.videoWidth) return;
+  try{
+    const codes=await _barcodeDetector.detect(v);
+    for(const code of codes){
+      const parsed=parseScannedCode(code.rawValue);
+      if(parsed){ closeScanner(); promptJoinPassword(parsed); return; }
+    }
+  }catch(_){}
 }
 
 function scanTick(jsqr){
@@ -3602,10 +3630,12 @@ function qrSVG(text, size){
     return `<div style="width:${size}px;height:${size}px;border-radius:10px;background:#FAF8F5;color:#0F0F14;display:flex;align-items:center;justify-content:center;text-align:center;padding:18px;font-size:12px;line-height:1.5;box-sizing:border-box">Use the code below to join — this invite is too long for a QR code.</div>`;
   }
   const {n,m}=res;
-  const quiet=2; const total=n+quiet*2; const cell=size/total;
+  const quiet=4; const total=n+quiet*2; const cell=size/total;
   let rects='';
-  for(let r=0;r<n;r++) for(let c=0;c<n;c++){ if(m[r][c]===1) rects+=`<rect x="${(c+quiet)*cell}" y="${(r+quiet)*cell}" width="${cell}" height="${cell}" fill="#0F0F14"/>`; }
-  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" fill="#FAF8F5" rx="10"/>${rects}</svg>`;
+  for(let r=0;r<n;r++) for(let c=0;c<n;c++){ if(m[r][c]===1) rects+=`<rect x="${(c+quiet)*cell}" y="${(r+quiet)*cell}" width="${cell}" height="${cell}" fill="#000000"/>`; }
+  // Pure black-on-white with the full 4-module quiet zone the QR spec requires —
+  // some phone scanners refuse to read codes with a smaller margin or off-white background.
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" fill="#ffffff"/>${rects}</svg>`;
 }
 
 // ── Join / create screen ──

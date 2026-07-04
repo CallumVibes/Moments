@@ -2018,6 +2018,25 @@ function updateRelayDots(){
 function openAbout(){ A.showAbout=true; A.showSettings=false; renderApp(); }
 function closeAbout(){ A.showAbout=false; renderApp(); }
 
+// Tip the developer over Bitcoin Lightning. Opens the phone's Lightning wallet
+// via the lightning: URI; if no wallet handles it, copy the address as a fallback.
+const SUPPORT_LN='cal@cake.cash';
+function supportLightning(){
+  haptic(12);
+  let opened=false;
+  try{
+    const a=document.createElement('a');
+    a.href='lightning:'+SUPPORT_LN; a.rel='noopener'; a.style.display='none';
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ try{ document.body.removeChild(a); }catch(_){} }, 1500);
+    opened=true;
+  }catch(_){}
+  // Always offer the address too, in case no wallet caught the link.
+  copyToClipboard(SUPPORT_LN).then(ok=>{
+    showToast(ok ? 'Lightning address copied: '+SUPPORT_LN : SUPPORT_LN);
+  }).catch(()=>{ showToast(SUPPORT_LN); });
+}
+
 function openWhatsNew(){ A.showWhatsNew=true; A.showSettings=false; renderApp(); try{ localStorage.setItem('moments-seen-version', CHANGELOG[0].v); }catch(_){} }
 function closeWhatsNew(){ A.showWhatsNew=false; renderApp(); }
 function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-version')!==CHANGELOG[0].v; }catch(_){ return false; } }
@@ -2392,17 +2411,17 @@ function renameNetwork(){
 }
 function openInvite(){ A.showInvite=true; A.showNetPicker=false; renderApp(); }
 // Native share sheet for invites, with a clipboard fallback
-// Build an invite link. The join code goes in the query (it's shared openly),
-// but the password goes in the URL *fragment* (#pw=…) — fragments are never sent
-// to servers, never logged, and never leak in Referer headers.
 function inviteUrl(net){
-  return SITE_URL+'/?join='+net.code+(net.password?'#pw='+encodeURIComponent(net.password):'');
+  // The invite link carries only the join code — never the password. A password-
+  // protected network's password is shared separately, so a forwarded link alone
+  // can't grant access.
+  return SITE_URL+'/?join='+net.code;
 }
 function shareInvite(){
   const net=currentNet(); if(!net) return;
   const url=inviteUrl(net);
-  const pwNote=net.password?' Password: '+net.password:'';
-  const text='Join my private Moments network "'+net.name+'". Use code '+net.code+pwNote+' (or scan the QR).';
+  const pwNote=net.password?' You\'ll also need the password, which I\'ll send you separately.':'';
+  const text='Join my private Moments network "'+net.name+'". Use code '+net.code+' (or scan the QR).'+pwNote;
   if(navigator.share){
     navigator.share({ title:"Join "+net.name+" on Moment's", text, url }).catch(()=>{});
   } else {
@@ -2532,6 +2551,7 @@ function setPollOption(i, v){ if(!A.pollOptions) A.pollOptions=['','']; A.pollOp
 function addPollOption(){ if(!A.pollOptions) A.pollOptions=['','']; if(A.pollOptions.length<6){ A.pollOptions.push(''); renderApp(); } }
 function removePollOption(i){ if(A.pollOptions && A.pollOptions.length>2){ A.pollOptions.splice(i,1); renderApp(); } }
 async function sharePoll(){
+  if(A.uploading) return;                 // already submitting — ignore double taps
   const net=currentNet(); if(!net) return;
   const errEl=document.getElementById('upload-err');
   const pp=A.pendingPhoto||{};
@@ -2539,6 +2559,7 @@ async function sharePoll(){
   const options=(A.pollOptions||[]).map(o=>(o||'').trim()).filter(Boolean);
   if(!question){ if(errEl) errEl.textContent='Add a question.'; return; }
   if(options.length<2){ if(errEl) errEl.textContent='Add at least two options.'; return; }
+  A.uploading=true; renderApp();          // disable the button while we submit
   const post={ id:"p"+Date.now(), memberId:"u1", authorPk:myPubkey(),
     caption:question, image:null, enc:null,
     poll:{ options }, voteBy:{},
@@ -2936,6 +2957,13 @@ async function startCamera(){
     const v=document.getElementById('scan-video');
     if(v){ v.srcObject=_camStream; await v.play().catch(()=>{}); }
     const jsqr=await loadJsQR();
+    if(!jsqr){
+      // The QR decoder is fetched from a CDN on first use; if that fetch fails
+      // (offline or blocked), scanning can't work — tell the user to type the code.
+      A.scanError='Scanner needs a connection the first time. You can type the code below instead.';
+      renderApp();
+      return;
+    }
     _scanTimer=setInterval(()=>scanTick(jsqr), 300);
   }catch(err){
     A.scanError=(err&&err.name==='NotAllowedError')
@@ -3412,14 +3440,6 @@ async function onDropPhoto(e){
     A.pendingPhoto.image=dataUrl; A.pendingPhoto.blob=blob; renderApp();
   }catch(err){}
 }
-// Use a pasted image link directly (already hosted — no upload needed)
-function usePhotoUrl(){
-  const inp=document.getElementById('photo-url-input');
-  const url=(inp&&inp.value.trim())||'';
-  if(!safeUrl(url)){ const e=document.getElementById('upload-err'); if(e) e.textContent='Paste a valid image link (https://…).'; return; }
-  if(!A.pendingPhoto) A.pendingPhoto={image:null,caption:'',blob:null};
-  A.pendingPhoto.image=url; A.pendingPhoto.blob=null; A.pendingPhoto.remote=true; renderApp();
-}
 // Avatar via dropped file or pasted link
 async function onDropAvatar(e){
   e.preventDefault();
@@ -3441,6 +3461,7 @@ function useAvatarUrl(){
   A.profileDraft.avatar=url; A.profileDraft.avatarBlob=null; A.profileDraft.avatarExternal=true; renderApp();
 }
 async function sharePhoto(){
+  if(A.uploading) return;                 // already submitting — ignore double taps
   const net=currentNet(); if(!net) return;
   const pp=A.pendingPhoto;
   const errEl=document.getElementById('upload-err');
@@ -3448,6 +3469,7 @@ async function sharePhoto(){
   const hasPhoto=!!(pp && pp.image);
   // A post needs either a photo/video or some text.
   if(!hasPhoto && !caption){ if(errEl) errEl.textContent='Write something or add a photo.'; return; }
+  A.uploading=true; renderApp();          // disable the button + show "Sharing…"
 
   const post={ id:"p"+Date.now(), memberId:"u1", authorPk:myPubkey(),
     caption:caption,
@@ -3820,13 +3842,9 @@ function buildMyPage(net){
     ? `<div style="position:relative;border-radius:14px;height:150px;background:url('${safeMediaUrl(pp.image)}') center/cover no-repeat #000;margin-bottom:12px">
          <button aria-label="Remove photo" onclick="onClearPhoto()" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);border:none;color:#fff;border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:14px">✕</button>
        </div>`
-    : `<div ondragover="event.preventDefault()" ondrop="onDropPhoto(event)" style="position:relative;border:2px dashed ${C.accentBorder};border-radius:14px;height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:${C.accent};font-size:12px;font-weight:600;margin-bottom:10px;text-align:center;padding:0 12px">
-         <span style="font-size:26px">📷</span>Tap to choose · or drag a photo here
+    : `<div ondragover="event.preventDefault()" ondrop="onDropPhoto(event)" style="position:relative;border:2px dashed ${C.accentBorder};border-radius:14px;height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:${C.accent};font-size:12px;font-weight:600;margin-bottom:12px;text-align:center;padding:0 12px">
+         <span style="font-size:26px">📷</span>Tap to choose
          <input type="file" accept="image/*,video/*" onchange="onPickPhoto(this)" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer"/>
-       </div>
-       <div style="display:flex;gap:8px;margin-bottom:12px">
-         <input id="photo-url-input" placeholder="or paste an image link (https://…)" style="flex:1;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:10px 12px;color:${C.text};font-size:12px;font-family:'Inter',sans-serif"/>
-         <button onclick="usePhotoUrl()" style="background:${C.surfaceHigh};color:${C.accent};border:1px solid ${C.accentBorder};border-radius:12px;padding:0 14px;font-size:12px;font-weight:700;cursor:pointer">Use</button>
        </div>`;
 
   const pollMode=!!A.pollMode;
@@ -4019,7 +4037,7 @@ function buildInvite(net){
       <div style="background:${C.surface};border-radius:22px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px">
         ${qrSVG(inviteUrl(net), 174)}
         <div style="background:${C.surfaceHigh};border-radius:10px;padding:8px 20px;font-family:monospace;font-size:18px;letter-spacing:3px;color:${C.accent};font-weight:700">${net.code}</div>
-        <div style="color:${C.muted};font-size:11px">${SITE_URL.replace(/^https?:\/\//,'')}/?join=${net.code}${net.password?'#pw=…':''}</div>
+        <div style="color:${C.muted};font-size:11px">${SITE_URL.replace(/^https?:\/\//,'')}/?join=${net.code}</div>
       </div>
       <button onclick="shareInvite()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer">Share invite</button>
       <button onclick="copyInviteCode()" style="width:100%;background:${C.surface};color:${C.text};border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:600;cursor:pointer">Copy code</button>
@@ -4174,6 +4192,16 @@ function buildSettings(){
           <div style="color:${C.muted};font-size:12px;margin-top:2px">Relays and developer options</div>
         </div>
         <span style="color:${C.muted};font-size:18px">›</span>
+      </button>
+
+      <!-- Support -->
+      <button onclick="supportLightning()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
+        <span style="font-size:20px">⚡</span>
+        <div style="flex:1;min-width:0">
+          <div style="color:${C.text};font-size:14px;font-weight:700">Support Moment's</div>
+          <div style="color:${C.muted};font-size:12px;margin-top:2px">Buy me a coffee ⚡</div>
+        </div>
+        <span style="color:#F5C842;font-size:13px;font-weight:700">Zap →</span>
       </button>
 
       <!-- About + Log out -->
@@ -4681,14 +4709,14 @@ let _pendingJoin=null, _pendingPw=null;
     const m=(location.search||'').match(/[?&]join=([^&#\s]+)/i) || (location.hash||'').match(/join=([^&#\s]+)/i);
     if(m){
       _pendingJoin=decodeURIComponent(m[1]).toUpperCase();
-      // Password rides in the URL *fragment* (#pw=…) so it's never sent to a server,
-      // logged, or leaked in a Referer header. Fall back to a legacy ?pw= query only
-      // for older invite links that predate this change.
+      // New invite links no longer include the password (it's shared separately).
+      // We still read #pw= / ?pw= here so older links that predate this change keep working;
+      // if there's no password in the link, the join screen prompts the user for it.
       const pwHash=(location.hash||'').match(/[#&]pw=([^&\s]+)/i);
       const pwQuery=(location.search||'').match(/[?&]pw=([^&#\s]+)/i);
       const pw=pwHash||pwQuery;
       if(pw) _pendingPw=decodeURIComponent(pw[1]);
-      try{ history.replaceState(null,'',location.pathname); }catch(_){}  // strip code+password from the address bar
+      try{ history.replaceState(null,'',location.pathname); }catch(_){}  // strip code/password from the address bar
     }
   }catch(_){}
 })();

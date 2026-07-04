@@ -747,6 +747,9 @@ async function handleRemoteEvent(netId, ev){
     if(!net.posts.find(p=>p.id===ev.id)){
       // Skip if already deleted by the same author (delete arrived before the post)
       if(net.deleted && net.deleted[ev.id]===pk) return;
+      // If the owner locked posting to owner-only, ignore new posts from other members
+      // (posts made before the lock, and the owner's own posts, are always kept).
+      if(net.membersCanPost===false && net.ownerPk && pk!==net.ownerPk && ev.created_at >= (net.postLockTs||0)) return;
       const enc=payload.enc||null;
       net.posts.push({ id:ev.id, memberId:memId, authorPk:pk, caption:payload.caption||'',
         image:(!enc && payload.image)?payload.image:null, enc,
@@ -755,15 +758,24 @@ async function handleRemoteEvent(netId, ev){
       net.posts.sort((a,b)=>(b.ts||0)-(a.ts||0));
       changed=true;
       // notify only for genuinely new posts (after the initial backfill), and not our own
-      if(!A.live) A.live={}; if(!A.unread) A.unread={};
+      if(!A.live) A.live={}; if(!A.unread) A.unread={}; if(!A.pendingFeed) A.pendingFeed={};
       const viewingThisFeed = (A.activeNetId===netId && A.tab===0 && !A.viewPostId && !A.replyPostId && !A.profileId && !A.showInvite && !A.showScanner && !A.showJoin);
-      if(A.live[netId] && !mine && !viewingThisFeed && ev.created_at>=_sessionStart){
-        A.unread[netId]=(A.unread[netId]||0)+1;
-        const who=(payload.name||'Someone');
-        const where=netId!==A.activeNetId?' · '+net.name:'';
-        const caption=payload.caption?(' "'+payload.caption.slice(0,60)+(payload.caption.length>60?'…':'')+'"'):'';
-        showToast('📸 New moment from '+who+where);
-        pushNotif('📸 '+who+' shared a moment'+(where), (caption||'Tap to view')+'\n'+net.name, 'post-'+ev.id);
+      if(A.live[netId] && !mine && ev.created_at>=_sessionStart){
+        if(viewingThisFeed){
+          // Don't shove it into the visible feed — hold it behind a "new moments" pill.
+          // We track the actual post IDs so the post stays hidden even if something
+          // else triggers a re-render before the user taps the pill.
+          if(!A.pendingFeed[netId]) A.pendingFeed[netId]={};
+          A.pendingFeed[netId][ev.id]=true;
+          updateNewPostsPill();
+        } else {
+          A.unread[netId]=(A.unread[netId]||0)+1;
+          const who=(payload.name||'Someone');
+          const where=netId!==A.activeNetId?' · '+net.name:'';
+          const caption=payload.caption?(' "'+payload.caption.slice(0,60)+(payload.caption.length>60?'…':'')+'"'):'';
+          showToast('📸 New moment from '+who+where);
+          pushNotif('📸 '+who+' shared a moment'+(where), (caption||'Tap to view')+'\n'+net.name, 'post-'+ev.id);
+        }
       }
     }
   } else if(payload.t==='reply'){
@@ -839,6 +851,16 @@ async function handleRemoteEvent(netId, ev){
     // Password may only be set/changed by the established owner (and only once an
     // owner is known — before that, no one can set it).
     if(net.ownerPk && pk===net.ownerPk){ const np=payload.password||null; if(net.password!==np){ net.password=np; changed=true; } }
+    // Owner can lock posting to owner-only. We record WHEN it was locked so posts
+    // members already made stay visible — only new member posts (after the lock) are ignored.
+    if(net.ownerPk && pk===net.ownerPk && payload.membersCanPost!==undefined){
+      const canPost = payload.membersCanPost!==false;
+      if(net.membersCanPost!==canPost){
+        net.membersCanPost=canPost;
+        net.postLockTs = canPost ? 0 : (payload.ts||Math.floor(Date.now()/1000));
+        changed=true;
+      }
+    }
     // Flush any buffered removal events now that we know who the owner is
     if(net.ownerPk && net._pendingRemoves && net._pendingRemoves.length){
       net._pendingRemoves.filter(r=>r.senderPk===net.ownerPk).forEach(r=>applyRemoval(net, r.pk, netId));
@@ -1049,6 +1071,8 @@ async function publishMeta(netId){
     const keys=A.netKeys[netId]||await deriveNetwork(net.code);
     A.netKeys[netId]=keys;
     const payload={ v:1, t:'meta', name:net.name, owner:net.ownerPk||myPubkey(), ts:net.nameTs||Math.floor(Date.now()/1000), password:net.password||null };
+    if(net.membersCanPost===false) payload.membersCanPost=false;
+    else if(net.membersCanPost===true) payload.membersCanPost=true;
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
     markSeen(ev.id);
@@ -1593,7 +1617,7 @@ function safeCssUrl(u){
   return safeUrl(s);
 }
 function photoSrc(net, post){
-  if(post.image) return safeUrl(post.image);        // remote/plaintext (author or pasted link) — sanitized
+  if(post.image) return safeCssUrl(post.image);     // remote https OR a local data: image (just-posted) — sanitized
   const e=post.enc;
   if(e && e.sha256){
     if(_imgCache[e.sha256]) return _imgCache[e.sha256];   // locally-created blob: URL, safe
@@ -2044,6 +2068,7 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.8', date:'July 2026', title:'Trust & polish', changes:[
+    ['new','Network owners can limit posting to themselves — members can still view, like, and comment'],
     ['new','Sharper photos from the in-app camera, with a zoom slider'],
     ['new','New Activity tab on My Page — see who liked and commented on your posts'],
     ['new','Tap a member — their avatar on a post or up top — to see their profile and bio'],
@@ -2386,6 +2411,19 @@ function saveNetworkPassword(netId){
   showToast(pw?'Password set':'Password removed');
 }
 function cancelPasswordInput(){ A.showPasswordInput=null; renderApp(); }
+
+// Owner-only: allow or block other members from posting. Existing posts are kept;
+// only new member posts are blocked once this is turned off.
+function toggleMemberPosting(netId){
+  const net=A.networks[netId]; if(!net||!isOwner(net)) return;
+  const nowAllowed = net.membersCanPost===false ? true : false;   // flip (default is allowed)
+  net.membersCanPost=nowAllowed;
+  net.postLockTs = nowAllowed ? 0 : Math.floor(Date.now()/1000);
+  // Stamp a fresh meta timestamp so this change propagates and carries the lock time.
+  net.nameTs=Math.floor(Date.now()/1000);
+  saveData(); renderApp(); publishMeta(netId);
+  showToast(nowAllowed ? 'Members can post again' : 'Only you can post now');
+}
 function buildPasswordInput(netId){
   const net=A.networks[netId]; if(!net) return '';
   return `
@@ -2543,7 +2581,18 @@ function closeZoom(){
   if(_zoomKeyHandler){ document.removeEventListener('keydown', _zoomKeyHandler); _zoomKeyHandler=null; }
   const el=document.getElementById('zoom-lightbox'); if(el) el.remove();
 }
-function openUpload(){ A.showUpload=true; A.pendingPhoto={image:null,caption:''}; A.pollMode=false; A.pollOptions=['','']; renderApp(); }
+// Whether the current user is allowed to post in a network (owner always can;
+// members can unless the owner locked posting to owner-only).
+function canIPost(net){
+  if(!net) return false;
+  if(net.membersCanPost===false && net.ownerPk && net.ownerPk!==myPubkey()) return false;
+  return true;
+}
+function openUpload(){
+  const net=currentNet();
+  if(!canIPost(net)){ showToast('Only the owner can post in this network'); return; }
+  A.showUpload=true; A.pendingPhoto={image:null,caption:''}; A.pollMode=false; A.pollOptions=['','']; renderApp();
+}
 function closeUpload(){ A.showUpload=false; A.pendingPhoto=null; A.pollMode=false; A.pollOptions=['','']; renderApp(); }
 // ── Poll composer ──
 function setPollMode(on){ A.pollMode=!!on; if(on && (!A.pollOptions||A.pollOptions.length<2)) A.pollOptions=['','']; renderApp(); }
@@ -2553,6 +2602,7 @@ function removePollOption(i){ if(A.pollOptions && A.pollOptions.length>2){ A.pol
 async function sharePoll(){
   if(A.uploading) return;                 // already submitting — ignore double taps
   const net=currentNet(); if(!net) return;
+  if(!canIPost(net)){ showToast('Only the owner can post in this network'); A.showUpload=false; renderApp(); return; }
   const errEl=document.getElementById('upload-err');
   const pp=A.pendingPhoto||{};
   const question=(pp.caption||'').trim();
@@ -2630,7 +2680,8 @@ function pollHTML(net, post){
 }
 // Camera button in the bottom nav — jump to My Page, open the composer, and prompt the picker
 function addPhotoQuick(){
-  if(!currentNet()) return;
+  const net=currentNet(); if(!net) return;
+  if(!canIPost(net)){ showToast('Only the owner can post in this network'); return; }
   openCamera();
 }
 // ── In-app camera capture: live viewfinder → capture → retake/upload ──
@@ -2924,124 +2975,12 @@ function parseScannedCode(text){
   return null;
 }
 
-/* ── QR camera scanner ── */
+/* The in-app camera scanner was removed — screen-to-screen QR reading proved
+   unreliable. People join by typing the code, or by scanning the invite QR with
+   their phone's native camera (which opens the join link). */
 let _camStream=null, _scanTimer=null, _connTimer=null, _syncTimer=null, _timeTimer=null;
-function openScanner(){ A.showScanner=true; A.scanError=''; A.showNetPicker=false; renderApp(); startCamera(); }
-function closeScanner(){
-  A.showScanner=false;
-  if(_scanTimer){ clearInterval(_scanTimer); _scanTimer=null; }
-  if(_camStream){ _camStream.getTracks().forEach(t=>t.stop()); _camStream=null; }
-  if(_scanCanvas){ _scanCanvas=null; }
-  _barcodeDetector=null;
-  renderApp();
-}
 
-// QR decoding. Prefer the browser's built-in BarcodeDetector (offline, no download,
-// and better at real camera frames). Fall back to jsQR from a CDN only if the native
-// API isn't available.
-let _jsQR=null, _scanCanvas=null, _barcodeDetector=null, _scanScans=0;
-function loadJsQR(){
-  if(_jsQR) return Promise.resolve(_jsQR);
-  return new Promise(resolve=>{
-    const s=document.createElement('script');
-    s.src='https://cdnjs.cloudflare.com/ajax/libs/jsqr/1.4.0/jsQR.min.js';
-    s.onload=()=>{ _jsQR=window.jsQR; resolve(_jsQR); };
-    s.onerror=()=>resolve(null);
-    document.head.appendChild(s);
-  });
-}
-
-async function startCamera(){
-  const dbg=(msg)=>{ A.scanError=msg; renderApp(); };
-  try{
-    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
-      dbg('Camera not available. Enter the code below instead.'); return;
-    }
-    dbg('Starting camera…');
-    _camStream=await navigator.mediaDevices.getUserMedia({ video:{facingMode:{ideal:'environment'}}, audio:false });
-    const v=document.getElementById('scan-video');
-    if(v){ v.srcObject=_camStream; await v.play().catch(()=>{}); }
-
-    // 1) Native detector — built into modern mobile browsers, works offline.
-    if('BarcodeDetector' in window){
-      try{
-        const fmts = await window.BarcodeDetector.getSupportedFormats?.();
-        if(!fmts || fmts.includes('qr_code')){
-          _barcodeDetector=new window.BarcodeDetector({ formats:['qr_code'] });
-          _scanScans=0;
-          _scanTimer=setInterval(()=>scanTickNative(), 250);
-          dbg('Scanning (native)… point at the QR');
-          return;
-        } else {
-          dbg('Native detector has no QR support — trying backup…');
-        }
-      }catch(e){ dbg('Native detector error: '+(e&&e.message||e)+' — trying backup…'); }
-    } else {
-      dbg('No native detector — loading backup…');
-    }
-    // 2) Fallback: jsQR from CDN (needs a connection the first time).
-    const jsqr=await loadJsQR();
-    if(!jsqr){
-      dbg('Scanner couldn’t load. You can type the code below instead.');
-      return;
-    }
-    _scanScans=0;
-    _scanTimer=setInterval(()=>scanTick(jsqr), 250);
-    dbg('Scanning (backup)… point at the QR');
-  }catch(err){
-    dbg((err&&err.name==='NotAllowedError')
-      ?'Camera permission denied. Type the code below instead.'
-      :'Camera error: '+(err&&err.message||err));
-  }
-}
-
-// Native BarcodeDetector path — decodes straight from the video element.
-async function scanTickNative(){
-  if(!_barcodeDetector) return;
-  const v=document.getElementById('scan-video');
-  if(!v||v.readyState<2||!v.videoWidth){ return; }
-  _scanScans=(_scanScans||0)+1;
-  try{
-    const codes=await _barcodeDetector.detect(v);
-    if(codes && codes.length){
-      const raw=codes[0].rawValue||'';
-      const parsed=parseScannedCode(raw);
-      if(parsed){ closeScanner(); promptJoinPassword(parsed); return; }
-      // Detected a QR but couldn't read a join code from it — show what it saw.
-      A.scanError='Read a code but not a join code: '+String(raw).slice(0,60); renderApp();
-    }
-  }catch(e){ A.scanError='Scan error: '+(e&&e.message||e); renderApp(); }
-}
-
-function scanTick(jsqr){
-  if(!jsqr) return;
-  const v=document.getElementById('scan-video');
-  if(!v||v.readyState<2||!v.videoWidth||!v.videoHeight) return;
-  try{
-    if(!_scanCanvas) _scanCanvas=document.createElement('canvas');
-    const c=_scanCanvas;
-    if(c.width!==v.videoWidth||c.height!==v.videoHeight){ c.width=v.videoWidth; c.height=v.videoHeight; }
-    const ctx=c.getContext('2d');
-    ctx.drawImage(v,0,0);
-    const id=ctx.getImageData(0,0,c.width,c.height);
-    const result=jsqr(id.data,id.width,id.height,{inversionAttempts:'attemptBoth'});
-    if(result&&result.data){
-      const parsed=parseScannedCode(result.data);
-      if(parsed){ closeScanner(); promptJoinPassword(parsed); }
-    }
-  }catch(e){}
-}
-function scannerManualJoin(){
-  const inp=document.getElementById('scan-code-input');
-  const code=(inp&&inp.value.trim())||'';
-  const parsed=parseScannedCode(code)||code.toUpperCase();
-  if(parsed && parsed.length>=5){
-    closeScanner();
-    promptJoinPassword(parsed);
-  }
-}
-
-// After scanning/entering a code, prompt for optional password then join
+// After entering a code (or arriving via an invite link), prompt for optional password then join
 function promptJoinPassword(code){
   A.pendingJoinCode=code; renderApp();
 }
@@ -3239,6 +3178,8 @@ function ptrRefresh(el){
   el.style.transform='translateY(46px)';
   // Open the render window so incoming posts/likes/comments/members actually show this time
   _allowSyncRender=true;
+  if(A.pendingFeed && A.activeNetId) A.pendingFeed[A.activeNetId]={};   // pull-to-refresh reveals queued posts → clear the pill
+  if(typeof updateNewPostsPill==='function') updateNewPostsPill();
   if(_allowSyncTimer) clearTimeout(_allowSyncTimer);
   try{
     Relay.connect();
@@ -3503,6 +3444,7 @@ function useAvatarUrl(){
 async function sharePhoto(){
   if(A.uploading) return;                 // already submitting — ignore double taps
   const net=currentNet(); if(!net) return;
+  if(!canIPost(net)){ showToast('Only the owner can post in this network'); A.showUpload=false; renderApp(); return; }
   const pp=A.pendingPhoto;
   const errEl=document.getElementById('upload-err');
   const caption=(pp&&pp.caption?pp.caption:'').trim();
@@ -3677,29 +3619,29 @@ function buildJoinScreen(){
         <input id="join-code-input" placeholder="XXXX-XXXX-XXXX" maxlength="14" oninput="formatCodeInput(this)" style="flex:1;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.accent};font-size:15px;font-family:monospace;letter-spacing:2px;font-weight:700"/>
         <button onclick="joinNetworkByCode()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:0 16px;font-size:14px;font-weight:700;cursor:pointer">Join</button>
       </div>
-      <input id="join-pw-input" placeholder="Password (if required)" type="text" autocomplete="off" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:10px 14px;color:${C.text};font-size:13px;font-family:'Inter',sans-serif;margin-bottom:10px"/>
-      <button onclick="openScanner()" style="width:100%;background:${C.surfaceHigh};border:1px solid ${C.accentBorder};color:${C.accent};border-radius:12px;padding:12px 0;font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="${C.accent}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
-        Scan a QR code
-      </button>
+      <input id="join-pw-input" placeholder="Password (if required)" type="text" autocomplete="off" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:10px 14px;color:${C.text};font-size:13px;font-family:'Inter',sans-serif"/>
     </div>
   </div>`;
 }
 
 // ── Screens ──
 function buildFeed(net){
+  // Posts that arrived while the user was watching the feed are held back until
+  // they tap the "new moments" pill (or pull to refresh) — no feed jumping.
+  const pending=(A.pendingFeed&&A.pendingFeed[net.id])||{};
+  const visiblePosts=net.posts.filter(p=>!pending[p.id]);
   const memberStrip = net.members.slice(0,3).map((mem,i)=>`
     <button onclick="openProfile('${mem.id}')" style="margin-left:${i===0?0:-6}px;position:relative;z-index:${3-i};background:none;border:none;padding:0;cursor:${mem.isMe?'default':'pointer'}" aria-label="View ${esc(mem.name)}">${avatarHTML(mem,24,8,12,1.5)}</button>
   `).join('');
 
-  const postsHtml = net.posts.length===0
+  const postsHtml = visiblePosts.length===0
     ? `<div style="text-align:center;padding:44px 28px;line-height:1.7">
          <div style="font-size:40px;margin-bottom:10px">📷</div>
          <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:4px">No moments yet</div>
          <div style="color:${C.muted};font-size:13px;margin-bottom:18px">Be the first to share something with your network.</div>
          <button onclick="addPhotoQuick()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:12px 22px;font-size:14px;font-weight:700;cursor:pointer">Share a moment</button>
        </div>`
-    : net.posts.map(post=>{
+    : visiblePosts.map(post=>{
         const mem=memberIn(net,post.memberId);
         return `
         <div style="background:${C.surface};border-radius:22px;overflow:hidden;animation:momentIn .35s ease">
@@ -3783,13 +3725,12 @@ function buildNetwork(net){
       <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px">${members}</div>
       <div style="display:flex;gap:10px">
         <button onclick="openInvite()" style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer">Invite someone →</button>
-        <button onclick="openScanner()" title="Scan a QR code" style="background:${C.accentDim};border:1.5px solid ${C.accentBorder};color:${C.accent};border-radius:14px;padding:0 16px;font-size:18px;font-weight:700;cursor:pointer">⛶</button>
       </div>
     </div>
     <div style="background:${C.surface};border-radius:22px;padding:18px">
       <div style="color:${C.textDim};font-size:10px;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:8px">Join code · share to invite</div>
       <div style="background:${C.surfaceHigh};border-radius:12px;padding:12px 16px;font-family:monospace;font-size:17px;letter-spacing:1.5px;color:${C.accent};font-weight:700;text-align:center">${net.code}</div>
-      <div style="color:${C.muted};font-size:11px;text-align:center;margin-top:8px">Anyone who scans instantly joins — no account needed</div>
+      <div style="color:${C.muted};font-size:11px;text-align:center;margin-top:8px">Scan the QR with a phone camera, or enter this code to join</div>
     </div>
     ${owner?`
     <button onclick="setNetworkPassword('${net.id}')" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-top:14px">
@@ -3799,6 +3740,14 @@ function buildNetwork(net){
         <div style="color:${C.muted};font-size:12px;margin-top:2px">${net.password?'Password set — tap to change or remove':'Off — anyone with the code can join'}</div>
       </div>
       <span style="color:${C.muted};font-size:18px">›</span>
+    </button>
+    <button onclick="toggleMemberPosting('${net.id}')" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-top:14px">
+      <span style="font-size:18px">✍️</span>
+      <div style="flex:1">
+        <div style="color:${C.text};font-size:14px;font-weight:600">Who can post</div>
+        <div style="color:${C.muted};font-size:12px;margin-top:2px">${net.membersCanPost===false?'Only you can post — members can view, like, and comment':'Everyone can post'}</div>
+      </div>
+      <span style="color:${net.membersCanPost===false?C.accent:C.muted};font-size:13px;font-weight:700">${net.membersCanPost===false?'Owner only':'Everyone'}</span>
     </button>`:''}
     <button onclick="leaveNetwork('${net.id}')" style="width:100%;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:16px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;margin-top:14px">Leave network</button>
   </div>`;
@@ -4020,9 +3969,9 @@ function buildMyPage(net){
   <div class="hide-scroll" style="flex:1;overflow-y:auto;padding:16px 16px 80px">
     ${header}
     ${editPanel}
-    ${myTab==='posts' ? `<button onclick="openUpload()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:16px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;margin:14px 0 8px;display:flex;align-items:center;justify-content:center;gap:8px">
+    ${myTab==='posts' ? (canIPost(net) ? `<button onclick="openUpload()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:16px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;margin:14px 0 8px;display:flex;align-items:center;justify-content:center;gap:8px">
       <span style="font-size:18px">＋</span> New post
-    </button>` : ''}
+    </button>` : `<div style="background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 16px;margin:14px 0 8px;color:${C.muted};font-size:13px;text-align:center">Only the network owner can post here. You can still view, like, and comment.</div>`) : ''}
     ${subTabs}
     ${myTab==='posts' ? (upload + grid) : buildActivity(net)}
   </div>`;
@@ -4330,29 +4279,6 @@ function buildAbout(){
   </div>`;
 }
 
-function buildScanner(){
-  const err=A.scanError||'';
-  return `
-  <div style="position:absolute;inset:0;background:#000;z-index:75;display:flex;flex-direction:column">
-    <div style="padding:24px 24px 12px;display:flex;align-items:center;gap:12px;background:${C.bg}">
-      <button aria-label="Back" onclick="closeScanner()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">←</button>
-      <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">Scan a code</div>
-    </div>
-    <div style="flex:1;position:relative;overflow:hidden;background:#000;display:flex;align-items:center;justify-content:center">
-      <video id="scan-video" autoplay muted playsinline style="width:100%;height:100%;object-fit:cover"></video>
-      <div style="position:absolute;width:62%;aspect-ratio:1;border:3px solid ${C.accent};border-radius:24px;box-shadow:0 0 0 100vmax rgba(0,0,0,0.45)"></div>
-      <div style="position:absolute;bottom:18px;left:0;right:0;text-align:center;color:#fff;font-size:13px;text-shadow:0 1px 4px #000">Point at a Moment's QR code</div>
-    </div>
-    <div style="background:${C.bg};padding:16px 20px 22px">
-      ${err?`<div style="color:${C.warm};font-size:12.5px;text-align:center;margin-bottom:12px;line-height:1.5">${esc(err)}</div>`:''}
-      <div style="display:flex;gap:8px">
-        <input id="scan-code-input" placeholder="Or type a code" maxlength="14" oninput="formatCodeInput(this)" style="flex:1;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:12px 14px;color:${C.accent};font-size:15px;font-family:monospace;letter-spacing:2px;font-weight:700"/>
-        <button onclick="scannerManualJoin()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:0 18px;font-size:14px;font-weight:700;cursor:pointer">Join</button>
-      </div>
-    </div>
-  </div>`;
-}
-
 // Shared iMessage-style comment bubble builder
 function buildCommentBubbles(net, replies, postId){
   if(!replies.length) return `<div style="color:${C.muted};font-size:13px;text-align:center;padding:28px 0 12px">No comments yet — say something!</div>`;
@@ -4535,10 +4461,9 @@ function renderApp(){
   }
 
   if(showJoin){
-    const jh = header + buildJoinScreen() + (A.showScanner?buildScanner():"");
+    const jh = header + buildJoinScreen();
     if(jh!==_lastFrameHTML){ _lastFrameHTML=jh; document.getElementById('app-frame').innerHTML = jh; }
-    if(A.showScanner && _camStream){ const v=document.getElementById('scan-video'); if(v && v.srcObject!==_camStream){ v.srcObject=_camStream; v.play().catch(()=>{}); } }
-    const ni=document.getElementById('join-name-input'); if(ni && !A.activeNetId && !A.showScanner) ni.focus();
+    const ni=document.getElementById('join-name-input'); if(ni && !A.activeNetId) ni.focus();
     return;
   }
 
@@ -4554,7 +4479,7 @@ function renderApp(){
       <span style="font-size:20px;opacity:${active?1:0.3};color:${active?C.accent:C.text};filter:${active?`drop-shadow(0 0 6px ${C.accent})`:'none'};transition:all .2s;position:relative">${icon}${badge||''}</span>
       <span style="color:${active?C.accent:C.muted};font-size:9px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;transition:color .2s">${label}</span>
     </button>`;
-  const camBtn = `
+  const camBtn = canIPost(net) ? `
     <div style="flex:1;display:flex;justify-content:center">
       <button aria-label="Add a moment" onclick="addPhotoQuick()" title="Take a photo" style="background:${C.accent};border:none;border-radius:50%;width:56px;height:56px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 6px 20px ${C.accent}66;margin-top:-12px">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#0F0F14" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -4562,7 +4487,7 @@ function renderApp(){
           <circle cx="12" cy="12.5" r="3.2"/>
         </svg>
       </button>
-    </div>`;
+    </div>` : `<div style="flex:1"></div>`;
   const tabs = navTab(A.tab===0, "⊞", "Feed", "setTab(0)", feedBadge) + camBtn + navTab(A.tab===2, "◎", "My Page", "setTab(2)");
 
   const frameHTML = header + `
@@ -4574,7 +4499,6 @@ function renderApp(){
       ${A.profileId?buildProfile(net):""}
       ${A.replyPostId?buildReplies(net):""}
       ${A.viewPostId?buildPostView(net):""}
-      ${A.showScanner?buildScanner():""}
       ${A.showCamera?buildCamera():""}
       ${A.showSettings?buildSettings():""}
       ${A.showAbout?buildAbout():""}
@@ -4604,10 +4528,6 @@ function renderApp(){
     if(ri){ ri.focus(); ri.setSelectionRange(ri.value.length, ri.value.length); }
   }
   // keep the live camera attached across re-renders
-  if(A.showScanner && _camStream){
-    const v=document.getElementById('scan-video');
-    if(v && v.srcObject!==_camStream){ v.srcObject=_camStream; v.play().catch(()=>{}); }
-  }
   if(A.showCamera && !A.cameraShot && _photoStream){
     const v=document.getElementById('cam-video');
     if(v && v.srcObject!==_photoStream){ v.srcObject=_photoStream; v.play().catch(()=>{}); }
@@ -4616,6 +4536,42 @@ function renderApp(){
   }
   if(A.tab===0){ const fs=document.getElementById('feed-scroll'); if(fs) wirePtr(fs); }
   updateConnDot();
+  if(typeof updateNewPostsPill==='function') updateNewPostsPill();
+}
+
+// ── "N new moments" pill ──
+// New posts that arrive while you're looking at the feed are held back (so the
+// feed doesn't jump); this floating pill tells you they're waiting. Tapping it
+// reveals them and scrolls to the top.
+let _newPostsPill=null;
+function updateNewPostsPill(){
+  const pend=(A.pendingFeed&&A.activeNetId)?(A.pendingFeed[A.activeNetId]||{}):{};
+  const n=Object.keys(pend).length;
+  const onFeed = A.tab===0 && !A.viewPostId && !A.replyPostId && !A.profileId && !A.showInvite && !A.showJoin && !A.showSettings && !A.showCamera;
+  if(!_newPostsPill){
+    _newPostsPill=document.createElement('button');
+    _newPostsPill.onclick=revealNewPosts;
+    _newPostsPill.style.cssText='position:fixed;top:96px;left:50%;transform:translateX(-50%) translateY(-8px);z-index:120;background:#FF8C42;color:#0F0F14;border:none;border-radius:100px;padding:9px 18px;font-size:13px;font-weight:800;box-shadow:0 6px 20px rgba(0,0,0,.4);cursor:pointer;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;white-space:nowrap';
+    document.body.appendChild(_newPostsPill);
+  }
+  if(n>0 && onFeed){
+    _newPostsPill.textContent='↑ '+n+' new moment'+(n>1?'s':'');
+    _newPostsPill.style.opacity='1';
+    _newPostsPill.style.pointerEvents='auto';
+    _newPostsPill.style.transform='translateX(-50%) translateY(0)';
+  } else {
+    _newPostsPill.style.opacity='0';
+    _newPostsPill.style.pointerEvents='none';
+    _newPostsPill.style.transform='translateX(-50%) translateY(-8px)';
+  }
+}
+function revealNewPosts(){
+  if(A.pendingFeed && A.activeNetId) A.pendingFeed[A.activeNetId]={};
+  _lastFrameHTML='';                     // force the repaint even if HTML matched before
+  renderApp();
+  updateNewPostsPill();
+  const fs=document.getElementById('feed-scroll');
+  if(fs) fs.scrollTo({top:0, behavior:'smooth'});
 }
 
 function updateConnDot(){

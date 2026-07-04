@@ -2939,7 +2939,7 @@ function closeScanner(){
 // QR decoding. Prefer the browser's built-in BarcodeDetector (offline, no download,
 // and better at real camera frames). Fall back to jsQR from a CDN only if the native
 // API isn't available.
-let _jsQR=null, _scanCanvas=null, _barcodeDetector=null;
+let _jsQR=null, _scanCanvas=null, _barcodeDetector=null, _scanScans=0;
 function loadJsQR(){
   if(_jsQR) return Promise.resolve(_jsQR);
   return new Promise(resolve=>{
@@ -2952,10 +2952,12 @@ function loadJsQR(){
 }
 
 async function startCamera(){
+  const dbg=(msg)=>{ A.scanError=msg; renderApp(); };
   try{
     if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
-      A.scanError='Camera not available. Enter the code below instead.'; renderApp(); return;
+      dbg('Camera not available. Enter the code below instead.'); return;
     }
+    dbg('Starting camera…');
     _camStream=await navigator.mediaDevices.getUserMedia({ video:{facingMode:{ideal:'environment'}}, audio:false });
     const v=document.getElementById('scan-video');
     if(v){ v.srcObject=_camStream; await v.play().catch(()=>{}); }
@@ -2966,24 +2968,30 @@ async function startCamera(){
         const fmts = await window.BarcodeDetector.getSupportedFormats?.();
         if(!fmts || fmts.includes('qr_code')){
           _barcodeDetector=new window.BarcodeDetector({ formats:['qr_code'] });
-          _scanTimer=setInterval(()=>scanTickNative(), 300);
+          _scanScans=0;
+          _scanTimer=setInterval(()=>scanTickNative(), 250);
+          dbg('Scanning (native)… point at the QR');
           return;
+        } else {
+          dbg('Native detector has no QR support — trying backup…');
         }
-      }catch(_){ /* fall through to jsQR */ }
+      }catch(e){ dbg('Native detector error: '+(e&&e.message||e)+' — trying backup…'); }
+    } else {
+      dbg('No native detector — loading backup…');
     }
     // 2) Fallback: jsQR from CDN (needs a connection the first time).
     const jsqr=await loadJsQR();
     if(!jsqr){
-      A.scanError='Scanner needs a connection the first time. You can type the code below instead.';
-      renderApp();
+      dbg('Scanner couldn’t load. You can type the code below instead.');
       return;
     }
-    _scanTimer=setInterval(()=>scanTick(jsqr), 300);
+    _scanScans=0;
+    _scanTimer=setInterval(()=>scanTick(jsqr), 250);
+    dbg('Scanning (backup)… point at the QR');
   }catch(err){
-    A.scanError=(err&&err.name==='NotAllowedError')
+    dbg((err&&err.name==='NotAllowedError')
       ?'Camera permission denied. Type the code below instead.'
-      :'Could not open the camera. Type the code below instead.';
-    renderApp();
+      :'Camera error: '+(err&&err.message||err));
   }
 }
 
@@ -2991,14 +2999,18 @@ async function startCamera(){
 async function scanTickNative(){
   if(!_barcodeDetector) return;
   const v=document.getElementById('scan-video');
-  if(!v||v.readyState<2||!v.videoWidth) return;
+  if(!v||v.readyState<2||!v.videoWidth){ return; }
+  _scanScans=(_scanScans||0)+1;
   try{
     const codes=await _barcodeDetector.detect(v);
-    for(const code of codes){
-      const parsed=parseScannedCode(code.rawValue);
+    if(codes && codes.length){
+      const raw=codes[0].rawValue||'';
+      const parsed=parseScannedCode(raw);
       if(parsed){ closeScanner(); promptJoinPassword(parsed); return; }
+      // Detected a QR but couldn't read a join code from it — show what it saw.
+      A.scanError='Read a code but not a join code: '+String(raw).slice(0,60); renderApp();
     }
-  }catch(_){}
+  }catch(e){ A.scanError='Scan error: '+(e&&e.message||e); renderApp(); }
 }
 
 function scanTick(jsqr){

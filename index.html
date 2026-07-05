@@ -2341,7 +2341,7 @@ function toggleReveal(el){ el.style.filter = el.style.filter ? '' : 'blur(6px)';
 
 // ── State mutators ──
 function setTab(i){ A.tab=i; A.showNetPicker=false; renderApp(); }
-function switchNetwork(id){ A.activeNetId=id; A.showNetPicker=false; A.showJoin=false; A.tab=0; renderApp(); activateNetwork(id); }
+function switchNetwork(id){ A.activeNetId=id; A.showNetPicker=false; A.showJoin=false; A.tab=0; saveData(); renderApp(); activateNetwork(id); }
 function isOwner(net){ return !!(net && net.ownerPk && net.ownerPk===myPubkey()); }
 // Reliable in-app confirm (native confirm() is blocked in some mobile webviews)
 let _confirmCb=null;
@@ -2862,7 +2862,7 @@ function formatCodeInput(el){
 }
 function showJoinScreen(){ A.showJoin=true; A.showNetPicker=false; renderApp(); }
 function backFromJoin(){
-  if(!A.activeNetId){ const ids=Object.keys(A.networks); if(ids.length) A.activeNetId=ids[0]; }
+  if(!A.activeNetId){ const ids=Object.keys(A.networks); if(ids.length){ A.activeNetId=ids[0]; saveData(); } }
   if(A.activeNetId){ A.showJoin=false; A.tab=0; renderApp(); }
 }
 
@@ -2927,6 +2927,7 @@ function createNetwork(){
   const id='net-'+Date.now();
   const emoji=NET_EMOJIS[Math.floor(Math.random()*NET_EMOJIS.length)];
   A.networks[id]={ id, name, nameTs:Math.floor(Date.now()/1000), code:makeCode(), emoji, color:C.accent, ownerPk:myPubkey(), removed:{}, deleted:{}, _pendingRemoves:[],
+    membersCanPost:true,   // everyone can post by default until the owner changes it
     members:[{id:"u1",name:A.profile.name||"You",emoji:"🧡",color:C.warm,isMe:true,npub:A.npub,avatar:A.profile.avatar||null}],
     posts:[] };
   saveData(); switchNetwork(id);

@@ -852,20 +852,23 @@ async function handleRemoteEvent(netId, ev){
     const claimsOwner = payload.owner && payload.owner===pk;
     // Establish the owner only from a self-consistent meta (signer == claimed owner).
     if(claimsOwner && !net.ownerPk){ net.ownerPk=pk; changed=true; }
-    if((payload.ts||0) > (net.nameTs||0) && payload.name && net.name!==payload.name){ net.name=payload.name; net.nameTs=payload.ts; changed=true; }
-    else if((payload.ts||0) > (net.nameTs||0) && payload.name){ net.nameTs=payload.ts; }
-    // Password may only be set/changed by the established owner (and only once an
-    // owner is known — before that, no one can set it).
-    if(net.ownerPk && pk===net.ownerPk){ const np=payload.password||null; if(net.password!==np){ net.password=np; changed=true; } }
-    // Owner can lock posting to owner-only. We record WHEN it was locked so posts
-    // members already made stay visible — only new member posts (after the lock) are ignored.
-    if(net.ownerPk && pk===net.ownerPk && payload.membersCanPost!==undefined){
-      const canPost = payload.membersCanPost!==false;
-      if(net.membersCanPost!==canPost){
-        net.membersCanPost=canPost;
-        net.postLockTs = canPost ? 0 : (payload.ts||Math.floor(Date.now()/1000));
-        changed=true;
+    // Name changes are guarded by the same meta timestamp as password/posting, so
+    // all meta fields move together and an old meta can't revert any of them.
+    if(net.ownerPk && pk===net.ownerPk && (payload.ts||0) >= (net.metaTs||0)){
+      if(payload.name && net.name!==payload.name){ net.name=payload.name; changed=true; }
+      net.nameTs=payload.ts||net.nameTs||0;
+      const np=payload.password||null; if(net.password!==np){ net.password=np; changed=true; }
+      // Owner can lock posting to owner-only. Record WHEN it was locked so posts
+      // members already made stay visible — only new member posts are ignored.
+      if(payload.membersCanPost!==undefined){
+        const canPost = payload.membersCanPost!==false;
+        if(net.membersCanPost!==canPost){
+          net.membersCanPost=canPost;
+          net.postLockTs = canPost ? 0 : (payload.ts||Math.floor(Date.now()/1000));
+          changed=true;
+        }
       }
+      net.metaTs=payload.ts||net.metaTs||0;
     }
     // Flush any buffered removal events now that we know who the owner is
     if(net.ownerPk && net._pendingRemoves && net._pendingRemoves.length){
@@ -1076,7 +1079,11 @@ async function publishMeta(netId){
     const net=A.networks[netId]; if(!net) return;
     const keys=A.netKeys[netId]||await deriveNetwork(net.code);
     A.netKeys[netId]=keys;
-    const payload={ v:1, t:'meta', name:net.name, owner:net.ownerPk||myPubkey(), ts:net.nameTs||Math.floor(Date.now()/1000), password:net.password||null };
+    // Use one consistent timestamp for the meta so incoming/outgoing agree. Bump it
+    // to now if this network has never stamped one, so the first published meta wins.
+    const metaTs = Math.max(net.metaTs||0, net.nameTs||0) || Math.floor(Date.now()/1000);
+    net.metaTs = metaTs;
+    const payload={ v:1, t:'meta', name:net.name, owner:net.ownerPk||myPubkey(), ts:metaTs, password:net.password||null };
     if(net.membersCanPost===false) payload.membersCanPost=false;
     else if(net.membersCanPost===true) payload.membersCanPost=true;
     const content=await encJSON(keys.groupKey, payload);
@@ -2424,6 +2431,7 @@ function saveNetworkPassword(netId){
   const inp=document.getElementById('net-pw-input');
   const pw=(inp&&inp.value.trim())||'';
   net.password=pw||null;
+  const ts=Math.floor(Date.now()/1000); net.metaTs=ts; net.nameTs=Math.max(net.nameTs||0, ts);
   A.showPasswordInput=null;
   saveData(); renderApp(); publishMeta(netId);
   showToast(pw?'Password set':'Password removed');
@@ -2437,8 +2445,10 @@ function toggleMemberPosting(netId){
   const nowAllowed = net.membersCanPost===false ? true : false;   // flip (default is allowed)
   net.membersCanPost=nowAllowed;
   net.postLockTs = nowAllowed ? 0 : Math.floor(Date.now()/1000);
-  // Stamp a fresh meta timestamp so this change propagates and carries the lock time.
-  net.nameTs=Math.floor(Date.now()/1000);
+  // Bump BOTH meta timestamps so this change wins over any older meta still on the
+  // relays (the receive guard rejects metas with ts < metaTs).
+  const ts=Math.floor(Date.now()/1000);
+  net.nameTs=ts; net.metaTs=ts;
   saveData(); renderApp(); publishMeta(netId);
   showToast(nowAllowed ? 'Members can post again' : 'Only you can post now');
 }

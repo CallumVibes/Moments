@@ -181,7 +181,7 @@
     #app-screen{position:fixed;inset:0;z-index:200;background:radial-gradient(120% 120% at 50% 0%,#1b130c 0%,#0a0a0e 46%,#060608 100%);display:none;align-items:center;justify-content:center;overflow:hidden;font-family:'Inter',sans-serif}
     #app-screen.active{display:flex;animation:appFade .4s ease}
     @keyframes appFade{from{opacity:0}to{opacity:1}}
-    #app-frame{--c-bg:#0F0F14;--c-surface:#1A1A24;--c-surfaceHigh:#24243A;--c-text:#FAF8F5;--c-textDim:rgba(250,248,245,0.5);--c-muted:rgba(255,255,255,0.32);--c-border:rgba(255,255,255,0.08);--c-navBg:rgba(10,10,16,0.97);--c-inputBg:rgba(0,0,0,0.25);width:100%;max-width:440px;height:100%;background:var(--c-bg);position:relative;display:flex;flex-direction:column;overflow:hidden;transition:background .3s}
+    #app-frame{--c-bg:#0F0F14;--c-surface:#1A1A24;--c-surfaceHigh:#24243A;--c-text:#FAF8F5;--c-textDim:rgba(250,248,245,0.5);--c-muted:rgba(255,255,255,0.32);--c-border:rgba(255,255,255,0.08);--c-navBg:rgba(10,10,16,0.97);--c-inputBg:rgba(0,0,0,0.25);width:100%;max-width:440px;height:100%;background:var(--c-bg);position:relative;display:flex;flex-direction:column;overflow:hidden;transition:background .3s;padding-top:env(safe-area-inset-top, 0px)}
     #app-frame.theme-light{--c-bg:#FFF8F2;--c-surface:#FFFFFF;--c-surfaceHigh:#FBEEE3;--c-text:#241A10;--c-textDim:rgba(36,26,16,0.6);--c-muted:rgba(36,26,16,0.42);--c-border:rgba(0,0,0,0.09);--c-navBg:rgba(255,248,242,0.97);--c-inputBg:rgba(0,0,0,0.04)}
     @media(min-width:601px){#app-frame{width:430px;height:min(940px,94vh);border-radius:38px;box-shadow:0 40px 110px rgba(0,0,0,.65),0 0 0 9px #111,0 0 0 10px rgba(255,255,255,.04),0 0 80px rgba(255,140,66,.08)}}
     #app-frame *{font-family:'Inter',sans-serif}
@@ -1149,7 +1149,8 @@ let _avatarEncCache={};  // netId -> {url,iv,sha256} of the encrypted avatar alr
 
 // ── Landing page theme (light default, persisted to localStorage) ──
 function applyLandingTheme(){
-  const dark = localStorage.getItem('landing-theme')==='dark';
+  let dark=false;
+  try{ dark = localStorage.getItem('landing-theme')==='dark'; }catch(_){}
   document.documentElement.classList.toggle('landing-light', !dark);
   const label = dark ? '☀ Light' : '🌙 Dark';
   ['landing-theme-btn','landing-theme-btn-m'].forEach(id=>{
@@ -1157,8 +1158,9 @@ function applyLandingTheme(){
   });
 }
 function toggleLandingTheme(){
-  const dark = localStorage.getItem('landing-theme')==='dark';
-  localStorage.setItem('landing-theme', dark ? 'light' : 'dark');
+  let dark=false;
+  try{ dark = localStorage.getItem('landing-theme')==='dark'; }catch(_){}
+  try{ localStorage.setItem('landing-theme', dark ? 'light' : 'dark'); }catch(_){}
   applyLandingTheme();
 }
 applyLandingTheme();
@@ -1707,6 +1709,14 @@ function photoBox(net, post){
   const sha=(post.enc&&post.enc.sha256)?post.enc.sha256:'';
   const attr=sha?`data-photo="${sha}"`:'';
   const src=photoSrc(net, post);
+  // A just-posted photo/video shows its local copy immediately; while it's still
+  // uploading to Blossom, overlay a small spinner so the user sees progress.
+  const uploading = post.status==='sending' && (post.memberId==='u1' || post.authorPk===myPubkey());
+  const spinner = uploading ? `
+    <div style="position:absolute;top:10px;right:10px;display:flex;align-items:center;gap:6px;background:rgba(0,0,0,.55);border-radius:20px;padding:5px 11px 5px 8px;z-index:2">
+      <div style="width:13px;height:13px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:ptrSpin .7s linear infinite"></div>
+      <span style="color:#fff;font-size:11px;font-weight:700">Uploading…</span>
+    </div>` : '';
   if(isVideo(post)){
     // Prefer the lightweight poster still in the feed; only the viewer plays the clip
     const poster=safeCssUrl((post.enc&&post.enc.poster)||'');
@@ -1717,9 +1727,11 @@ function photoBox(net, post){
       <div style="width:54px;height:54px;border-radius:50%;background:rgba(0,0,0,.45);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,.85)">
         <div style="width:0;height:0;border-left:18px solid #fff;border-top:11px solid transparent;border-bottom:11px solid transparent;margin-left:4px"></div>
       </div>
-      <div style="position:absolute;bottom:8px;right:10px;background:rgba(0,0,0,.55);border-radius:8px;padding:2px 8px;color:#fff;font-size:11px;font-weight:700">▶ Video</div>` };
+      <div style="position:absolute;bottom:8px;right:10px;background:rgba(0,0,0,.55);border-radius:8px;padding:2px 8px;color:#fff;font-size:11px;font-weight:700">▶ Video</div>${spinner}` };
   }
-  if(src) return { attr, style:`background:url('${src}') center/cover no-repeat #000`, inner:'' };
+  // A just-posted photo shows its local copy immediately; the spinner (defined
+  // above) overlays while it's still uploading to Blossom.
+  if(src) return { attr, style:`background:url('${src}') center/cover no-repeat #000;position:relative`, inner:spinner };
   // Photo couldn't be fetched (server pruned it or we're offline) — show a clear
   // placeholder instead of a blank card. Blurhash preview still shows behind it if present.
   if(sha && (_imgFail[sha]||0) >= 3){
@@ -2605,7 +2617,7 @@ async function sharePoll(){
   if(!canIPost(net)){ showToast('Only the owner can post in this network'); A.showUpload=false; renderApp(); return; }
   const errEl=document.getElementById('upload-err');
   const pp=A.pendingPhoto||{};
-  const question=(pp.caption||'').trim();
+  const question=(pp.caption||'').trim().slice(0,280);
   const options=(A.pollOptions||[]).map(o=>(o||'').trim()).filter(Boolean);
   if(!question){ if(errEl) errEl.textContent='Add a question.'; return; }
   if(options.length<2){ if(errEl) errEl.textContent='Add at least two options.'; return; }
@@ -2819,7 +2831,7 @@ async function uploadCameraPhoto(){
   const shot=A.cameraShot;
   let poster=shot.poster||null;
   if(shot.isVideo && !poster){ try{ const p=await videoPoster(shot.dataUrl); if(p) poster=p.dataUrl; }catch(_){} }
-  A.pendingPhoto={ image:shot.dataUrl, blob:shot.blob, caption:(A.cameraCaption||'').trim(), isVideo:!!(shot.isVideo), mime:shot.mime||null, poster };
+  A.pendingPhoto={ image:shot.dataUrl, blob:shot.blob, caption:(A.cameraCaption||'').trim().slice(0,280), isVideo:!!(shot.isVideo), mime:shot.mime||null, poster };
   A.showCamera=false; A.cameraShot=null; A.cameraMode=null; A.recSeconds=0;
   if(_photoStream){ _photoStream.getTracks().forEach(t=>t.stop()); _photoStream=null; }
   A.tab=0;
@@ -3447,7 +3459,7 @@ async function sharePhoto(){
   if(!canIPost(net)){ showToast('Only the owner can post in this network'); A.showUpload=false; renderApp(); return; }
   const pp=A.pendingPhoto;
   const errEl=document.getElementById('upload-err');
-  const caption=(pp&&pp.caption?pp.caption:'').trim();
+  const caption=(pp&&pp.caption?pp.caption:'').trim().slice(0,280);
   const hasPhoto=!!(pp && pp.image);
   // A post needs either a photo/video or some text.
   if(!hasPhoto && !caption){ if(errEl) errEl.textContent='Write something or add a photo.'; return; }
@@ -3513,7 +3525,12 @@ async function attemptPublish(netId, post){
       post.status='failed'; saveData(); renderApp(); return;
     }
     const res=await publishPost(netId, post);
-    if(res && res.id){ post.id=res.id; if(A.seen) A.seen[res.id]=true; }
+    if(res && res.id && res.id!==post.id){
+      // The post's id becomes the Nostr event id. Move its retry blob to the new
+      // key so a later retry can still find the source bytes to re-upload.
+      if(_retryBlobs[post.id]){ _retryBlobs[res.id]=_retryBlobs[post.id]; delete _retryBlobs[post.id]; }
+      post.id=res.id; if(A.seen) A.seen[res.id]=true;
+    }
     post.status = (res && res.delivered) ? 'sent' : 'failed';
   }catch(e){
     post.status='failed';
@@ -3528,7 +3545,7 @@ async function attemptPublish(netId, post){
 function retryPost(netId, postId){
   const net=A.networks[netId]; if(!net) return;
   const post=net.posts.find(p=>p.id===postId);
-  if(post) attemptPublish(netId, post);
+  if(post){ post.status='sending'; renderApp(); attemptPublish(netId, post); }
 }
 // Resend anything that didn't go through, e.g. after the connection returns
 function flushFailedPosts(){
@@ -3671,7 +3688,7 @@ function buildFeed(net){
 
   return `
   <div style="flex:1;position:relative;display:flex;flex-direction:column;overflow:hidden">
-    <div id="feed-scroll" class="hide-scroll" style="flex:1;overflow-y:auto;padding-bottom:80px">
+    <div id="feed-scroll" class="hide-scroll" style="flex:1;overflow-y:auto;padding-bottom:calc(80px + env(safe-area-inset-bottom, 0px))">
       <div id="offline-banner" style="display:${Relay.isConnected()?'none':'flex'};align-items:center;gap:8px;margin:6px 16px 0;padding:9px 13px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.28);border-radius:12px;color:#f87171;font-size:12px;line-height:1.4">
         <span style="flex-shrink:0">⚠</span>
         <span>You're offline. New posts and likes are saved and will sync when you reconnect.</span>
@@ -3708,7 +3725,7 @@ function buildNetwork(net){
   }).join('');
 
   return `
-  <div class="hide-scroll" style="flex:1;overflow-y:auto;padding:0 16px 80px">
+  <div class="hide-scroll" style="flex:1;overflow-y:auto;padding:0 16px calc(80px + env(safe-area-inset-bottom, 0px))">
     <div style="background:${C.surface};border-radius:22px;padding:20px;margin-bottom:14px">
       <div style="color:${C.textDim};font-size:10px;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:4px">Your network</div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:18px">
@@ -3729,7 +3746,7 @@ function buildNetwork(net){
     </div>
     <div style="background:${C.surface};border-radius:22px;padding:18px">
       <div style="color:${C.textDim};font-size:10px;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:8px">Join code · share to invite</div>
-      <div style="background:${C.surfaceHigh};border-radius:12px;padding:12px 16px;font-family:monospace;font-size:17px;letter-spacing:1.5px;color:${C.accent};font-weight:700;text-align:center">${net.code}</div>
+      <div style="background:${C.surfaceHigh};border-radius:12px;padding:12px 16px;font-family:monospace;font-size:17px;letter-spacing:1.5px;color:${C.accent};font-weight:700;text-align:center">${esc(net.code)}</div>
       <div style="color:${C.muted};font-size:11px;text-align:center;margin-top:8px">Scan the QR with a phone camera, or enter this code to join</div>
     </div>
     ${owner?`
@@ -3859,7 +3876,7 @@ function buildMyPage(net){
         <button onclick="setPollMode(true)" style="flex:1;background:${pollMode?C.accentDim:'transparent'};border:1px solid ${pollMode?C.accentBorder:'var(--c-border)'};color:${pollMode?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">📊 Poll</button>
       </div>
       ${pollUI}
-      <textarea id="caption-input" oninput="setPhotoCaption(this.value)" placeholder="${pollMode?'Ask a question…':'What\u2019s on your mind?'}" rows="2" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:6px;resize:none;line-height:1.5">${esc(pp.caption)}</textarea>
+      <textarea id="caption-input" maxlength="280" oninput="setPhotoCaption(this.value)" placeholder="${pollMode?'Ask a question…':'What\u2019s on your mind?'}" rows="2" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:6px;resize:none;line-height:1.5">${esc(pp.caption)}</textarea>
       <div id="upload-err" style="color:${C.warm};font-size:12px;min-height:16px;margin-bottom:8px"></div>
       <div style="display:flex;gap:10px">
         <button onclick="${pollMode?'sharePoll()':'sharePhoto()'}" ${uploading?'disabled':''} style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:${uploading?'wait':'pointer'};opacity:${uploading?0.6:1}">${uploading?'Sharing…':(pollMode?'Post poll':'Share')}</button>
@@ -3966,7 +3983,7 @@ function buildMyPage(net){
     </div>`;
 
   return `
-  <div class="hide-scroll" style="flex:1;overflow-y:auto;padding:16px 16px 80px">
+  <div class="hide-scroll" style="flex:1;overflow-y:auto;padding:16px 16px calc(80px + env(safe-area-inset-bottom, 0px))">
     ${header}
     ${editPanel}
     ${myTab==='posts' ? (canIPost(net) ? `<button onclick="openUpload()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:16px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;margin:14px 0 8px;display:flex;align-items:center;justify-content:center;gap:8px">
@@ -4027,8 +4044,8 @@ function buildInvite(net){
       </div>
       <div style="background:${C.surface};border-radius:22px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px">
         ${qrSVG(inviteUrl(net), 174)}
-        <div style="background:${C.surfaceHigh};border-radius:10px;padding:8px 20px;font-family:monospace;font-size:18px;letter-spacing:3px;color:${C.accent};font-weight:700">${net.code}</div>
-        <div style="color:${C.muted};font-size:11px">${SITE_URL.replace(/^https?:\/\//,'')}/?join=${net.code}</div>
+        <div style="background:${C.surfaceHigh};border-radius:10px;padding:8px 20px;font-family:monospace;font-size:18px;letter-spacing:3px;color:${C.accent};font-weight:700">${esc(net.code)}</div>
+        <div style="color:${C.muted};font-size:11px">${SITE_URL.replace(/^https?:\/\//,'')}/?join=${esc(net.code)}</div>
       </div>
       <button onclick="shareInvite()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer">Share invite</button>
       <button onclick="copyInviteCode()" style="width:100%;background:${C.surface};color:${C.text};border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:600;cursor:pointer">Copy code</button>
@@ -4065,7 +4082,7 @@ function buildCamera(){
       <div style="background:${C.bg};padding:14px 18px 24px;display:flex;flex-direction:column;gap:12px">
         <div>
           <div style="color:${C.muted};font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;margin-bottom:6px">Caption <span style="color:${C.muted};font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></div>
-          <input id="cam-caption" value="${esc(A.cameraCaption||'')}" oninput="setCameraCaption(this.value)" placeholder="What's happening?" autofocus style="width:100%;background:${C.surfaceHigh};border:1.5px solid ${A.cameraCaption?C.accentBorder:'var(--c-border)'};outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;transition:border-color .2s"/>
+          <input id="cam-caption" maxlength="280" value="${esc(A.cameraCaption||'')}" oninput="setCameraCaption(this.value)" placeholder="What's happening?" autofocus style="width:100%;background:${C.surfaceHigh};border:1.5px solid ${A.cameraCaption?C.accentBorder:'var(--c-border)'};outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;transition:border-color .2s"/>
         </div>
         <div style="display:flex;gap:12px">
           <button onclick="retakePhoto()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:14px;padding:14px 0;font-size:14px;font-weight:700;cursor:pointer">↺ Retake</button>
@@ -4077,7 +4094,7 @@ function buildCamera(){
   const recSecs=A.recSeconds||0;
   const isRecording=A.cameraMode==='recording';
   return `<div style="position:absolute;inset:0;background:#000;z-index:76;display:flex;flex-direction:column">
-    <div style="padding:16px 18px;display:flex;justify-content:space-between;align-items:center">
+    <div style="padding:calc(16px + env(safe-area-inset-top, 0px)) 18px 16px;display:flex;justify-content:space-between;align-items:center">
       <button aria-label="Close camera" onclick="closeCamera()" title="Close" style="background:rgba(255,255,255,0.14);border:none;color:#fff;border-radius:50%;width:38px;height:38px;font-size:17px;cursor:pointer">✕</button>
       ${isRecording?`<div style="background:rgba(220,38,38,0.85);border-radius:20px;padding:5px 14px;color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:#fff;display:inline-block"></span>${recSecs}s / 15s</div>`:''}
       <button onclick="flipCamera()" title="Flip camera" style="background:rgba(255,255,255,0.14);border:none;color:#fff;border-radius:50%;width:38px;height:38px;font-size:16px;cursor:pointer">⟲</button>
@@ -4095,7 +4112,7 @@ function buildCamera(){
         <span id="cam-zoom-label" style="color:#fff;font-size:12px;font-weight:700;min-width:34px;text-align:right">${(A.camZoom||1).toFixed(1)}×</span>
       </div>` : ''}
     </div>
-    <div style="background:#000;padding:18px 0 30px;display:flex;flex-direction:column;align-items:center;gap:10px">
+    <div style="background:#000;padding:18px 0 calc(30px + env(safe-area-inset-bottom, 0px));display:flex;flex-direction:column;align-items:center;gap:10px">
       <div style="display:flex;align-items:center;justify-content:center;gap:36px">
         ${isRecording
           ? `<button onclick="stopRecording()" title="Stop recording" style="width:72px;height:72px;border-radius:50%;background:#DC2626;border:4px solid rgba(255,255,255,0.45);cursor:pointer;box-shadow:0 0 0 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center"><span style="width:22px;height:22px;border-radius:4px;background:#fff;display:inline-block"></span></button>`
@@ -4512,7 +4529,7 @@ function renderApp(){
       ${A.showPasswordInput?buildPasswordInput(A.showPasswordInput):""}
       ${A.pendingJoinCode?buildJoinPasswordPrompt():""}
     </div>
-    <div style="position:absolute;bottom:0;left:0;right:0;background:var(--c-navBg);backdrop-filter:blur(20px);border-top:1px solid var(--c-border);padding:10px 0 18px;display:flex;justify-content:space-around;z-index:30">
+    <div style="position:absolute;bottom:0;left:0;right:0;background:var(--c-navBg);backdrop-filter:blur(20px);border-top:1px solid var(--c-border);padding:10px 0 calc(18px + env(safe-area-inset-bottom, 0px));display:flex;justify-content:space-around;z-index:30">
       ${tabs}
     </div>`;
   // If nothing visible actually changed, don't touch the DOM at all.

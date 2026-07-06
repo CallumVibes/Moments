@@ -231,7 +231,7 @@
   </ul>
 </main>
 
-<p class="footer-tag">Made with 🧡 by Callum</p>
+<p class="footer-tag">Vibed with 🧡 by Callum</p>
 
 <!-- ══ SIGN UP MODAL ══ -->
 <div class="modal-overlay" id="modal-signup" onclick="overlayClick(event,'signup')">
@@ -353,8 +353,12 @@
       <h3 style="font-family:'Playfair Display',serif;color:var(--text);font-size:1.08rem;font-weight:600;margin-top:22px;margin-bottom:8px">Why Moments?</h3>
       <p style="margin-bottom:12px">Social networks today are built for scale. Moments is built for closeness.</p>
       <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:10px">
+        <div><span style="color:var(--text);font-weight:600">No company in the middle.</span> Moments doesn't live on some corporation's servers. There's no headquarters, no database of your life — nothing to be sold, leaked, or shut down.</div>
+        <div><span style="color:var(--text);font-weight:600">No ads. No trackers.</span> Nothing watches what you look at, and nothing follows you around the internet. Your attention isn't the product here — there is no product.</div>
+        <div><span style="color:var(--text);font-weight:600">No algorithm. No influencers.</span> Nothing decides what you see, and there's no fame to chase. Just your people, in order, as it happened.</div>
+        <div><span style="color:var(--text);font-weight:600">Your data can't be mined — we never have it.</span> Photos are encrypted on your phone before they go anywhere. Only your network holds the key.</div>
         <div><span style="color:var(--text);font-weight:600">Effortless to join.</span> Show a QR code. Share a few digits. Your friends are in.</div>
-        <div><span style="color:var(--text);font-weight:600">Yours to run.</span> You control who belongs. The network lives as long as your group wants it to.</div>
+        <div><span style="color:var(--text);font-weight:600">Yours to run.</span> You control who belongs. The network lives as long as your group wants it to. This is social media you own.</div>
       </div>
 
       <h3 style="font-family:'Playfair Display',serif;color:var(--text);font-size:1.08rem;font-weight:600;margin-top:22px;margin-bottom:8px">Who is it for?</h3>
@@ -714,6 +718,10 @@ async function handleRemoteEvent(netId, ev){
   }
   if(payload.t==='remove'){
     if(payload.pk){
+      // A replayed remove event from BEFORE the member rejoined must not re-remove
+      // them — only a remove issued after the rejoin counts.
+      const rj=net.rejoinTs && net.rejoinTs[payload.pk];
+      if(rj && ev.created_at <= rj){ return; }
       if(net.ownerPk && pk===net.ownerPk){
         applyRemoval(net, payload.pk, netId);
       } else if(!net.ownerPk){
@@ -726,8 +734,18 @@ async function handleRemoteEvent(netId, ev){
     return;
   }
 
-  // Ignore anything from a removed member
-  if(!mine && net.removed && net.removed[pk]) return;
+  // Ignore anything from a removed member — EXCEPT a fresh join announcement.
+  // Anyone with the network code can (re)join, so a profile event created AFTER
+  // the removal means they've rejoined: clear the removal and process normally.
+  // (Older profile events replayed from relay backfill stay ignored — the
+  // created_at check stops them un-removing someone retroactively.)
+  if(!mine && net.removed && net.removed[pk]){
+    const rejoining = payload.t==='profile' && ev.created_at > net.removed[pk];
+    if(!rejoining) return;
+    delete net.removed[pk];
+    if(!net.rejoinTs) net.rejoinTs={};
+    net.rejoinTs[pk]=ev.created_at;   // so a replayed OLD remove event can't re-remove them
+  }
 
   let changed=false;
   // Member identity (name/avatar/bio) only rides on profile/post/reply events.
@@ -2777,8 +2795,8 @@ async function capturePhoto(){
       if(A.cameraFacing==='user'){ ctx.translate(w,0); ctx.scale(-1,1); } // un-mirror selfies
       ctx.drawImage(v,0,0,w,h);
     }
-    const dataUrl=canvas.toDataURL('image/jpeg',0.92);
-    canvas.toBlob(blob=>{ A.cameraShot={ dataUrl, blob: blob||dataURLtoBlob(dataUrl) }; renderApp(); }, 'image/jpeg', 0.92);
+    const dataUrl=canvas.toDataURL('image/jpeg',0.85);
+    canvas.toBlob(blob=>{ A.cameraShot={ dataUrl, blob: blob||dataURLtoBlob(dataUrl) }; renderApp(); }, 'image/jpeg', 0.85);
   }catch(e){}
 }
 function retakePhoto(){ A.cameraShot=null; A.cameraMode=null; A.recSeconds=0; renderApp(); }
@@ -2813,13 +2831,18 @@ function startRecording(){
   try{
     _recChunks=[];
     const mime=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm','video/mp4'].find(m=>MediaRecorder.isTypeSupported(m))||'';
-    _mediaRecorder=new MediaRecorder(_photoStream, mime?{mimeType:mime}:{});
+    // Cap the bitrate: without this, some devices record at 10-20+ Mbps and a 30s
+    // clip balloons to 40MB+. 2.5 Mbps video + 128 kbps audio looks good at phone
+    // resolution and keeps a 30s clip around 10MB — reliable to upload on 4G.
+    const opts={ videoBitsPerSecond:2500000, audioBitsPerSecond:128000 };
+    if(mime) opts.mimeType=mime;
+    _mediaRecorder=new MediaRecorder(_photoStream, opts);
     _mediaRecorder.ondataavailable=e=>{ if(e.data && e.data.size>0) _recChunks.push(e.data); };
     _mediaRecorder.onstop=finishRecording;
     _mediaRecorder.start(100);
     A.cameraMode='recording'; A.recSeconds=0; renderApp();
-    // Auto-stop at 15s
-    _recTimer=setTimeout(()=>stopRecording(), 15000);
+    // Auto-stop at 30s
+    _recTimer=setTimeout(()=>stopRecording(), 30000);
     _recSecTimer=setInterval(()=>{ A.recSeconds=(A.recSeconds||0)+1; renderApp(); }, 1000);
   }catch(e){ showToast('Recording not supported on this device'); }
 }
@@ -4117,7 +4140,7 @@ function buildCamera(){
   return `<div style="position:absolute;inset:0;background:#000;z-index:76;display:flex;flex-direction:column">
     <div style="padding:calc(16px + env(safe-area-inset-top, 0px)) 18px 16px;display:flex;justify-content:space-between;align-items:center">
       <button aria-label="Close camera" onclick="closeCamera()" title="Close" style="background:rgba(255,255,255,0.14);border:none;color:#fff;border-radius:50%;width:38px;height:38px;font-size:17px;cursor:pointer">✕</button>
-      ${isRecording?`<div style="background:rgba(220,38,38,0.85);border-radius:20px;padding:5px 14px;color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:#fff;display:inline-block"></span>${recSecs}s / 15s</div>`:''}
+      ${isRecording?`<div style="background:rgba(220,38,38,0.85);border-radius:20px;padding:5px 14px;color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:#fff;display:inline-block"></span>${recSecs}s / 30s</div>`:''}
       <button onclick="flipCamera()" title="Flip camera" style="background:rgba(255,255,255,0.14);border:none;color:#fff;border-radius:50%;width:38px;height:38px;font-size:16px;cursor:pointer">⟲</button>
     </div>
     <div style="flex:1;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#000">
@@ -4144,7 +4167,7 @@ function buildCamera(){
             : `<span style="width:18px;height:18px;border-radius:50%;background:#DC2626;display:inline-block"></span>`}
         </button>
       </div>
-      <div style="color:rgba(255,255,255,0.4);font-size:11px">${isRecording?`Recording… ${recSecs}s / 15s`:'Tap ○ for photo · ● for video'}</div>
+      <div style="color:rgba(255,255,255,0.4);font-size:11px">${isRecording?`Recording… ${recSecs}s / 30s`:'Tap ○ for photo · ● for video'}</div>
     </div>
   </div>`;
 }
@@ -4294,24 +4317,36 @@ function buildAbout(){
 
       <div style="background:${C.surface};border-radius:18px;padding:18px 20px;margin-bottom:12px">
         <div style="color:${C.text};font-family:'Playfair Display',serif;font-size:16px;font-weight:600;margin-bottom:8px">How it works</div>
-        <div style="color:${C.textDim};font-size:14px;line-height:1.7">Create a network in seconds. Invite friends by showing them a QR code or sharing a join code. Everyone in the network can see and share photos. Nobody outside can.</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7;margin-bottom:10px">Create a network in seconds. Invite friends by showing them a QR code or sharing a simple join code. That's it. Everyone in the network can see and share photos with each other. Nobody else can.</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7">No friend requests. No public profiles. No data mining. Just a private photo space for your friend group, your family, your team, your event, or your community.</div>
       </div>
 
       <div style="background:${C.surface};border-radius:18px;padding:18px 20px;margin-bottom:12px">
         <div style="color:${C.text};font-family:'Playfair Display',serif;font-size:16px;font-weight:600;margin-bottom:8px">No accounts. No friction.</div>
-        <div style="color:${C.textDim};font-size:14px;line-height:1.7">Built on a decentralised protocol. No email. No password. No sign-up. Just the people you want to share memories with.</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7;margin-bottom:10px">We built Moments on Nostr, a decentralized protocol that lets you share content without needing to sign up for yet another service. You don't need an email. You don't need a password. You just need people you want to share memories with.</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7">The technology fades into the background. The focus stays where it belongs: on the photos and the people in them.</div>
       </div>
 
       <div style="background:${C.surface};border-radius:18px;padding:18px 20px;margin-bottom:12px">
-        <div style="color:${C.text};font-family:'Playfair Display',serif;font-size:16px;font-weight:600;margin-bottom:10px">Who is it for?</div>
-        ${['Weekend trips with friends','Weddings &amp; events','Creative projects &amp; teams','Any group who wants privacy'].map(t=>`
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;color:${C.textDim};font-size:14px">
-            <span style="color:${C.accent};font-size:16px">🧡</span>${t}
-          </div>`).join('')}
+        <div style="color:${C.text};font-family:'Playfair Display',serif;font-size:16px;font-weight:600;margin-bottom:8px">Why Moments?</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7;margin-bottom:12px">Social networks today are built for scale. Moments is built for closeness.</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7;margin-bottom:8px"><span style="color:${C.text};font-weight:600">No company in the middle.</span> Moments doesn't live on some corporation's servers. There's no headquarters, no database of your life — nothing to be sold, leaked, or shut down.</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7;margin-bottom:8px"><span style="color:${C.text};font-weight:600">No ads. No trackers.</span> Nothing watches what you look at, and nothing follows you around the internet. Your attention isn't the product here — there is no product.</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7;margin-bottom:8px"><span style="color:${C.text};font-weight:600">No algorithm. No influencers.</span> Nothing decides what you see, and there's no fame to chase. Just your people, in order, as it happened.</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7;margin-bottom:8px"><span style="color:${C.text};font-weight:600">Your data can't be mined — we never have it.</span> Photos are encrypted on your phone before they go anywhere. Only your network holds the key.</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7;margin-bottom:8px"><span style="color:${C.text};font-weight:600">Effortless to join.</span> Show a QR code. Share a few digits. Your friends are in.</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7"><span style="color:${C.text};font-weight:600">Yours to run.</span> You control who belongs. The network lives as long as your group wants it to. This is social media you own.</div>
       </div>
 
+      <div style="background:${C.surface};border-radius:18px;padding:18px 20px;margin-bottom:12px">
+        <div style="color:${C.text};font-family:'Playfair Display',serif;font-size:16px;font-weight:600;margin-bottom:8px">Who is it for?</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7">A weekend trip with friends. A family album across generations. A creative project with collaborators. A wedding. A club. A team. Any group of people who want to share photos without giving them to a corporation.</div>
+      </div>
+
+      <div style="text-align:center;color:${C.accent};font-weight:600;font-size:14px;padding:14px 0 4px;border-top:1px solid var(--c-border)">Create your network. Share the code. Capture the moment.</div>
+
       <div style="text-align:center;padding:16px 0 4px;color:${C.muted};font-size:12px;line-height:1.8">
-        Made with 🧡 by Callum
+        Vibed with 🧡 by Callum
       </div>
     </div>
   </div>`;

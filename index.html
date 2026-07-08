@@ -647,10 +647,12 @@ async function activateNetwork(netId){
   if(_allowSyncTimer) clearTimeout(_allowSyncTimer);
   _allowSyncTimer=setTimeout(()=>{
     // Fallback: if EOSE hasn't fired, do one catch-up render now
+    if(!A.eosed) A.eosed={}; A.eosed[netId]=true;   // stop showing "loading" even if a relay never EOSEs
     if(A.activeNetId===netId && !syncRenderBlocked()) renderApp();
   }, 2500);
   Relay.subscribe('moments-'+tag, [{kinds:[MOMENTS_KIND,5], '#t':[tag], limit:400}], ev=>handleRemoteEvent(netId, ev), ()=>{
     if(!A.live) A.live={}; A.live[netId]=true;
+    if(!A.eosed) A.eosed={}; A.eosed[netId]=true;   // first sync finished — feed can show its real empty state
     if(_allowSyncTimer){ clearTimeout(_allowSyncTimer); _allowSyncTimer=null; }
     _renderAfterReconcile=true;            // let this one reconcile paint
     reconcileNetwork(netId);
@@ -2111,15 +2113,28 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.8', date:'July 2026', title:'Trust & polish', changes:[
+    ['new','Removed members can rejoin with the network code — removal is a tidy-up, not a permanent ban'],
+    ['new','Video recording extended to 30 seconds'],
+    ['new','New posts wait behind a tap-to-show pill instead of shifting your feed while you read'],
+    ['new','A spinner now shows on your photo while it uploads'],
+    ['new','Support Moment\u2019s with a Bitcoin Lightning tip — find it in Settings'],
     ['new','Network owners can limit posting to themselves — members can still view, like, and comment'],
     ['new','Sharper photos from the in-app camera, with a zoom slider'],
     ['new','New Activity tab on My Page — see who liked and commented on your posts'],
     ['new','Tap a member — their avatar on a post or up top — to see their profile and bio'],
     ['new','Text posts now show when they were shared, just like photos'],
     ['new','A clear notice now appears when you’re offline — your posts and likes are saved and sync when you reconnect'],
+    ['change','Photos and videos are now compressed for faster, more dependable uploads — with no visible quality loss'],
+    ['change','Joining a network now shows “Loading your network’s moments…” instead of looking empty while it syncs'],
     ['change','Posts older than a week now show their date instead of counting up the days'],
     ['change','Better support for screen readers — buttons now describe what they do'],
     ['change','The app opens straight to your feed now, without a blank flash on startup'],
+    ['change','Better fit on iPhones — the app now respects the notch and home bar'],
+    ['fix','Your \u201cWho can post\u201d and password settings no longer revert on their own'],
+    ['fix','Switching networks now sticks — the app reopens on the network you switched to'],
+    ['fix','Retrying a failed photo now actually re-uploads it'],
+    ['fix','Large photos and videos no longer falsely \u201ctime out\u201d on slower connections'],
+    ['fix','Just-posted photos appear sharp right away instead of blurry until refresh'],
     ['fix','Cryptography now runs on independently audited libraries — the same keys and logins as before, on a stronger foundation'],
     ['fix','Only a network’s creator can set or change its password'],
     ['fix','Photos upload faster and more reliably — a stalled server no longer leaves posts stuck on "Posting…"'],
@@ -3695,13 +3710,19 @@ function buildFeed(net){
     <button onclick="openProfile('${mem.id}')" style="margin-left:${i===0?0:-6}px;position:relative;z-index:${3-i};background:none;border:none;padding:0;cursor:${mem.isMe?'default':'pointer'}" aria-label="View ${esc(mem.name)}">${avatarHTML(mem,24,8,12,1.5)}</button>
   `).join('');
 
+  const stillSyncing = !(A.eosed && A.eosed[net.id]) && Relay.isConnected();
   const postsHtml = visiblePosts.length===0
-    ? `<div style="text-align:center;padding:44px 28px;line-height:1.7">
+    ? (stillSyncing
+      ? `<div style="text-align:center;padding:54px 28px;line-height:1.7">
+           <div style="width:26px;height:26px;border:3px solid ${C.accent}44;border-top-color:${C.accent};border-radius:50%;animation:ptrSpin .8s linear infinite;margin:0 auto 14px"></div>
+           <div style="color:${C.text};font-size:14px;font-weight:600">Loading your network's moments…</div>
+         </div>`
+      : `<div style="text-align:center;padding:44px 28px;line-height:1.7">
          <div style="font-size:40px;margin-bottom:10px">📷</div>
          <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:4px">No moments yet</div>
          <div style="color:${C.muted};font-size:13px;margin-bottom:18px">Be the first to share something with your network.</div>
          <button onclick="addPhotoQuick()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:12px 22px;font-size:14px;font-weight:700;cursor:pointer">Share a moment</button>
-       </div>`
+       </div>`)
     : visiblePosts.map(post=>{
         const mem=memberIn(net,post.memberId);
         return `

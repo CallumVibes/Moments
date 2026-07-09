@@ -4,7 +4,7 @@
   https://momentsocial.net
 
   MIT License
-  Copyright (c) 2026 Callum Field
+  Copyright (c) 2026 Callum (callum@nostr.fan)
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -27,6 +27,7 @@
 <html lang="en" class="landing-light">
 <head>
   <meta charset="UTF-8"/>
+  <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests; object-src 'none'; base-uri 'self'; form-action 'none'"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -473,7 +474,10 @@ async function blossomUpload(blob){
   const hashHex=bytesToHex(await sha256(buf));
   const now=Math.floor(Date.now()/1000);
   const auth=await makeNostrEvent(24242, [['t','upload'],['x',hashHex],['expiration',String(now+3600)]], 'Upload a moment');
-  const authHeader='Nostr '+btoa(JSON.stringify(auth));
+  // UTF-8-safe base64: today the auth event is ASCII-only by construction, but raw
+  // btoa() throws on any char > U+00FF, so encode the bytes explicitly to stay safe
+  // if user-visible text (e.g. a filename tag) is ever added to the auth event.
+  const authHeader='Nostr '+_b64(new TextEncoder().encode(JSON.stringify(auth)));
   const ct=blob.type||'application/octet-stream';
 
   // Give the upload enough time for the file size on a slow mobile connection:
@@ -559,7 +563,11 @@ const Relay=(()=>{
   }
   function scheduleReconnect(url){
     if(timers[url]) return;
-    timers[url]=setTimeout(()=>{ timers[url]=null; open(url); }, 2500+Math.random()*2500);
+    // Guard the delayed open like connect() does: if something else (focus
+    // handler, Reconnect button) already opened a live socket for this url
+    // while the timer was pending, opening again would overwrite conns[url]
+    // and orphan that socket — leaving it connected and delivering duplicates.
+    timers[url]=setTimeout(()=>{ timers[url]=null; if(!conns[url] || conns[url].ws.readyState>=2) open(url); }, 2500+Math.random()*2500);
   }
   function connect(){ activeRelays().forEach(url=>{ if(!conns[url] || conns[url].ws.readyState>=2) open(url); }); }
   function publish(ev){
@@ -732,7 +740,11 @@ async function handleRemoteEvent(netId, ev){
         net._pendingRemoves.push({pk:payload.pk, senderPk:pk, ts:payload.ts||ev.created_at});
       }
     }
-    saveData(); if(A.activeNetId===netId) renderApp();
+    // Not gated on _allowSyncRender (a live removal should repaint promptly, unlike
+    // posts which use the new-posts pill) but DO respect syncRenderBlocked so a full
+    // rebuild can't dismiss the keyboard mid-typing, and coalesce replayed removes
+    // during backfill through renderSoon instead of one full renderApp each.
+    saveData(); if(A.activeNetId===netId && !syncRenderBlocked()) renderSoon();
     return;
   }
 
@@ -2102,6 +2114,11 @@ function logout(){
   document.querySelector('.footer-tag').style.display='';
   document.querySelectorAll('.blob').forEach(b=>b.style.display='');
   document.querySelectorAll('.orb').forEach(o=>o.style.display='');
+  // Zero the key bytes before dropping the reference so the material doesn't
+  // linger in the heap until GC. (Best-effort: the nsec also existed as immutable
+  // JS strings during login, which can't be scrubbed — this covers the one buffer
+  // we control, which is also the only copy that lives for the whole session.)
+  if(_sk && _sk.fill) _sk.fill(0);
   _nsec=''; _npub=''; _fileNsec=''; _sk=null;
   clearSession();
   resetModal('signup'); resetModal('login');
@@ -2169,6 +2186,14 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
+  { v:'0.8.1', date:'July 2026', title:'Security & stability', changes:[
+    ['fix','A dropped connection no longer leaves duplicate relay connections running in the background — kinder to your data and battery'],
+    ['fix','Notifications no longer pile on top of each other — the newest message cleanly replaces the last'],
+    ['fix','The keyboard no longer closes mid-comment when network changes arrive in the background'],
+    ['fix','Your private key is now wiped from memory the moment you log out'],
+    ['change','Adding a relay now requires a secure wss:// address — insecure ones never worked anyway, now you get a clear message instead of silence'],
+    ['change','Added browser-level security protections against injected content and insecure connections'],
+  ]},
   { v:'0.8', date:'July 2026', title:'Trust & polish', changes:[
     ['new','Removed members can rejoin with the network code — removal is a tidy-up, not a permanent ban'],
     ['new','Video recording extended to 30 seconds'],
@@ -2354,8 +2379,14 @@ function addRelay(){
   const err=document.getElementById('relay-err');
   const raw=(inp&&inp.value.trim())||'';
   if(!raw){ if(err){ err.textContent='Enter a relay URL'; err.style.display='block'; } return; }
-  const url=raw.startsWith('wss://')||raw.startsWith('ws://')?raw:'wss://'+raw;
-  if(!url.match(/^wss?:\/\/[^/\s]+/)){
+  // ws:// would be accepted here but silently blocked by the browser as mixed
+  // content on the https site — the relay would just show as forever offline.
+  // Reject it up front, matching the helper text ("always start with wss://").
+  if(raw.startsWith('ws://')){
+    if(err){ err.textContent='Only secure wss:// relays are supported'; err.style.display='block'; } return;
+  }
+  const url=raw.startsWith('wss://')?raw:'wss://'+raw;
+  if(!url.match(/^wss:\/\/[^/\s]+/)){
     if(err){ err.textContent='Must start with wss://'; err.style.display='block'; } return;
   }
   const current=activeRelays();
@@ -2592,8 +2623,23 @@ function copyInviteCode(){
 function closeInvite(){ A.showInvite=false; renderApp(); }
 function openProfile(id){ if(id==='u1') return; A.profileId=id; A.showNetPicker=false; renderApp(); }
 function closeProfile(){ A.profileId=null; renderApp(); }
-function openReplies(pid){ A.replyPostId=pid; A.replyDraft=""; renderApp(); }
-function closeReplies(){ A.replyPostId=null; renderApp(); }
+function openReplies(pid){
+  A.replyPostId=pid; A.replyDraft="";
+  // Mount just the sheet on top of the existing DOM — a full renderApp would
+  // rebuild every feed photo (visible blank flash while they re-decode).
+  const root=document.getElementById('screen-root');
+  const net=currentNet();
+  if(root && net && !document.getElementById('replies-sheet')){
+    root.insertAdjacentHTML('beforeend', buildReplies(net));
+    const ri=document.getElementById('reply-input');
+    if(ri){ ri.focus(); ri.setSelectionRange(ri.value.length, ri.value.length); }
+  } else renderApp();
+}
+function closeReplies(){
+  A.replyPostId=null;
+  const sheet=document.getElementById('replies-sheet');
+  if(sheet) sheet.remove(); else renderApp();
+}
 function openPostView(pid){ A.viewPostId=pid; A.replyDraft=""; A.showNetPicker=false; renderApp(); }
 function closePostView(){ A.viewPostId=null; renderApp(); }
 
@@ -3177,8 +3223,30 @@ function toggleLike(pid){
   const newState=!(p.likeBy[mk] && p.likeBy[mk].v);
   p.likeBy[mk]={v:newState, ts:now};
   recomputeLikes(p);
-  saveData(); renderApp();
+  saveData();
+  // Patch the heart(s) in place instead of rebuilding the whole frame — an
+  // innerHTML rebuild destroys every photo element and the re-decode shows as
+  // a visible blank flash. Fall back to a full render only if no button exists.
+  if(!patchLikeButtons(pid, p.liked)) renderApp();
   publishLike(net.id, p.id, newState);
+}
+// Update every rendered like button for a post (feed card, My Page, post view).
+// Returns true if at least one was patched.
+function patchLikeButtons(pid, liked){
+  let hit=false;
+  document.querySelectorAll('.like-btn[data-like-pid="'+pid+'"]').forEach(btn=>{
+    btn.style.color=liked?C.warm:C.muted;
+    btn.setAttribute('aria-label', liked?'Unlike':'Like');
+    const s=btn.querySelector('span'); if(s) s.textContent=liked?'♥':'♡';
+    hit=true;
+  });
+  return hit;
+}
+// Update every rendered comment counter for a post. fmt "feed" hides zero.
+function patchCommentCounts(pid, n){
+  document.querySelectorAll('.cmt-count[data-cmt-pid="'+pid+'"]').forEach(el=>{
+    el.textContent=(el.getAttribute('data-fmt')==='feed' && !n)?'':String(n);
+  });
 }
 function setReplyDraft(v){ A.replyDraft=v; }
 
@@ -3191,7 +3259,12 @@ function deleteReply(postId, replyId){
   post.replies.splice(ri,1);
   if(!net.replyDel) net.replyDel={};
   net.replyDel[replyId]=myPk||'self';   // tombstone: keep it gone across refreshes
-  saveData(); renderApp();
+  saveData();
+  const list=document.getElementById('replies-list');
+  if(!A.viewPostId && list){
+    list.innerHTML=buildCommentBubbles(net, post.replies, post.id);
+    patchCommentCounts(post.id, post.replies.length);
+  } else renderApp();
   publishReplyDelete(net.id, postId, replyId);
 }
 async function publishReplyDelete(netId, postId, replyId){
@@ -3347,8 +3420,18 @@ function ptrRefresh(el){
 }
 
 // ── Post action menu (···) ──
-function openPostMenu(netId, postId){ A.menuNetId=netId; A.menuPostId=postId; renderApp(); }
-function closePostMenu(){ A.menuNetId=null; A.menuPostId=null; renderApp(); }
+function openPostMenu(netId, postId){
+  A.menuNetId=netId; A.menuPostId=postId;
+  const root=document.getElementById('screen-root');
+  if(root && !document.getElementById('post-menu-sheet')){
+    root.insertAdjacentHTML('beforeend', buildPostMenu());
+  } else renderApp();
+}
+function closePostMenu(){
+  A.menuNetId=null; A.menuPostId=null;
+  const sheet=document.getElementById('post-menu-sheet');
+  if(sheet) sheet.remove(); else renderApp();
+}
 function buildPostMenu(){
   const net=A.networks[A.menuNetId]; if(!net) return '';
   const post=net.posts.find(p=>p.id===A.menuPostId); if(!post) return '';
@@ -3356,7 +3439,7 @@ function buildPostMenu(){
   const iOwn=(net.ownerPk && net.ownerPk===myPubkey());
   const hasPhoto=!!(post.image||post.enc);
   return `
-  <div onclick="closePostMenu()" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,0.45);display:flex;flex-direction:column;justify-content:flex-end">
+  <div id="post-menu-sheet" onclick="closePostMenu()" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,0.45);display:flex;flex-direction:column;justify-content:flex-end">
     <div onclick="event.stopPropagation()" style="background:${C.surface};border-radius:22px 22px 0 0;padding:16px 16px 32px">
       <div style="width:36px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;margin:0 auto 18px"></div>
       ${hasPhoto?`<button onclick="closePostMenu();savePhoto('${post.id}')" style="width:100%;background:none;border:none;border-bottom:1px solid var(--c-border);color:${C.text};font-size:15px;font-weight:600;padding:16px 4px;text-align:left;cursor:pointer;display:flex;align-items:center;gap:12px"><span style="font-size:20px">⬇</span> Save photo</button>`:''}
@@ -3478,7 +3561,18 @@ function submitReply(){
   if(!p||!text) return;
   const localId="r"+Date.now();
   p.replies.push({ id:localId, memberId:"u1", text, ts:Math.floor(Date.now()/1000) });
-  A.replyDraft=""; saveData(); renderApp();
+  A.replyDraft=""; saveData();
+  // Sheet open over the feed: patch the comment list + counters in place so the
+  // feed photos behind the scrim aren't rebuilt (re-decode flash). The full-screen
+  // post view keeps the full render — its rebuild happens behind an opaque layer.
+  const list=document.getElementById('replies-list');
+  if(!A.viewPostId && list){
+    list.innerHTML=buildCommentBubbles(net, p.replies, p.id);
+    list.scrollTop=list.scrollHeight;
+    const ri=document.getElementById('reply-input');
+    if(ri){ ri.value=''; ri.focus(); }
+    patchCommentCounts(p.id, p.replies.length);
+  } else renderApp();
   // publish to relays (ignore network failures)
   publishReply(net.id, p.id, text).then(evId=>{
     if(evId){ const r=p.replies.find(x=>x.id===localId); if(r) r.id=evId; if(A.seen) A.seen[evId]=true; saveData(); }
@@ -3834,11 +3928,11 @@ function buildFeed(net){
             ${post.caption?`<div style="font-family:'Playfair Display',serif;${(post.image||post.enc)?'font-style:italic;font-size:13px;color:'+C.textDim:'font-size:16px;line-height:1.5;color:'+C.text};margin-bottom:10px;white-space:pre-wrap;word-break:break-word">${esc(post.caption)}</div>`:''}
             ${post.poll?pollHTML(net,post):''}
             <div style="display:flex;align-items:center;gap:14px">
-              <button aria-label="${post.liked?'Unlike':'Like'}" onpointerdown="likePress('${post.id}')" onpointerup="likeRelease('${post.id}')" onpointercancel="likeCancel()" onpointerleave="likeCancel()" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:13px;font-weight:600;user-select:none;-webkit-user-select:none">
+              <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" onpointerdown="likePress('${post.id}')" onpointerup="likeRelease('${post.id}')" onpointercancel="likeCancel()" onpointerleave="likeCancel()" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:13px;font-weight:600;user-select:none;-webkit-user-select:none">
                 <span style="font-size:17px">${post.liked?"♥":"♡"}</span>
               </button>
               <button onclick="openReplies('${post.id}')" aria-label="Comments" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${C.muted};font-size:13px;font-weight:600">
-                <span style="font-size:15px">💬</span>${post.replies.length>0?post.replies.length:""}
+                <span style="font-size:15px">💬</span><span class="cmt-count" data-cmt-pid="${post.id}" data-fmt="feed">${post.replies.length>0?post.replies.length:""}</span>
               </button>
             </div>
           </div>
@@ -4047,11 +4141,11 @@ function buildMyPage(net){
   const textPosts=myPosts.filter(p=>!p.image&&!p.enc);
   const actionRow=(p)=>`
     <div style="display:flex;align-items:center;gap:14px">
-      <button onclick="toggleLike('${p.id}')" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:4px;color:${p.liked?C.warm:C.muted};font-size:12px;font-weight:600">
+      <button class="like-btn" data-like-pid="${p.id}" onclick="toggleLike('${p.id}')" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:4px;color:${p.liked?C.warm:C.muted};font-size:12px;font-weight:600">
         <span style="font-size:15px">${p.liked?'♥':'♡'}</span>
       </button>
       <button onclick="openReplies('${p.id}')" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:4px;color:${C.muted};font-size:12px;font-weight:600">
-        <span style="font-size:13px">💬</span>${(p.replies&&p.replies.length)||0}
+        <span style="font-size:13px">💬</span><span class="cmt-count" data-cmt-pid="${p.id}" data-fmt="num">${(p.replies&&p.replies.length)||0}</span>
       </button>
     </div>`;
 
@@ -4505,14 +4599,14 @@ function buildReplies(net){
   const post=net.posts.find(p=>p.id===A.replyPostId);
   if(!post) return "";
   return `
-  <div onclick="closeReplies()" style="position:absolute;inset:0;z-index:70;background:rgba(0,0,0,0.55);display:flex;flex-direction:column;justify-content:flex-end">
+  <div id="replies-sheet" onclick="closeReplies()" style="position:absolute;inset:0;z-index:70;background:rgba(0,0,0,0.55);display:flex;flex-direction:column;justify-content:flex-end">
     <div onclick="event.stopPropagation()" style="background:${C.bg};border-radius:24px 24px 0 0;max-height:80%;display:flex;flex-direction:column">
       <div style="padding:14px 20px 10px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;border-bottom:1px solid var(--c-border)">
         <div style="width:36px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;position:absolute;left:50%;transform:translateX(-50%);top:10px"></div>
         <div style="color:${C.text};font-weight:700;font-size:15px;margin-top:6px">Comments</div>
         <button aria-label="Close" onclick="closeReplies()" style="background:none;border:none;color:${C.muted};font-size:20px;cursor:pointer;line-height:1;padding:0">✕</button>
       </div>
-      <div class="hide-scroll" style="flex:1;overflow-y:auto;padding:12px 16px 8px;display:flex;flex-direction:column">${buildCommentBubbles(net, post.replies, post.id)}</div>
+      <div id="replies-list" class="hide-scroll" style="flex:1;overflow-y:auto;padding:12px 16px 8px;display:flex;flex-direction:column">${buildCommentBubbles(net, post.replies, post.id)}</div>
       <div style="padding:10px 14px 18px;border-top:1px solid var(--c-border);display:flex;gap:10px;align-items:center;flex-shrink:0">
         <input id="reply-input" value="${esc(A.replyDraft)}" oninput="setReplyDraft(this.value)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submitReply()}" placeholder="Add a comment…" style="flex:1;background:${C.surfaceHigh};border:none;outline:none;border-radius:22px;padding:11px 16px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif"/>
         <button aria-label="Send comment" onclick="submitReply()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:50%;width:38px;height:38px;font-size:16px;cursor:pointer;font-weight:700;flex-shrink:0;display:flex;align-items:center;justify-content:center">↑</button>
@@ -4564,7 +4658,7 @@ function buildPostView(net){
       ${(post.image||post.enc)&&post.caption?`<div style="font-family:'Playfair Display',serif;font-style:italic;color:${C.textDim};font-size:14px;margin:12px 4px 0">${esc(post.caption)}</div>`:''}
       ${post.poll?`<div style="margin:14px 2px 0">${pollHTML(net,post)}</div>`:''}
       <div style="display:flex;align-items:center;gap:18px;margin:14px 4px 18px">
-        <button aria-label="${post.liked?'Unlike':'Like'}" onpointerdown="likePress('${post.id}')" onpointerup="likeRelease('${post.id}')" onpointercancel="likeCancel()" onpointerleave="likeCancel()" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:14px;font-weight:600;user-select:none;-webkit-user-select:none">
+        <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" onpointerdown="likePress('${post.id}')" onpointerup="likeRelease('${post.id}')" onpointercancel="likeCancel()" onpointerleave="likeCancel()" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:14px;font-weight:600;user-select:none;-webkit-user-select:none">
           <span style="font-size:19px">${post.liked?'♥':'♡'}</span>
         </button>
         <div style="color:${C.muted};font-size:14px;font-weight:600;display:flex;align-items:center;gap:5px"><span style="font-size:15px">💬</span>${post.replies.length} ${post.replies.length===1?'comment':'comments'}</div>
@@ -4680,7 +4774,7 @@ function renderApp(){
 
   const frameHTML = header + `
     ${A.showNetPicker?buildNetPicker():""}
-    <div style="flex:1;display:flex;flex-direction:column;position:relative;overflow:hidden">
+    <div id="screen-root" style="flex:1;display:flex;flex-direction:column;position:relative;overflow:hidden">
       ${(!A.profile.keyBackedUp && !A.nudgeDismissed && A.tab!==1)?buildBackupNudge():""}
       ${screen}
       ${A.showInvite?buildInvite(net):""}
@@ -4814,7 +4908,13 @@ function pushNotif(title, body, tag){
 function showToast(msg){
   const host=document.getElementById('app-screen');
   if(!host) return;
+  // One toast at a time: they all render at the same spot, so a burst (several
+  // events within the 3.4s lifetime) would pile unreadable copies on top of each
+  // other. Newest message wins; unread badges still accumulate the full count.
+  const prev=document.getElementById('app-toast');
+  if(prev && prev.parentNode) prev.parentNode.removeChild(prev);
   const t=document.createElement('div');
+  t.id='app-toast';
   t.style.cssText="position:absolute;top:14px;left:50%;transform:translateX(-50%) translateY(-12px);background:#24243A;color:#FAF8F5;border:1px solid #FF8C4255;border-radius:14px;padding:10px 16px;font-size:13px;font-weight:600;font-family:'Inter',sans-serif;z-index:130;box-shadow:0 10px 30px rgba(0,0,0,0.55);opacity:0;transition:opacity .25s ease,transform .25s ease;max-width:84%;text-align:center;pointer-events:none";
   t.textContent=String(msg||'').slice(0,120);
   host.appendChild(t);

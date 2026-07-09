@@ -27,7 +27,13 @@
 <html lang="en" class="landing-light">
 <head>
   <meta charset="UTF-8"/>
-  <meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests; object-src 'none'; base-uri 'self'; form-action 'none'"/>
+  <!-- CSP notes: script-src needs 'unsafe-inline' (all logic + event handlers are inline
+       by design) so it can't stop inline-injection XSS — escaping remains the defense.
+       What it DOES block: loading any external script, plaintext http/ws traffic, plugin/
+       base/form/frame vectors. connect-src must stay https:/wss:-wide because users add
+       custom relays and members' media lives on arbitrary Blossom hosts. worker-src 'self'
+       pre-clears the v0.9 service worker (script-src here would otherwise block it). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; upgrade-insecure-requests"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -363,7 +369,7 @@
       </div>
 
       <h3 style="font-family:'Playfair Display',serif;color:var(--text);font-size:1.08rem;font-weight:600;margin-top:22px;margin-bottom:8px">Who is it for?</h3>
-      <p style="margin-bottom:14px">A weekend trip with friends. A family album across generations. A creative project with collaborators. A wedding. A club. A team. Any group of people who want to share photos without giving them to a corporation.</p>
+      <p style="margin-bottom:14px">A weekend trip with friends. A creative project with collaborators. A wedding. A club. A team. Any group of people who want to share photos without giving them to a corporation.</p>
 
       <p style="text-align:center;color:var(--accent);font-weight:600;font-size:.95rem;margin-top:18px;padding-top:16px;border-top:1px solid rgba(255,255,255,.08)">Create your network. Share the code. Capture the moment.</p>
     </div>
@@ -1300,6 +1306,26 @@ function setStep(n){
   }
 }
 
+/* Invite-link onboarding: an invitee shouldn't face the key ceremony mid-join.
+   Generate the key silently and go straight to the name step — the post-join
+   "Back up your key" nudge and the Settings backup screen cover saving it.
+   Organic signups (network creators) keep the full deliberate ceremony. */
+function startInviteSignup(){
+  openModal('signup');
+  try{
+    const keys=nostrGenerate();
+    _nsec=keys.nsec; _npub=keys.npub;
+    const dec=bech32Decode(_nsec); _sk=dec?dec.bytes:null;
+    // Populate the key screen anyway so it's correct if the user ever navigates back
+    const nsecEl=document.getElementById('show-nsec');
+    if(nsecEl){ nsecEl.textContent=_nsec; nsecEl.style.filter='blur(5px)'; }
+    setStep(3);
+    setTimeout(()=>{ const n=document.getElementById('signup-name'); if(n) n.focus(); },150);
+  }catch(err){
+    setStep(1); // key generation failed — fall back to the manual flow
+  }
+}
+
 function generateKeys(){
   const btn=document.getElementById('btn-gen');
   btn.disabled=true; btn.textContent='Generating…';
@@ -2191,6 +2217,7 @@ const CHANGELOG=[
     ['fix','Notifications no longer pile on top of each other — the newest message cleanly replaces the last'],
     ['fix','The keyboard no longer closes mid-comment when network changes arrive in the background'],
     ['fix','Your private key is now wiped from memory the moment you log out'],
+    ['change','Joining from an invite link is now instant — your key is created quietly in the background and you just pick a name. Back it up anytime from Settings'],
     ['change','Adding a relay now requires a secure wss:// address — insecure ones never worked anyway, now you get a clear message instead of silence'],
     ['change','Added browser-level security protections against injected content and insecure connections'],
   ]},
@@ -4549,7 +4576,7 @@ function buildAbout(){
 
       <div style="background:${C.surface};border-radius:18px;padding:18px 20px;margin-bottom:12px">
         <div style="color:${C.text};font-family:'Playfair Display',serif;font-size:16px;font-weight:600;margin-bottom:8px">Who is it for?</div>
-        <div style="color:${C.textDim};font-size:14px;line-height:1.7">A weekend trip with friends. A family album across generations. A creative project with collaborators. A wedding. A club. A team. Any group of people who want to share photos without giving them to a corporation.</div>
+        <div style="color:${C.textDim};font-size:14px;line-height:1.7">A weekend trip with friends. A creative project with collaborators. A wedding. A club. A team. Any group of people who want to share photos without giving them to a corporation.</div>
       </div>
 
       <div style="text-align:center;color:${C.accent};font-weight:600;font-size:14px;padding:14px 0 4px;border-top:1px solid var(--c-border)">Create your network. Share the code. Capture the moment.</div>
@@ -5028,7 +5055,7 @@ autoLogin().then(loggedIn=>{
     const banner=document.getElementById('invite-banner');
     const btn=document.getElementById('hero-signup-btn');
     if(banner){ banner.style.display='block'; }
-    if(btn){ btn.textContent='Join the network →'; }
+    if(btn){ btn.textContent='Join the network →'; btn.onclick=function(){ startInviteSignup(); }; }
     // Update signup modal title/sub to reflect the invite context
     const title=document.querySelector('#modal-signup .modal-title');
     const sub=document.querySelector('#modal-signup .modal-sub');

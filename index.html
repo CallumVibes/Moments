@@ -2466,6 +2466,13 @@ function keyFileContents(){
 function markKeyBackedUp(){
   if(A && A.profile && !A.profile.keyBackedUp){ A.profile.keyBackedUp=true; saveData(); }
 }
+/* Explicit confirmation for backups the app can't detect (written on paper,
+   pasted into a password manager from the key-file textarea, etc.) */
+function confirmKeyBackedUp(){
+  markKeyBackedUp();
+  showToast('Key marked as backed up ✓');
+  renderApp();
+}
 function backupKeyDownload(){
   const content=keyFileContents();
   try{
@@ -4530,6 +4537,10 @@ function buildKeyBackup(){
         <div style="color:${C.muted};font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;margin-bottom:8px">Or copy the full key file</div>
         <textarea readonly onclick="this.focus();this.select()" style="width:100%;height:118px;background:#0F0F14;border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:rgba(250,248,245,0.75);font-family:monospace;font-size:10px;padding:10px;resize:none;outline:none">${esc(keyFileContents())}</textarea>
       </div>
+
+      ${backed
+        ? `<div style="text-align:center;color:${C.accent};font-size:13px;font-weight:700;padding:8px 0 0">✓ You've confirmed your key is backed up</div>`
+        : `<button onclick="confirmKeyBackedUp()" style="width:100%;background:${C.surfaceHigh};color:${C.text};border:1.5px solid ${C.accentBorder};border-radius:14px;padding:14px 0;font-size:14px;font-weight:700;cursor:pointer">I've backed up my key&nbsp;&nbsp;✓</button>`}
     </div>
   </div>`;
 }

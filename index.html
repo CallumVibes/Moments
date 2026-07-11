@@ -721,6 +721,14 @@ async function handleRemoteEvent(netId, ev){
   const memId=mine?'u1':pk;
 
   // Member removal — only valid from the network owner
+  if(payload.t==='net-delete'){
+    // Owner dissolved the whole network. Only the owner's signature counts; a
+    // non-owner's event is buffered and re-checked once the owner meta is known
+    // (mirrors the mod-delete/_pendingRemoves ordering pattern).
+    if(net.ownerPk && pk===net.ownerPk){ applyNetDelete(netId, payload.ts||ev.created_at); }
+    else if(!net.ownerPk){ net._pendingNetDelete={ pk, ts:payload.ts||ev.created_at }; saveData(); }
+    return;
+  }
   if(payload.t==='leave'){
     // Self-attested departure: a member can only announce their OWN leave.
     if(payload.pk && payload.pk===pk){
@@ -797,9 +805,19 @@ async function handleRemoteEvent(netId, ev){
       // (posts made before the lock, and the owner's own posts, are always kept).
       if(net.membersCanPost===false && net.ownerPk && pk!==net.ownerPk && ev.created_at >= (net.postLockTs||0)) return;
       const enc=payload.enc||null;
+      // Link preview: accept only sane shapes — https URL, bounded strings, and
+      // an image ONLY as an embedded data URL (never a remote URL a malicious
+      // payload could use to make every viewer's device ping an attacker host).
+      let _lk=null;
+      if(payload.link && typeof payload.link.url==='string' && /^https?:\/\//.test(payload.link.url)){
+        _lk={ url:String(payload.link.url).slice(0,600),
+              domain:String(payload.link.domain||'').slice(0,80),
+              title:payload.link.title?String(payload.link.title).slice(0,140):null,
+              img:(typeof payload.link.img==='string' && payload.link.img.startsWith('data:image/'))?payload.link.img.slice(0,200000):null };
+      }
       net.posts.push({ id:ev.id, memberId:memId, authorPk:pk, caption:payload.caption||'',
         image:(!enc && payload.image)?payload.image:null, enc,
-        poll:payload.poll||null, voteBy:{},
+        poll:payload.poll||null, link:_lk, voteBy:{},
         time:relTime(ev.created_at*1000), likes:0, liked:false, likeBy:{}, replies:[], ts:ev.created_at });
       net.posts.sort((a,b)=>(b.ts||0)-(a.ts||0));
       changed=true;
@@ -899,6 +917,9 @@ async function handleRemoteEvent(netId, ev){
   } else if(payload.t==='vote'){
     const parent=net.posts.find(p=>p.id===payload.e);
     if(parent && parent.poll && typeof payload.opt==='number'){
+      // Poll expiry is enforced on receipt too — a vote cast after the deadline
+      // (by clock or by a modified client) is ignored by every honest client.
+      if(parent.poll.exp && (payload.ts||ev.created_at) > parent.poll.exp) return;
       if(!parent.voteBy) parent.voteBy={};
       const prev=parent.voteBy[pk];
       if(!prev || (payload.ts||0)>=(prev.ts||0)){
@@ -1052,6 +1073,10 @@ function reconcileNetwork(netId){
     net.posts=net.posts.filter(p=>!(net.deleted[p.id]===p.authorPk));
     if(net.posts.length!==before) changed=true;
   }
+  // A net-delete that arrived before the owner's meta finally lands here.
+  if(net._pendingNetDelete && net.ownerPk && net._pendingNetDelete.pk===net.ownerPk){
+    applyNetDelete(netId, net._pendingNetDelete.ts); return;
+  }
   // Re-apply owner moderation removals. This is where a mod-delete that arrived
   // BEFORE the owner's meta (so ownerPk was unknown at the time) finally lands.
   if(net.modDel && net.ownerPk){
@@ -1111,6 +1136,7 @@ async function publishPost(netId, post){
       enc: post.enc||null,
       image: (!post.enc && post.image && /^https?:/.test(post.image))?post.image:null,
       poll: post.poll||null,
+      link: post.link||null,
       name:A.profile.name||'You', nn:A.networks[netId].name, nt:A.networks[netId].nameTs||0, ts:Math.floor(Date.now()/1000) };
     if(_av && _av.ext) payload.avatar=_av.ext; else if(_av) payload.avatarEnc=stripSrc(_av);
     const content=await encJSON(keys.groupKey, payload);
@@ -1649,7 +1675,7 @@ function saveData(){
     // Profile: don't persist a transient blob avatar URL (data: URLs are fine to keep)
     let prof=A.profile;
     if(prof && prof.avatar && String(prof.avatar).startsWith('blob:')){ const {avatar,...rest}=prof; prof=rest; }
-    idbSet(dataKey(), { networks:nets, activeNetId:A.activeNetId, profile:prof, relays:A.relays||null, joinTs:A.joinTs||null });
+    idbSet(dataKey(), { networks:nets, activeNetId:A.activeNetId, profile:prof, relays:A.relays||null, joinTs:A.joinTs||null, deletedNets:A.deletedNets||null, netOrder:A.netOrder||null });
   },250);
 }
 
@@ -2069,6 +2095,9 @@ async function enterApp(npub){
     // only record that lets my own device tell a stale replayed 'remove' event
     // (from before my current membership) apart from a genuinely new removal.
     joinTs:{},
+    // Networks deleted by their owner, keyed by join code. Prevents a rejoin
+    // with the old code from resurrecting the network from relay backfill.
+    deletedNets:{},
   };
 
   Relay.connect();
@@ -2100,6 +2129,8 @@ async function enterApp(npub){
       if(saved.profile) A.profile={ name:saved.profile.name||"You", bio:saved.profile.bio||"", avatar:saved.profile.avatar||null, keyBackedUp:!!saved.profile.keyBackedUp, theme:(saved.profile.theme==='dark'?'dark':'light') };
       if(Array.isArray(saved.relays) && saved.relays.length) A.relays=saved.relays;
       if(saved.joinTs && typeof saved.joinTs==='object') A.joinTs=saved.joinTs;
+      if(saved.deletedNets && typeof saved.deletedNets==='object') A.deletedNets=saved.deletedNets;
+      if(Array.isArray(saved.netOrder)) A.netOrder=saved.netOrder;
       if(saved.networks && Object.keys(saved.networks).length){
         A.networks=saved.networks;
         A.activeNetId=saved.activeNetId && saved.networks[saved.activeNetId] ? saved.activeNetId : Object.keys(saved.networks)[0];
@@ -2221,13 +2252,26 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
+  { v:'0.8.5', date:'July 2026', title:'Quality of life', changes:[
+    ['new','Paste a YouTube, Spotify, or Vimeo link when posting and it becomes a tappable preview card — built privately on your device, so nobody\u2019s servers see who views it'],
+    ['new','Polls can now have an end time — 1 hour to 1 week. Voting closes for everyone when time runs out'],
+    ['new','Filter your feed by This week, Last week, or All'],
+    ['new','Owners can delete a whole network — type DELETE NETWORK to confirm, and it disappears from every member\u2019s app. Networks abandoned by their last member clean themselves up too'],
+    ['new','Swipe left and right to move between Feed and My Page'],
+    ['new','Tap any avatar — in comments, likes, or activity — to see that person\u2019s profile'],
+    ['new','Tap a post\u2019s \u201c3d ago\u201d to see the exact date and time; opening a post shows the full date automatically'],
+    ['new','Reorder your networks or leave one straight from the network switcher — tap Edit'],
+    ['new','Clear your whole Activity list in one tap'],
+    ['new','You now get notified when someone replies in a thread you commented on — not just on your own posts. Activity in other networks shows on their badge'],
+    ['change','Joining from an invite link is now instant — your key is created quietly in the background and you just pick a name. Back it up anytime from Settings'],
+    ['change','The key backup screen is simpler — one clear place to save your key, plus an \u201cI\u2019ve backed up my key\u201d button so the reminder knows to stand down'],
+    ['change','Invite details now live in one place — the invite screen — instead of being repeated on the Network tab'],
+  ]},
   { v:'0.8.1', date:'July 2026', title:'Security & stability', changes:[
     ['fix','A dropped connection no longer leaves duplicate relay connections running in the background — kinder to your data and battery'],
     ['fix','Notifications no longer pile on top of each other — the newest message cleanly replaces the last'],
     ['fix','The keyboard no longer closes mid-comment when network changes arrive in the background'],
     ['fix','Your private key is now wiped from memory the moment you log out'],
-    ['new','You now get notified when someone replies in a thread you commented on — not just on your own posts. Activity in other networks shows on their badge'],
-    ['change','Joining from an invite link is now instant — your key is created quietly in the background and you just pick a name. Back it up anytime from Settings'],
     ['change','Adding a relay now requires a secure wss:// address — insecure ones never worked anyway, now you get a clear message instead of silence'],
     ['change','Deleting your own posts and comments now also asks the relay servers to erase the original data, not just hide it in the app'],
     ['change','Added browser-level security protections against injected content and insecure connections'],
@@ -2534,6 +2578,71 @@ function claimOwnership(netId){
   publishMeta(netId);
   showToast("You're now the owner");
 }
+/* ── Delete network (owner only) ─────────────────────────────
+   The owner publishes an encrypted net-delete tombstone; every member's client
+   verifies the owner signature and removes the network locally. The join code
+   is marked dead in A.deletedNets so rejoining can't resurrect it from backfill. */
+function applyNetDelete(netId, ts){
+  const net=A.networks[netId]; if(!net) return;
+  const name=net.name||'This network';
+  if(!A.deletedNets) A.deletedNets={};
+  if(net.code) A.deletedNets[net.code]=ts||Math.floor(Date.now()/1000);
+  try{ if(A.netKeys[netId]) Relay.unsubscribe('moments-'+A.netKeys[netId].tag); }catch(e){}
+  delete A.networks[netId];
+  if(A.netKeys) delete A.netKeys[netId];
+  if(A.subscribed) delete A.subscribed[netId];
+  if(A.unread) delete A.unread[netId];
+  if(A.live) delete A.live[netId];
+  if(A.activeNetId===netId){
+    const ids=Object.keys(A.networks);
+    A.activeNetId = ids.length ? ids[0] : null;
+    A.showNetPicker=false; A.showInvite=false; A.profileId=null;
+    A.viewPostId=null; A.replyPostId=null; A.likersPostId=null; A.tab=0;
+  }
+  saveData(); renderApp();
+  showToast('"'+name+'" was deleted by its owner');
+}
+function deleteNetworkAsk(netId){ A.confirmDeleteNet=netId; renderApp(); }
+function cancelDeleteNet(){ A.confirmDeleteNet=null; renderApp(); }
+function checkDeleteNetInput(inp){
+  const btn=document.getElementById('delnet-go');
+  if(btn) btn.disabled = inp.value.trim()!=='DELETE NETWORK';
+}
+async function publishNetDelete(netId){
+  try{
+    const net=A.networks[netId]; if(!net) return;
+    const keys=A.netKeys[netId]||await deriveNetwork(net.code); A.netKeys[netId]=keys;
+    const payload={ v:1, t:'net-delete', ts:Math.floor(Date.now()/1000) };
+    const content=await encJSON(keys.groupKey, payload);
+    const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
+    markSeen(ev.id);
+    Relay.connect();
+    Relay.publish(ev);
+  }catch(e){}
+}
+async function confirmDeleteNetwork(){
+  const inp=document.getElementById('delnet-input');
+  if(!inp || inp.value.trim()!=='DELETE NETWORK') return;
+  const netId=A.confirmDeleteNet; A.confirmDeleteNet=null;
+  if(!A.networks[netId]) return;
+  await publishNetDelete(netId);
+  applyNetDelete(netId, Math.floor(Date.now()/1000));
+}
+function buildDeleteNetConfirm(){
+  const net=A.networks[A.confirmDeleteNet]; if(!net) return '';
+  return `<div onclick="cancelDeleteNet()" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:24px">
+    <div onclick="event.stopPropagation()" style="background:${C.surface};border:1px solid rgba(248,113,113,0.4);border-radius:20px;padding:22px;width:100%;max-width:340px">
+      <div style="color:${C.red};font-size:15px;font-weight:700;margin-bottom:8px">Delete "${esc(net.name)}"?</div>
+      <div style="color:${C.textDim};font-size:13px;line-height:1.6;margin-bottom:14px">This removes the network from every member's app. Photos and comments will be gone for everyone. This cannot be undone.</div>
+      <div style="color:${C.muted};font-size:12px;margin-bottom:6px">Type <strong style="color:${C.red}">DELETE NETWORK</strong> to confirm</div>
+      <input id="delnet-input" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" oninput="checkDeleteNetInput(this)" placeholder="DELETE NETWORK" style="width:100%;background:var(--c-input,rgba(0,0,0,.15));border:1px solid rgba(248,113,113,0.4);border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:monospace;letter-spacing:1px;outline:none;margin-bottom:14px"/>
+      <div style="display:flex;gap:10px">
+        <button onclick="cancelDeleteNet()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>
+        <button id="delnet-go" disabled onclick="confirmDeleteNetwork()" style="flex:1;background:${C.red};color:#fff;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer;opacity:1">Delete forever</button>
+      </div>
+    </div>
+  </div>`;
+}
 function leaveNetwork(netId, silent){
   const net=A.networks[netId]; if(!net) return;
   if(silent){ _doLeave(netId); return; }
@@ -2541,6 +2650,18 @@ function leaveNetwork(netId, silent){
 }
 async function _doLeave(netId){
   const net=A.networks[netId]; if(!net) return;
+  // Abandoned-network cleanup: if I'm the last member, my leave orphans the
+  // network — nobody remains and the code becomes a ghost. As the owner (or
+  // sole member of an owner-less network, which the take-ownership rule makes
+  // equivalent), publish the delete tombstone so the code is dead for future
+  // joiners too. Either way, mark it dead locally so this device can't
+  // accidentally resurrect it from backfill by rejoining.
+  const lastMember=(net.members||[]).filter(m=>!m.isMe).length===0;
+  if(lastMember){
+    if(!A.deletedNets) A.deletedNets={};
+    if(net.code) A.deletedNets[net.code]=Math.floor(Date.now()/1000);
+    if(isOwner(net) || !net.ownerPk) await publishNetDelete(netId);
+  }
   await publishLeave(netId);   // tell everyone else I'm leaving (so my name doesn't linger)
   try{ if(A.netKeys[netId]) Relay.unsubscribe('moments-'+A.netKeys[netId].tag); }catch(e){}
   delete A.networks[netId];
@@ -2666,6 +2787,7 @@ function copyInviteCode(){
   copyToClipboard(net.code).then(ok=>{ showToast(ok?'Code copied':'Select the code above to copy'); });
 }
 function closeInvite(){ A.showInvite=false; renderApp(); }
+function setFeedRange(r){ A.feedRange=r; haptic(6); renderApp(); }
 function openProfile(id){
   if(!id || id==='u1') return; // own profile lives on My Page
   A.profileId=id; A.showNetPicker=false;
@@ -2807,10 +2929,11 @@ function canIPost(net){
 function openUpload(){
   const net=currentNet();
   if(!canIPost(net)){ showToast('Only the owner can post in this network'); return; }
-  A.showUpload=true; A.pendingPhoto={image:null,caption:''}; A.pollMode=false; A.pollOptions=['','']; renderApp();
+  A.showUpload=true; A.pendingPhoto={image:null,caption:''}; A.pollMode=false; A.pollOptions=['','']; A.pollExpiry=null; renderApp();
 }
-function closeUpload(){ A.showUpload=false; A.pendingPhoto=null; A.pollMode=false; A.pollOptions=['','']; renderApp(); }
+function closeUpload(){ A.showUpload=false; A.pendingPhoto=null; A.pollMode=false; A.pollOptions=['','']; A.pollExpiry=null; renderApp(); }
 // ── Poll composer ──
+function setPollExpiry(sec){ A.pollExpiry=sec||null; renderApp(); }
 function setPollMode(on){ A.pollMode=!!on; if(on && (!A.pollOptions||A.pollOptions.length<2)) A.pollOptions=['','']; renderApp(); }
 function setPollOption(i, v){ if(!A.pollOptions) A.pollOptions=['','']; A.pollOptions[i]=v; }
 function addPollOption(){ if(!A.pollOptions) A.pollOptions=['','']; if(A.pollOptions.length<6){ A.pollOptions.push(''); renderApp(); } }
@@ -2828,11 +2951,11 @@ async function sharePoll(){
   A.uploading=true; renderApp();          // disable the button while we submit
   const post={ id:"p"+Date.now(), memberId:"u1", authorPk:myPubkey(),
     caption:question, image:null, enc:null,
-    poll:{ options }, voteBy:{},
+    poll:{ options, ...(A.pollExpiry?{exp:Math.floor(Date.now()/1000)+A.pollExpiry}:{}) }, voteBy:{},
     time:"just now", likes:0, liked:false, likeBy:{}, replies:[], ts:Math.floor(Date.now()/1000),
     status:'sending' };
   net.posts.unshift(post);
-  A.uploading=false; A.showUpload=false; A.pendingPhoto=null; A.pollMode=false; A.pollOptions=['',''];
+  A.uploading=false; A.showUpload=false; A.pendingPhoto=null; A.pollMode=false; A.pollOptions=['','']; A.pollExpiry=null;
   saveData(); renderApp();
   attemptPublish(net.id, post);
 }
@@ -2840,6 +2963,7 @@ async function sharePoll(){
 function votePoll(pid, optIndex){
   const net=currentNet(); const p=net&&net.posts.find(x=>x.id===pid);
   if(!p || !p.poll) return;
+  if(p.poll.exp && Math.floor(Date.now()/1000)>p.poll.exp){ showToast('This poll has ended'); return; }
   haptic(10);
   if(!p.voteBy) p.voteBy={};
   const mk=myPubkey()||'self';
@@ -2875,15 +2999,23 @@ function pollTally(post){
   return { counts, total, myVote, winnerIdx };
 }
 // Render a poll's options with vote bars
+function pollExpLabel(exp){
+  const left=exp-Math.floor(Date.now()/1000);
+  if(left<=0) return null;
+  if(left<3600) return Math.max(1,Math.round(left/60))+'m left';
+  if(left<86400) return Math.round(left/3600)+'h left';
+  return Math.round(left/86400)+'d left';
+}
 function pollHTML(net, post){
   const opts=(post.poll&&post.poll.options)||[];
   const { counts, total, myVote, winnerIdx } = pollTally(post);
+  const ended=!!(post.poll.exp && Math.floor(Date.now()/1000)>post.poll.exp);
   return `<div style="margin:2px 0 6px;display:flex;flex-direction:column;gap:8px">
     ${opts.map((o,i)=>{
       const c=counts[i]; const pct=total?Math.round(c/total*100):0;
       const voted=myVote===i;
       const win=i===winnerIdx;
-      return `<button onclick="event.stopPropagation();votePoll('${post.id}',${i})" style="position:relative;width:100%;text-align:left;background:${C.surfaceHigh};border:1.5px solid ${voted?C.accent:'transparent'};border-radius:12px;padding:0;overflow:hidden;cursor:pointer">
+      return `<button onclick="event.stopPropagation();${ended?'':`votePoll('${post.id}',${i})`}" style="position:relative;width:100%;text-align:left;background:${C.surfaceHigh};border:1.5px solid ${voted?C.accent:'transparent'};border-radius:12px;padding:0;overflow:hidden;cursor:pointer">
         <div style="position:absolute;inset:0;width:${pct}%;background:${win?C.accentDim:'rgba(255,140,66,0.10)'};transition:width .35s"></div>
         <div style="position:relative;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px">
           <span style="color:${C.text};font-size:14px;font-weight:${voted||win?700:500}">${win?'👑 ':''}${esc(o)}${voted?' ✓':''}</span>
@@ -2891,7 +3023,7 @@ function pollHTML(net, post){
         </div>
       </button>`;
     }).join('')}
-    <div style="color:${C.muted};font-size:11px;margin-top:2px">${total} vote${total===1?'':'s'}${myVote===null?' · tap to vote':''}</div>
+    <div style="color:${C.muted};font-size:11px;margin-top:2px">${total} vote${total===1?'':'s'}${ended?' · Poll ended':(post.poll.exp?(' · '+(pollExpLabel(post.poll.exp)||'')):'')+(myVote===null?' · tap to vote':'')}</div>
   </div>`;
 }
 // Camera button in the bottom nav — jump to My Page, open the composer, and prompt the picker
@@ -3151,6 +3283,7 @@ const _pendingJoinPasswords={};
 function joinWithCode(rawCode, enteredPassword){
   const code=parseScannedCode(rawCode)||String(rawCode||'').trim().toUpperCase();
   if(code.length<6) return false;
+  if(A.deletedNets && A.deletedNets[code]){ showToast('That network was deleted by its owner'); return false; }
   const existing=Object.values(A.networks).find(nw=>nw.code===code);
   if(existing){ switchNetwork(existing.id); return true; }
   const id='net-'+Date.now();
@@ -3703,7 +3836,7 @@ function saveProfile(){
   saveData(); renderApp();
   publishProfile();
 }
-function setPhotoCaption(v){ if(A.pendingPhoto) A.pendingPhoto.caption=v; }
+function setPhotoCaption(v){ if(A.pendingPhoto){ A.pendingPhoto.caption=v; if(!A.pollMode) detectComposerLink(v); } }
 function onClearPhoto(){ if(A.pendingPhoto){ A.pendingPhoto.image=null; A.pendingPhoto.blob=null; } renderApp(); }
 async function onPickPhoto(input){
   const file=input.files && input.files[0];
@@ -3771,6 +3904,97 @@ function useAvatarUrl(){
   // External link — used as-is (already public by the user's choice), no encryption
   A.profileDraft.avatar=url; A.profileDraft.avatarBlob=null; A.profileDraft.avatarExternal=true; renderApp();
 }
+/* ── Link previews ─────────────────────────────────────────────
+   Paste a URL into the composer and a preview card is built ON THE POSTER'S
+   DEVICE: title via CORS-friendly oEmbed (YouTube/Spotify/Vimeo), thumbnail
+   fetched once, downscaled, and embedded as a data URL INSIDE the encrypted
+   payload. Viewers never contact any third party — the preview is ciphertext
+   like everything else. Unknown domains get a clean monogram card, no fetch. */
+const _LINK_RX=/https?:\/\/[^\s<>"']+/;
+let _linkDetectTimer=null;
+function detectComposerLink(v){
+  clearTimeout(_linkDetectTimer);
+  _linkDetectTimer=setTimeout(async ()=>{
+    const pp=A.pendingPhoto; if(!pp) return;
+    const m=(v||'').match(_LINK_RX);
+    const url=m?m[0].replace(/[).,;!?]+$/,''):null;
+    const slot=document.getElementById('composer-link-slot');
+    if(!url || pp._linkDismissed===url){
+      if(pp.link){ pp.link=null; pp._linkUrl=null; if(slot) slot.innerHTML=''; }
+      return;
+    }
+    if(pp._linkUrl===url) return;
+    pp._linkUrl=url;
+    if(slot) slot.innerHTML='<div style="color:'+C.muted+';font-size:12px;padding:4px 2px 8px">Fetching preview…</div>';
+    const link=await buildLinkPreview(url);
+    if(A.pendingPhoto!==pp || pp._linkUrl!==url) return; // composer changed meanwhile
+    pp.link=link;
+    const slot2=document.getElementById('composer-link-slot');
+    if(slot2) slot2.innerHTML=composerLinkCard(link);
+  }, 500);
+}
+function removeComposerLink(){
+  const pp=A.pendingPhoto; if(!pp) return;
+  pp._linkDismissed=pp._linkUrl; pp.link=null; pp._linkUrl=null;
+  const slot=document.getElementById('composer-link-slot');
+  if(slot) slot.innerHTML='';
+}
+async function buildLinkPreview(url){
+  let domain=''; try{ domain=new URL(url).hostname.replace(/^www\./,''); }catch(_){ }
+  const base={ url:url.slice(0,600), domain:domain.slice(0,80), title:null, img:null };
+  try{
+    let oembed=null, thumb=null;
+    const yt=url.match(/(?:youtube\.com\/(?:watch\?[^ ]*v=|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{6,20})/);
+    if(yt){ oembed='https://www.youtube.com/oembed?format=json&url='+encodeURIComponent(url); thumb='https://i.ytimg.com/vi/'+yt[1]+'/hqdefault.jpg'; }
+    else if(/open\.spotify\.com\/(track|album|playlist|episode|show|artist)\//.test(url)) oembed='https://open.spotify.com/oembed?url='+encodeURIComponent(url);
+    else if(/vimeo\.com\/\d+/.test(url)) oembed='https://vimeo.com/api/oembed.json?url='+encodeURIComponent(url);
+    if(oembed){
+      const ctl=new AbortController(); const to=setTimeout(()=>ctl.abort(),5000);
+      const res=await fetch(oembed,{signal:ctl.signal}).catch(()=>null); clearTimeout(to);
+      if(res && res.ok){
+        const j=await res.json().catch(()=>null);
+        if(j){ base.title=(j.title||'').slice(0,140)||null; if(!thumb && j.thumbnail_url) thumb=j.thumbnail_url; }
+      }
+    }
+    if(thumb) base.img=await _inlineLinkImage(thumb);
+  }catch(_){ }
+  return base;
+}
+function _inlineLinkImage(src){
+  return new Promise(resolve=>{
+    const img=new Image(); img.crossOrigin='anonymous';
+    const to=setTimeout(()=>resolve(null),6000);
+    img.onload=()=>{ clearTimeout(to);
+      try{
+        const w=Math.min(480,img.naturalWidth||480);
+        const h=Math.max(1,Math.round(w*(img.naturalHeight||270)/(img.naturalWidth||480)));
+        const c=document.createElement('canvas'); c.width=w; c.height=h;
+        c.getContext('2d').drawImage(img,0,0,w,h);
+        resolve(c.toDataURL('image/jpeg',0.72));
+      }catch(_){ resolve(null); } // tainted canvas → monogram card; never hot-load for viewers
+    };
+    img.onerror=()=>{ clearTimeout(to); resolve(null); };
+    img.src=src;
+  });
+}
+function openLink(u){ if(typeof u==='string' && /^https?:\/\//.test(u)) window.open(u,'_blank','noopener'); }
+function linkCardHTML(post){
+  const l=post.link; if(!l || !l.url) return '';
+  const dom=esc(l.domain||l.url.replace(/^https?:\/\//,'').split('/')[0]);
+  return `<div data-url="${esc(l.url)}" onclick="event.stopPropagation();openLink(this.dataset.url)" style="display:flex;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:14px;overflow:hidden;cursor:pointer;margin:12px 0 2px">
+    ${l.img?`<img src="${l.img}" alt="" style="width:92px;height:76px;object-fit:cover;flex-shrink:0"/>`
+           :`<div style="width:56px;height:76px;flex-shrink:0;background:${C.accentDim};display:flex;align-items:center;justify-content:center;color:${C.accent};font-size:20px;font-weight:800">${(dom[0]||'?').toUpperCase()}</div>`}
+    <div style="padding:10px 12px;min-width:0;display:flex;flex-direction:column;justify-content:center">
+      ${l.title?`<div style="color:${C.text};font-size:13px;font-weight:600;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(l.title)}</div>`:''}
+      <div style="color:${C.muted};font-size:11px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🔗 ${dom}</div>
+    </div>
+  </div>`;
+}
+function composerLinkCard(l){
+  return `<div style="position:relative;margin-bottom:8px">${linkCardHTML({link:l})}
+    <button aria-label="Remove link preview" onclick="removeComposerLink()" style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.45);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:12px;cursor:pointer;line-height:1">✕</button>
+  </div>`;
+}
 async function sharePhoto(){
   if(A.uploading) return;                 // already submitting — ignore double taps
   const net=currentNet(); if(!net) return;
@@ -3786,6 +4010,7 @@ async function sharePhoto(){
   const post={ id:"p"+Date.now(), memberId:"u1", authorPk:myPubkey(),
     caption:caption,
     image:hasPhoto?pp.image:null, enc:null, hosted:!!(pp&&pp.remote), isVideo:!!(pp&&pp.isVideo),
+    link:pp.link?{url:pp.link.url,domain:pp.link.domain,title:pp.link.title||null,img:pp.link.img||null}:null,
     time:"just now", likes:0, liked:false, likeBy:{}, replies:[], ts:Math.floor(Date.now()/1000),
     status:'sending' };
   // keep the source bytes so we can (re)encrypt + (re)upload on retry (photo posts only)
@@ -3968,7 +4193,19 @@ function buildFeed(net){
   // Posts that arrived while the user was watching the feed are held back until
   // they tap the "new moments" pill (or pull to refresh) — no feed jumping.
   const pending=(A.pendingFeed&&A.pendingFeed[net.id])||{};
-  const visiblePosts=net.posts.filter(p=>!pending[p.id]);
+  // Feed range filter: This week / Last week / All (calendar weeks, Mon 00:00 local).
+  // Session-only preference; legacy posts without a timestamp only show under All.
+  const range=A.feedRange||'all';
+  const _now=new Date(); _now.setHours(0,0,0,0);
+  const _monday=Math.floor((_now.getTime()-(((_now.getDay()+6)%7)*86400000))/1000);
+  const _lastMonday=_monday-7*86400;
+  const inRange=p=>{
+    if(range==='all') return true;
+    if(!p.ts) return false;
+    if(range==='week') return p.ts>=_monday;
+    return p.ts>=_lastMonday && p.ts<_monday; // lastweek
+  };
+  const visiblePosts=net.posts.filter(p=>!pending[p.id] && inRange(p));
   const memberStrip = net.members.slice(0,3).map((mem,i)=>`
     <button onclick="openProfile('${mem.id}')" style="margin-left:${i===0?0:-6}px;position:relative;z-index:${3-i};background:none;border:none;padding:0;cursor:${mem.isMe?'default':'pointer'}" aria-label="View ${esc(mem.name)}">${avatarHTML(mem,24,8,12,1.5)}</button>
   `).join('');
@@ -3980,6 +4217,12 @@ function buildFeed(net){
            <div style="width:26px;height:26px;border:3px solid ${C.accent}44;border-top-color:${C.accent};border-radius:50%;animation:ptrSpin .8s linear infinite;margin:0 auto 14px"></div>
            <div style="color:${C.text};font-size:14px;font-weight:600">Loading your network's moments…</div>
          </div>`
+      : range!=='all' && net.posts.length
+      ? `<div style="text-align:center;padding:44px 28px;line-height:1.7">
+         <div style="font-size:34px;margin-bottom:10px">🗓️</div>
+         <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:4px">Nothing ${range==='week'?'this week':'last week'}</div>
+         <div style="color:${C.muted};font-size:13px">Switch to All to see every moment.</div>
+       </div>`
       : `<div style="text-align:center;padding:44px 28px;line-height:1.7">
          <div style="font-size:40px;margin-bottom:10px">📷</div>
          <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:4px">No moments yet</div>
@@ -4002,6 +4245,7 @@ function buildFeed(net){
           <div style="padding:${(post.image||post.enc)?'10px 14px 14px':'2px 14px 14px'}">
             ${post.caption?`<div style="font-family:'Playfair Display',serif;${(post.image||post.enc)?'font-style:italic;font-size:13px;color:'+C.textDim:'font-size:16px;line-height:1.5;color:'+C.text};margin-bottom:10px;white-space:pre-wrap;word-break:break-word">${esc(post.caption)}</div>`:''}
             ${post.poll?pollHTML(net,post):''}
+            ${post.link?linkCardHTML(post):''}
             <div style="display:flex;align-items:center;gap:14px">
               <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" onpointerdown="likePress('${post.id}')" onpointerup="likeRelease('${post.id}')" onpointercancel="likeCancel()" onpointerleave="likeCancel()" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:13px;font-weight:600;user-select:none;-webkit-user-select:none">
                 <span style="font-size:17px">${post.liked?"♥":"♡"}</span>
@@ -4024,6 +4268,10 @@ function buildFeed(net){
       <div style="padding:4px 20px 14px;display:flex;align-items:center;gap:10px">
         <div style="display:flex">${memberStrip}</div>
         <button onclick="setTab(1)" style="background:none;border:none;padding:0;cursor:pointer;color:${C.textDim};font-size:12px;text-align:left" aria-label="See all members">${esc(net.name)} · ${net.members.length} member${net.members.length>1?'s':''}</button>
+      </div>
+      <div style="display:flex;gap:6px;padding:0 16px 12px">
+        ${[['week','This week'],['lastweek','Last week'],['all','All']].map(([k,label])=>`
+          <button onclick="setFeedRange('${k}')" style="flex:1;background:${range===k?C.accentDim:'none'};border:1px solid ${range===k?C.accentBorder:'var(--c-border)'};color:${range===k?C.accent:C.muted};border-radius:20px;padding:7px 0;font-size:12px;font-weight:700;cursor:pointer">${label}</button>`).join('')}
       </div>
       <div style="display:flex;flex-direction:column;gap:14px;padding:0 16px">${postsHtml}</div>
     </div>
@@ -4089,6 +4337,7 @@ function buildNetwork(net){
       </div>
       <span style="color:${net.membersCanPost===false?C.accent:C.muted};font-size:13px;font-weight:700">${net.membersCanPost===false?'Owner only':'Everyone'}</span>
     </button>`:''}
+    ${owner?`<button onclick="deleteNetworkAsk('${net.id}')" style="width:100%;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:16px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer">Delete network</button>`:''}
     <button onclick="leaveNetwork('${net.id}')" style="width:100%;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:16px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;margin-top:14px">Leave network</button>
   </div>`;
 }
@@ -4096,6 +4345,24 @@ function buildNetwork(net){
 function setMyTab(t){ A.myTab=t; renderApp(); }
 
 // Gather recent likes + comments OTHERS made on my posts, newest first.
+function clearAllActivity(){
+  const net=currentNet(); if(!net) return;
+  if(!net.activityDismissed) net.activityDismissed={};
+  const now=Math.floor(Date.now()/1000);
+  const myPk=myPubkey();
+  const isMine=p=>p.memberId==='u1'||p.authorPk===myPk;
+  // Dismiss exactly the keys buildActivity derives, so the two stay in lockstep.
+  (net.posts||[]).filter(isMine).forEach(p=>{
+    if(p.likeBy) Object.keys(p.likeBy).forEach(pk=>{
+      const l=p.likeBy[pk];
+      if(l && l.v && pk!==myPk && pk!=='u1') net.activityDismissed['like:'+p.id+':'+pk]=now;
+    });
+    (p.replies||[]).forEach(r=>{
+      if(r.memberId!=='u1' && r.memberId!==myPk) net.activityDismissed['comment:'+r.id]=now;
+    });
+  });
+  haptic(10); saveData(); renderApp();
+}
 function buildActivity(net){
   const myPk=myPubkey();
   const isMine = p => p.memberId==='u1' || p.authorPk===myPk;
@@ -4131,7 +4398,10 @@ function buildActivity(net){
     </div>`;
   }
 
-  return `<div style="display:flex;flex-direction:column;gap:8px">${items.slice(0,60).map(it=>{
+  return `<div style="display:flex;justify-content:flex-end;margin-bottom:2px">
+    <button onclick="clearAllActivity()" style="background:none;border:none;color:${C.muted};font-size:12px;font-weight:600;cursor:pointer;padding:4px 2px">Clear all</button>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:8px">${items.slice(0,60).map(it=>{
     const mem=memberIn(net,it.pk);
     const name=esc(mem.name||'Someone');
     const when=it.ts?esc(relTime(it.ts*1000)):'';
@@ -4188,6 +4458,11 @@ function buildMyPage(net){
             ${pollOpts.length>2?`<button aria-label="Remove option" onclick="removePollOption(${i})" style="background:none;border:none;color:${C.muted};font-size:18px;cursor:pointer;padding:0 4px;flex-shrink:0">✕</button>`:''}
           </div>`).join('')}
         ${pollOpts.length<6?`<button onclick="addPollOption()" style="background:${C.surfaceHigh};border:1px dashed ${C.accentBorder};color:${C.accent};border-radius:12px;padding:9px 0;width:100%;font-size:13px;font-weight:600;cursor:pointer">＋ Add option</button>`:''}
+        <div style="color:${C.muted};font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;margin:12px 0 6px">Poll ends</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          ${[[null,'No limit'],[3600,'1 hour'],[86400,'1 day'],[259200,'3 days'],[604800,'1 week']].map(([sec,label])=>`
+            <button onclick="setPollExpiry(${sec===null?'null':sec})" style="background:${(A.pollExpiry||null)===sec?C.accentDim:'none'};border:1px solid ${(A.pollExpiry||null)===sec?C.accentBorder:'var(--c-border)'};color:${(A.pollExpiry||null)===sec?C.accent:C.muted};border-radius:16px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer">${label}</button>`).join('')}
+        </div>
       </div>` : picker;
 
   const upload = A.showUpload ? `
@@ -4200,6 +4475,7 @@ function buildMyPage(net){
       </div>
       ${pollUI}
       <textarea id="caption-input" maxlength="280" oninput="setPhotoCaption(this.value)" placeholder="${pollMode?'Ask a question…':'What\u2019s on your mind?'}" rows="2" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:6px;resize:none;line-height:1.5">${esc(pp.caption)}</textarea>
+      <div id="composer-link-slot">${(!pollMode && A.pendingPhoto && A.pendingPhoto.link)?composerLinkCard(A.pendingPhoto.link):''}</div>
       <div id="upload-err" style="color:${C.warm};font-size:12px;min-height:16px;margin-bottom:8px"></div>
       <div style="display:flex;gap:10px">
         <button onclick="${pollMode?'sharePoll()':'sharePhoto()'}" ${uploading?'disabled':''} style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:${uploading?'wait':'pointer'};opacity:${uploading?0.6:1}">${uploading?'Sharing…':(pollMode?'Post poll':'Share')}</button>
@@ -4725,6 +5001,7 @@ function buildPostView(net){
       })()}
       ${(post.image||post.enc)&&post.caption?`<div style="font-family:'Playfair Display',serif;font-style:italic;color:${C.textDim};font-size:14px;margin:12px 4px 0">${esc(post.caption)}</div>`:''}
       ${post.poll?`<div style="margin:14px 2px 0">${pollHTML(net,post)}</div>`:''}
+      ${post.link?linkCardHTML(post):''}
       <div style="display:flex;align-items:center;gap:18px;margin:14px 4px 18px">
         <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" onpointerdown="likePress('${post.id}')" onpointerup="likeRelease('${post.id}')" onpointercancel="likeCancel()" onpointerleave="likeCancel()" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:14px;font-weight:600;user-select:none;-webkit-user-select:none">
           <span style="font-size:19px">${post.liked?'♥':'♡'}</span>
@@ -4740,33 +5017,62 @@ function buildPostView(net){
   </div>`;
 }
 
+/* Manual network ordering for the picker. netOrder holds ids; networks not in
+   it (new joins) append at the end; ids for departed networks are ignored. */
+function orderedNets(){
+  const all=Object.values(A.networks);
+  const order=A.netOrder||[];
+  const byId=Object.fromEntries(all.map(nw=>[nw.id,nw]));
+  const seen={};
+  const out=[];
+  order.forEach(id=>{ if(byId[id] && !seen[id]){ out.push(byId[id]); seen[id]=1; } });
+  all.forEach(nw=>{ if(!seen[nw.id]) out.push(nw); });
+  return out;
+}
+function moveNet(id, dir){
+  const ids=orderedNets().map(nw=>nw.id);
+  const i=ids.indexOf(id); const j=i+dir;
+  if(i<0 || j<0 || j>=ids.length) return;
+  [ids[i],ids[j]]=[ids[j],ids[i]];
+  A.netOrder=ids; haptic(6); saveData(); renderApp();
+}
+function toggleNetPickerEdit(){ A.netPickerEdit=!A.netPickerEdit; renderApp(); }
 function buildNetPicker(){
-  const nets=Object.values(A.networks);
+  const edit=!!A.netPickerEdit;
+  const nets=orderedNets();
   const items=nets.map((net,i)=>{
     const u=(A.unread&&A.unread[net.id])||0;
     const lastTs=net.posts&&net.posts.length?Math.max(...net.posts.map(p=>p.ts||0)):0;
     const lastAct=lastTs?relTime(lastTs*1000):'No posts yet';
     return `
-    <button onclick="event.stopPropagation();switchNetwork('${net.id}')" style="width:100%;background:${net.id===A.activeNetId?C.accentDim:'none'};border:none;border-bottom:${i<nets.length-1?'1px solid var(--c-border)':'none'};cursor:pointer;padding:14px 18px;display:flex;align-items:center;gap:12px;text-align:left">
+    <button onclick="event.stopPropagation();${edit?'':`switchNetwork('${net.id}')`}" style="width:100%;background:${net.id===A.activeNetId?C.accentDim:'none'};border:none;border-bottom:${i<nets.length-1?'1px solid var(--c-border)':'none'};cursor:pointer;padding:14px 18px;display:flex;align-items:center;gap:12px;text-align:left">
       <span style="width:30px;height:30px;border-radius:9px;background:${C.accentDim};border:1px solid ${C.accentBorder};color:${C.accent};font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0">${esc((net.name||'?').trim().charAt(0).toUpperCase()||'?')}</span>
       <div style="min-width:0;flex:1">
         <div style="color:${C.text};font-size:14px;font-weight:600">${esc(net.name)}</div>
         <div style="color:${C.muted};font-size:11px">${net.members.length} member${net.members.length>1?'s':''} · ${esc(lastAct)}</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
-        ${u>0?`<span style="min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:${C.warm};color:#0F0F14;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center">${u>9?'9+':u}</span>`:''}
-        ${net.id===A.activeNetId?`<span style="color:${C.accent};font-size:16px">✓</span>`:""}
+        ${edit?`
+          <button aria-label="Move up" onclick="event.stopPropagation();moveNet('${net.id}',-1)" ${i===0?'disabled':''} style="background:${C.surface};border:1px solid var(--c-border);color:${i===0?C.muted:C.text};border-radius:9px;width:30px;height:30px;font-size:14px;cursor:pointer;opacity:${i===0?0.4:1}">↑</button>
+          <button aria-label="Move down" onclick="event.stopPropagation();moveNet('${net.id}',1)" ${i===nets.length-1?'disabled':''} style="background:${C.surface};border:1px solid var(--c-border);color:${i===nets.length-1?C.muted:C.text};border-radius:9px;width:30px;height:30px;font-size:14px;cursor:pointer;opacity:${i===nets.length-1?0.4:1}">↓</button>
+          <button aria-label="Leave network" onclick="event.stopPropagation();leaveNetwork('${net.id}')" style="background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:9px;height:30px;padding:0 10px;font-size:11px;font-weight:700;cursor:pointer">Leave</button>
+        `:``}
+        ${!edit&&u>0?`<span style="min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:${C.warm};color:#0F0F14;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center">${u>9?'9+':u}</span>`:''}
+        ${!edit&&net.id===A.activeNetId?`<span style="color:${C.accent};font-size:16px">✓</span>`:""}
       </div>
     </button>`;
   }).join('');
   return `
   <div onclick="closeNetPicker()" style="position:absolute;inset:0;z-index:85;background:transparent"></div>
   <div style="position:absolute;top:78px;left:16px;right:16px;z-index:86;background:${C.surfaceHigh};border-radius:18px;border:1px solid var(--c-border);box-shadow:0 16px 48px rgba(0,0,0,0.6);overflow:hidden">
+    ${nets.length?`<div onclick="event.stopPropagation()" style="display:flex;justify-content:flex-end;padding:8px 12px 2px">
+      <button onclick="toggleNetPickerEdit()" style="background:none;border:none;color:${edit?C.accent:C.muted};font-size:12px;font-weight:700;cursor:pointer;padding:2px 4px">${edit?'Done':'Edit'}</button>
+    </div>`:''}
     ${items}
     <button onclick="event.stopPropagation();showJoinScreen()" style="width:100%;background:none;border:none;border-top:${nets.length?'1px solid var(--c-border)':'none'};padding:13px 18px;color:${C.accent};font-size:13px;font-weight:700;cursor:pointer;text-align:left">＋ Create or join a network</button>
   </div>`;
 }
-function closeNetPicker(){ if(A.showNetPicker){ A.showNetPicker=false; renderApp(); } }
+function closeNetPicker(){ A.netPickerEdit=false; if(A.showNetPicker){ A.showNetPicker=false; renderApp(); } }
 
 function renderApp(){
   applyTheme();
@@ -4856,6 +5162,7 @@ function renderApp(){
       ${A.showAdvanced?buildAdvanced():""}
       ${A.showWhatsNew?buildWhatsNew():""}
       ${A.confirmMsg?buildConfirm():""}
+      ${A.confirmDeleteNet?buildDeleteNetConfirm():""}
       ${A.menuPostId?buildPostMenu():""}
       ${A.editCaptionId?buildEditCaption():""}
       ${A.likersPostId?buildLikers(net):""}

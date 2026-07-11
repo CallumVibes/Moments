@@ -777,10 +777,12 @@ async function handleRemoteEvent(netId, ev){
   }
 
   let changed=false;
-  // Member identity (name/avatar/bio) only rides on profile/post/reply events.
-  // Other event types (meta, like, remove…) reuse `name` for different meanings,
-  // so applying it here would overwrite a member's display name (e.g. with the network name).
-  const carriesIdentity = (payload.t==='profile' || payload.t==='post' || payload.t==='reply');
+  // Member identity (name/avatar/bio) rides on profile/post/reply events, and —
+  // name only — on likes/votes (their payloads never reused `name`, so it's
+  // unambiguous). This lets a member who has only ever liked still show their
+  // chosen name in Activity instead of the "Friend" placeholder.
+  const carriesIdentity = (payload.t==='profile' || payload.t==='post' || payload.t==='reply'
+                           || ((payload.t==='like'||payload.t==='vote') && typeof payload.name==='string' && payload.name));
   if(!mine && carriesIdentity && !net.members.find(m=>m.id===pk)){
     const m={ id:pk, name:payload.name||'Friend', emoji:memEmoji(pk), color:memColor(pk), avatar:payload.avatar||null, avatarEnc:payload.avatarEnc||null, bio:(payload.bio||'') };
     net.members.push(m);
@@ -1165,7 +1167,7 @@ async function publishLike(netId, parentId, liked){
   try{
     const keys=A.netKeys[netId]||await deriveNetwork(A.networks[netId].code);
     A.netKeys[netId]=keys;
-    const payload={ v:1, t:'like', e:parentId, like:!!liked, ts:Math.floor(Date.now()/1000) };
+    const payload={ v:1, t:'like', e:parentId, like:!!liked, name:A.profile.name||'You', ts:Math.floor(Date.now()/1000) };
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag],['e',parentId]], content);
     markSeen(ev.id);
@@ -2808,7 +2810,15 @@ function copyInviteCode(){
 function closeInvite(){ A.showInvite=false; renderApp(); }
 function setFeedRange(r){ A.feedRange=r; haptic(6); renderApp(); }
 function openProfile(id){
-  if(!id || id==='u1') return; // own profile lives on My Page
+  if(!id) return;
+  const me=myPubkey();
+  if(id==='u1' || (me && id===me)){
+    // Your own profile lives on My Page — take the tap there.
+    A.profileId=null;
+    A.viewPostId=null; A.replyPostId=null; A.likersPostId=null;
+    setTab(2);  // also closes the net picker and renders
+    return;
+  }
   A.profileId=id; A.showNetPicker=false;
   // Close overlays that render above the profile in the stack — otherwise the
   // profile would open invisibly underneath the reply sheet / post view / likers.
@@ -2995,7 +3005,7 @@ async function publishVote(netId, pollId, optIndex){
   try{
     const keys=A.netKeys[netId]||await deriveNetwork(A.networks[netId].code);
     A.netKeys[netId]=keys;
-    const payload={ v:1, t:'vote', e:pollId, opt:optIndex, ts:Math.floor(Date.now()/1000) };
+    const payload={ v:1, t:'vote', name:A.profile.name||'You', e:pollId, opt:optIndex, ts:Math.floor(Date.now()/1000) };
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag],['e',pollId]], content);
     markSeen(ev.id);
@@ -3522,7 +3532,7 @@ function buildLikers(net){
   const list=likers.length===0
     ? `<div style="color:${C.muted};font-size:13px;text-align:center;padding:16px 0">No likes yet</div>`
     : likers.map(m=>`
-      <div ${m.id?`onclick="openProfile('${m.id}')"`:''} style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--c-border);cursor:${m.id&&m.id!=='u1'?'pointer':'default'}">
+      <div ${m.id?`onclick="openProfile('${m.id}')"`:''} style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--c-border);cursor:${m.id?'pointer':'default'}">
         ${avatarHTML(m,36,12,14,1.5)}
         <div style="color:${C.text};font-size:14px;font-weight:600">${esc(m.name)}</div>
         <span style="margin-left:auto;color:${C.warm};font-size:16px">♥</span>
@@ -4303,7 +4313,7 @@ function buildFeed(net){
   const pending=(A.pendingFeed&&A.pendingFeed[net.id])||{};
   // Feed range filter: This week / Last week / All (calendar weeks, Mon 00:00 local).
   // Session-only preference; legacy posts without a timestamp only show under All.
-  const range=A.feedRange||'all';
+  const range=A.feedRange||'week';   // opens on This week; All is one tap away
   const _now=new Date(); _now.setHours(0,0,0,0);
   const _monday=Math.floor((_now.getTime()-(((_now.getDay()+6)%7)*86400000))/1000);
   const _lastMonday=_monday-7*86400;
@@ -4315,7 +4325,7 @@ function buildFeed(net){
   };
   const visiblePosts=net.posts.filter(p=>!pending[p.id] && inRange(p));
   const memberStrip = net.members.slice(0,3).map((mem,i)=>`
-    <button onclick="openProfile('${mem.id}')" style="margin-left:${i===0?0:-6}px;position:relative;z-index:${3-i};background:none;border:none;padding:0;cursor:${mem.isMe?'default':'pointer'}" aria-label="View ${esc(mem.name)}">${avatarHTML(mem,24,8,12,1.5)}</button>
+    <button onclick="openProfile('${mem.id}')" style="margin-left:${i===0?0:-6}px;position:relative;z-index:${3-i};background:none;border:none;padding:0;cursor:pointer" aria-label="View ${esc(mem.name)}">${avatarHTML(mem,24,8,12,1.5)}</button>
   `).join('');
 
   const stillSyncing = !(A.eosed && A.eosed[net.id]) && Relay.isConnected();
@@ -4396,7 +4406,7 @@ function buildNetwork(net){
       : (!mem.isMe?`<div style="margin-left:auto;background:${C.accentDim};color:${C.accent};font-size:9px;font-weight:700;padding:3px 10px;border-radius:20px;letter-spacing:.5px;text-transform:uppercase">joined</div>`:"");
     return `
     <div style="display:flex;align-items:center;gap:12px">
-      <button onclick="openProfile('${mem.id}')" style="display:flex;align-items:center;gap:12px;background:none;border:none;cursor:${mem.isMe?'default':'pointer'};padding:0;text-align:left;flex:1;min-width:0">
+      <button onclick="openProfile('${mem.id}')" style="display:flex;align-items:center;gap:12px;background:none;border:none;cursor:pointer;padding:0;text-align:left;flex:1;min-width:0">
         ${avatarHTML(mem,44,14,20)}
         <div style="min-width:0">
           <div style="color:${C.text};font-size:14px;font-weight:600">${esc(mem.name)}${mem.isMe?" (you)":""}</div>
@@ -4521,7 +4531,7 @@ function buildActivity(net){
       : '';
     return `<div style="background:${C.surface};border-radius:14px;padding:12px 14px;display:flex;gap:11px;align-items:flex-start">
       <div onclick="openPostView('${it.postId}')" style="flex:1;min-width:0;cursor:pointer;display:flex;gap:11px;align-items:flex-start">
-        <div onclick="event.stopPropagation();openProfile('${mem.id||''}')" style="flex-shrink:0;cursor:${mem.id&&mem.id!=='u1'?'pointer':'default'}">${avatarHTML(mem,34,11,15,1.5)}</div>
+        <div onclick="event.stopPropagation();openProfile('${mem.id||''}')" style="flex-shrink:0;cursor:${mem.id?'pointer':'default'}">${avatarHTML(mem,34,11,15,1.5)}</div>
         <div style="flex:1;min-width:0">
           <div style="color:${C.text};font-size:13px;line-height:1.5">
             <strong style="font-weight:700">${name}</strong> ${verb} <span style="color:${C.muted}">${esc(it.label)}${it.label.length>=40?'…':''}</span>
@@ -5079,7 +5089,7 @@ function buildPostView(net){
     <div style="padding:18px 18px 10px;display:flex;align-items:center;gap:12px;flex-shrink:0">
       <button aria-label="Back" onclick="closePostView()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">←</button>
       <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
-        <div onclick="openProfile('${post.memberId}')" style="flex-shrink:0;cursor:${post.memberId!=='u1'?'pointer':'default'}">${avatarHTML(mem,34,11,14,2)}</div>
+        <div onclick="openProfile('${post.memberId}')" style="flex-shrink:0;cursor:pointer">${avatarHTML(mem,34,11,14,2)}</div>
         <div style="min-width:0">
           <div style="color:${C.text};font-size:14px;font-weight:600;font-family:'Playfair Display',serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(mem.name||'Friend')}</div>
           <div class="post-time" data-ts="${post.ts||0}" ${post.ts?'data-abs="1"':''} onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${post.ts?esc(fmtAbs(post.ts)):esc(fmtTime(post))}</span>${postStatus(net,post)}</div>
@@ -5152,23 +5162,28 @@ function buildNetPicker(){
     const u=(A.unread&&A.unread[net.id])||0;
     const lastTs=net.posts&&net.posts.length?Math.max(...net.posts.map(p=>p.ts||0)):0;
     const lastAct=lastTs?relTime(lastTs*1000):'No posts yet';
+    // Edit mode renders the row as a <div>: buttons may not nest inside a
+    // <button>, and browsers eject the inner ones, shattering the layout.
+    const tag=edit?'div':'button';
+    const rowAct=edit?'':`onclick="event.stopPropagation();switchNetwork('${net.id}')"`;
+    const ctlBtn=(label,glyph,act,off)=>`<button aria-label="${label}" onclick="event.stopPropagation();${act}" ${off?'disabled':''} style="flex-shrink:0;width:30px;height:30px;border-radius:10px;background:${C.surface};border:1px solid var(--c-border);color:${off?C.muted:C.text};opacity:${off?0.35:1};font-size:14px;line-height:1;cursor:${off?'default':'pointer'};display:flex;align-items:center;justify-content:center;padding:0">${glyph}</button>`;
     return `
-    <button onclick="event.stopPropagation();${edit?'':`switchNetwork('${net.id}')`}" style="width:100%;background:${net.id===A.activeNetId?C.accentDim:'none'};border:none;border-bottom:${i<nets.length-1?'1px solid var(--c-border)':'none'};cursor:pointer;padding:14px 18px;display:flex;align-items:center;gap:12px;text-align:left">
-      <span style="width:30px;height:30px;border-radius:9px;background:${C.accentDim};border:1px solid ${C.accentBorder};color:${C.accent};font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0">${esc((net.name||'?').trim().charAt(0).toUpperCase()||'?')}</span>
+    <${tag} ${rowAct} style="width:100%;background:${net.id===A.activeNetId?C.accentDim:'none'};border:none;border-bottom:${i<nets.length-1?'1px solid var(--c-border)':'none'};cursor:${edit?'default':'pointer'};padding:13px 14px 13px 18px;display:flex;align-items:center;gap:12px;flex-wrap:nowrap;text-align:left;font-family:inherit">
+      <span style="flex-shrink:0;width:30px;height:30px;border-radius:9px;background:${C.accentDim};border:1px solid ${C.accentBorder};color:${C.accent};font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center">${esc((net.name||'?')[0].toUpperCase())}</span>
       <div style="min-width:0;flex:1">
-        <div style="color:${C.text};font-size:14px;font-weight:600">${esc(net.name)}</div>
-        <div style="color:${C.muted};font-size:11px">${net.members.length} member${net.members.length>1?'s':''} · ${esc(lastAct)}</div>
+        <div style="color:${C.text};font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(net.name)}</div>
+        <div style="color:${C.muted};font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${net.members.length} member${net.members.length>1?'s':''} · ${esc(lastAct)}</div>
       </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        ${edit?`
-          <button aria-label="Move up" onclick="event.stopPropagation();moveNet('${net.id}',-1)" ${i===0?'disabled':''} style="background:${C.surface};border:1px solid var(--c-border);color:${i===0?C.muted:C.text};border-radius:9px;width:30px;height:30px;font-size:14px;cursor:pointer;opacity:${i===0?0.4:1}">↑</button>
-          <button aria-label="Move down" onclick="event.stopPropagation();moveNet('${net.id}',1)" ${i===nets.length-1?'disabled':''} style="background:${C.surface};border:1px solid var(--c-border);color:${i===nets.length-1?C.muted:C.text};border-radius:9px;width:30px;height:30px;font-size:14px;cursor:pointer;opacity:${i===nets.length-1?0.4:1}">↓</button>
-          <button aria-label="Leave network" onclick="event.stopPropagation();leaveNetwork('${net.id}')" style="background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:9px;height:30px;padding:0 10px;font-size:11px;font-weight:700;cursor:pointer">Leave</button>
-        `:``}
-        ${!edit&&u>0?`<span style="min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:${C.warm};color:#0F0F14;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center">${u>9?'9+':u}</span>`:''}
+      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+        ${edit?
+          ctlBtn('Move up','↑',`moveNet('${net.id}',-1)`, i===0)
+          +ctlBtn('Move down','↓',`moveNet('${net.id}',1)`, i===nets.length-1)
+          +`<button aria-label="Leave network" title="Leave" onclick="event.stopPropagation();leaveNetwork('${net.id}')" style="flex-shrink:0;width:30px;height:30px;border-radius:10px;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};font-size:13px;font-weight:800;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">✕</button>`
+        :``}
+        ${!edit&&u>0?`<span style="min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:${C.warm};color:#0F0F14;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center">${u>99?'99+':u}</span>`:''}
         ${!edit&&net.id===A.activeNetId?`<span style="color:${C.accent};font-size:16px">✓</span>`:""}
       </div>
-    </button>`;
+    </${tag}>`;
   }).join('');
   return `
   <div onclick="closeNetPicker()" style="position:absolute;inset:0;z-index:85;background:transparent"></div>

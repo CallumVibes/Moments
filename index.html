@@ -592,6 +592,7 @@ const Relay=(()=>{
   function disconnect(url){ const c=conns[url]; if(c){ try{ c.ws.close(); }catch(_){} delete conns[url]; } if(timers[url]){ clearTimeout(timers[url]); delete timers[url]; } }
   function reconnectAll(){ Object.keys(conns).forEach(url=>{ try{ conns[url].ws.close(); }catch(_){} }); Object.keys(conns).forEach(url=>delete conns[url]); connect(); }
   function isConnected(){ return Object.values(conns).some(c=>c.ws.readyState===1); }
+  function pendingCount(){ return queue.length; }
   // Per-relay status: 'open' | 'connecting' | 'closed'
   function status(url){
     const c=conns[url];
@@ -601,7 +602,7 @@ const Relay=(()=>{
     if(rs===0) return 'connecting';
     return 'closed';
   }
-  return {connect,publish,subscribe,unsubscribe,isConnected,refetch,disconnect,reconnectAll,status};
+  return { pendingCount,connect,publish,subscribe,unsubscribe,isConnected,refetch,disconnect,reconnectAll,status};
 })();
 
 // Recover missed events when the tab regains focus / visibility
@@ -1175,6 +1176,10 @@ async function publishLike(netId, parentId, liked){
 // (best-effort — the encrypted tombstone payloads remain authoritative for clients).
 async function publishDelete(netId, postId){
   try{
+    // Only delivered posts have a real nostr event id (the temp "p<timestamp>" id
+    // is swapped after publish). A kind-5 for an undelivered post would reference
+    // nothing — same guard the replies path uses.
+    if(!/^[0-9a-f]{64}$/.test(postId)) return;
     const keys=A.netKeys[netId]||await deriveNetwork(A.networks[netId].code);
     A.netKeys[netId]=keys;
     const ev=await makeNostrEvent(5, [['t',keys.tag],['e',postId],['k',String(MOMENTS_KIND)]], 'deleted');
@@ -2253,6 +2258,10 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.8.5', date:'July 2026', title:'Quality of life', changes:[
+    ['new','Undo a post within 4 seconds of sharing — tap Undo on the toast and it never leaves your device'],
+    ['new','Pull down to refresh on the Network and My Page tabs, not just the Feed'],
+    ['new','The offline banner now counts what\u2019s waiting — \u201c3 updates waiting to sync\u201d instead of a vague promise'],
+    ['change','Sharing a link no longer shows the raw URL in your post — just the preview card'],
     ['new','Paste a YouTube, Spotify, or Vimeo link when posting and it becomes a tappable preview card — built privately on your device, so nobody\u2019s servers see who views it'],
     ['new','Polls can now have an end time — 1 hour to 1 week. Voting closes for everyone when time runs out'],
     ['new','Filter your feed by This week, Last week, or All'],
@@ -2593,13 +2602,23 @@ function applyNetDelete(netId, ts){
   if(A.subscribed) delete A.subscribed[netId];
   if(A.unread) delete A.unread[netId];
   if(A.live) delete A.live[netId];
-  if(A.activeNetId===netId){
+  const wasActive=(A.activeNetId===netId);
+  if(wasActive){
     const ids=Object.keys(A.networks);
     A.activeNetId = ids.length ? ids[0] : null;
     A.showNetPicker=false; A.showInvite=false; A.profileId=null;
     A.viewPostId=null; A.replyPostId=null; A.likersPostId=null; A.tab=0;
   }
-  saveData(); renderApp();
+  saveData();
+  // The active network vanishing MUST repaint (stale UI over a deleted net is
+  // worse than a dismissed keyboard — blur first so the render isn't blocked).
+  // For a background network, respect typing/camera and coalesce instead.
+  if(wasActive){
+    try{ if(document.activeElement && document.activeElement.blur) document.activeElement.blur(); }catch(_){ }
+    renderApp();
+  } else if(!syncRenderBlocked()){
+    renderSoon();
+  }
   showToast('"'+name+'" was deleted by its owner');
 }
 function deleteNetworkAsk(netId){ A.confirmDeleteNet=netId; renderApp(); }
@@ -2957,7 +2976,7 @@ async function sharePoll(){
   net.posts.unshift(post);
   A.uploading=false; A.showUpload=false; A.pendingPhoto=null; A.pollMode=false; A.pollOptions=['','']; A.pollExpiry=null;
   saveData(); renderApp();
-  attemptPublish(net.id, post);
+  holdForUndo(net.id, post);
 }
 // Cast (or change) my vote on a poll
 function votePoll(pid, optIndex){
@@ -3668,6 +3687,14 @@ function deletePost(pid){
   const mk=myPubkey();
   if(post.memberId!=='u1' && post.authorPk!==mk) return;
   net.posts.splice(idx,1);
+  // If this post is still inside its undo-send window, the delete IS the undo:
+  // cancel the held publish and dismiss the Undo toast so it can't outlive the post.
+  if(_undoRef && _undoRef.postId===pid){
+    if(_undoTimer){ clearTimeout(_undoTimer); _undoTimer=null; }
+    _undoRef=null;
+    const t=document.getElementById('app-toast'); if(t && t.parentNode) t.parentNode.removeChild(t);
+    delete _retryBlobs[pid];
+  }
   if(A.replyPostId===pid) A.replyPostId=null;
   if(A.viewPostId===pid) A.viewPostId=null;
   saveData(); renderApp();
@@ -3978,6 +4005,15 @@ function _inlineLinkImage(src){
   });
 }
 function openLink(u){ if(typeof u==='string' && /^https?:\/\//.test(u)) window.open(u,'_blank','noopener'); }
+function captionSansLink(post){
+  const cap=post.caption||'';
+  if(!post.link || !post.link.url) return cap;
+  const m=cap.match(_LINK_RX);
+  if(m && m[0].replace(/[).,;!?]+$/,'')===post.link.url){
+    return (cap.slice(0,m.index)+cap.slice(m.index+m[0].length)).replace(/\s{2,}/g,' ').trim();
+  }
+  return cap;
+}
 function linkCardHTML(post){
   const l=post.link; if(!l || !l.url) return '';
   const dom=esc(l.domain||l.url.replace(/^https?:\/\//,'').split('/')[0]);
@@ -4019,7 +4055,7 @@ async function sharePhoto(){
   net.posts.unshift(post);
   A.uploading=false; A.showUpload=false; A.pendingPhoto=null;
   saveData(); renderApp();
-  attemptPublish(net.id, post);
+  holdForUndo(net.id, post);
 }
 
 // Encrypt+upload (if needed) then publish; drives post.status: sending → sent | failed
@@ -4030,6 +4066,57 @@ function withTimeout(promise, ms, fallback){
     Promise.resolve(promise).catch(()=>fallback),
     new Promise(res=>setTimeout(()=>res(fallback), ms))
   ]);
+}
+/* ── Undo send ──────────────────────────────────────────────
+   New posts appear in the feed instantly but the relay publish is held for
+   4 seconds behind an Undo toast. Undo removes the post before a single byte
+   reaches relays or Blossom. One pending window at a time: a newer post (or
+   the page being hidden) flushes the previous one immediately. */
+let _undoTimer=null, _undoRef=null;
+function holdForUndo(netId, post){
+  flushUndoNow();                       // only one undo window at a time
+  _undoRef={netId, postId:post.id};
+  _undoTimer=setTimeout(()=>{ _undoTimer=null; _flushUndoRef(); }, 4000);
+  showUndoToast('Shared — ', 4000);
+}
+function _flushUndoRef(){
+  const ref=_undoRef; _undoRef=null;
+  if(!ref || !A || !A.networks[ref.netId]) return;
+  const post=A.networks[ref.netId].posts.find(p=>p.id===ref.postId);
+  if(post) attemptPublish(ref.netId, post);
+}
+function flushUndoNow(){
+  if(_undoTimer){ clearTimeout(_undoTimer); _undoTimer=null; _flushUndoRef(); }
+}
+function undoSend(){
+  if(!_undoTimer) return;
+  clearTimeout(_undoTimer); _undoTimer=null;
+  const ref=_undoRef; _undoRef=null;
+  if(!ref) return;
+  const net=A.networks[ref.netId]; if(!net) return;
+  const i=net.posts.findIndex(p=>p.id===ref.postId);
+  if(i>=0) net.posts.splice(i,1);
+  delete _retryBlobs[ref.postId];
+  haptic(10); saveData(); renderApp();
+  showToast('Post undone');
+}
+window.addEventListener('pagehide', ()=>{ try{ flushUndoNow(); }catch(_){ } });
+function showUndoToast(msg, life){
+  const host=document.getElementById('app-screen'); if(!host) return;
+  const prev=document.getElementById('app-toast');
+  if(prev && prev.parentNode) prev.parentNode.removeChild(prev);
+  const t=document.createElement('div');
+  t.id='app-toast';
+  t.style.cssText="position:absolute;top:14px;left:50%;transform:translateX(-50%) translateY(-12px);background:#24243A;color:#FAF8F5;border:1px solid rgba(255,255,255,0.12);border-radius:22px;padding:9px 8px 9px 16px;font-size:13px;font-weight:600;z-index:95;opacity:0;transition:opacity .25s,transform .25s;display:flex;align-items:center;gap:8px;max-width:86%";
+  const span=document.createElement('span'); span.textContent=msg;
+  const btn=document.createElement('button');
+  btn.textContent='Undo';
+  btn.style.cssText="background:rgba(255,255,255,0.14);color:#FF8C42;border:none;border-radius:14px;padding:5px 14px;font-size:12px;font-weight:800;cursor:pointer";
+  btn.onclick=()=>{ undoSend(); };
+  t.appendChild(span); t.appendChild(btn);
+  host.appendChild(t);
+  requestAnimationFrame(()=>{ t.style.opacity='1'; t.style.transform='translateX(-50%) translateY(0)'; });
+  setTimeout(()=>{ t.style.opacity='0'; t.style.transform='translateX(-50%) translateY(-12px)'; setTimeout(()=>{ if(t.parentNode) t.parentNode.removeChild(t); },260); }, life||4000);
 }
 async function attemptPublish(netId, post){
   const net=A.networks[netId]; if(!net) return;
@@ -4095,6 +4182,27 @@ function retryPost(netId, postId){
   if(post){ post.status='sending'; renderApp(); attemptPublish(netId, post); }
 }
 // Resend anything that didn't go through, e.g. after the connection returns
+/* Everything waiting for a connection: queued relay events (likes, comments,
+   votes, deletes made offline) plus my posts still marked sending/failed. */
+function pendingSyncCount(){
+  let c=0;
+  try{ c+=Relay.pendingCount(); }catch(_){ }
+  try{
+    const me=myPubkey();
+    Object.values(A.networks||{}).forEach(net=>{
+      (net.posts||[]).forEach(p=>{
+        if((p.status==='failed'||p.status==='sending') && (p.memberId==='u1'||p.authorPk===me)) c++;
+      });
+    });
+  }catch(_){ }
+  return c;
+}
+function _offlineBannerText(){
+  const c=pendingSyncCount();
+  return c>0
+    ? "You're offline. "+c+" update"+(c===1?'':'s')+" waiting to sync when you reconnect."
+    : "You're offline. New posts and likes are saved and will sync when you reconnect.";
+}
 function flushFailedPosts(){
   if(!A || !Relay.isConnected()) return;
   Object.keys(A.networks).forEach(id=>{
@@ -4243,7 +4351,7 @@ function buildFeed(net){
           </div>
           ${(post.image||post.enc)?(()=>{const pb=photoBox(net,post);return `<div onclick="photoTap('${net.id}','${post.id}',event)" ${pb.attr} style="margin:0 12px;border-radius:14px;height:192px;cursor:pointer;font-size:58px;${pb.style}">${pb.inner}</div>`;})():''}
           <div style="padding:${(post.image||post.enc)?'10px 14px 14px':'2px 14px 14px'}">
-            ${post.caption?`<div style="font-family:'Playfair Display',serif;${(post.image||post.enc)?'font-style:italic;font-size:13px;color:'+C.textDim:'font-size:16px;line-height:1.5;color:'+C.text};margin-bottom:10px;white-space:pre-wrap;word-break:break-word">${esc(post.caption)}</div>`:''}
+            ${captionSansLink(post)?`<div style="font-family:'Playfair Display',serif;${(post.image||post.enc)?'font-style:italic;font-size:13px;color:'+C.textDim:'font-size:16px;line-height:1.5;color:'+C.text};margin-bottom:10px;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(post))}</div>`:''}
             ${post.poll?pollHTML(net,post):''}
             ${post.link?linkCardHTML(post):''}
             <div style="display:flex;align-items:center;gap:14px">
@@ -4263,7 +4371,7 @@ function buildFeed(net){
     <div id="feed-scroll" class="hide-scroll" style="flex:1;overflow-y:auto;padding-bottom:calc(80px + env(safe-area-inset-bottom, 0px))">
       <div id="offline-banner" style="display:${Relay.isConnected()?'none':'flex'};align-items:center;gap:8px;margin:6px 16px 0;padding:9px 13px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.28);border-radius:12px;color:#f87171;font-size:12px;line-height:1.4">
         <span style="flex-shrink:0">⚠</span>
-        <span>You're offline. New posts and likes are saved and will sync when you reconnect.</span>
+        <span id="offline-banner-text">${_offlineBannerText()}</span>
       </div>
       <div style="padding:4px 20px 14px;display:flex;align-items:center;gap:10px">
         <div style="display:flex">${memberStrip}</div>
@@ -4983,8 +5091,8 @@ function buildPostView(net){
       ${(()=>{
         // Text-only post → show the words prominently, no media box
         if(!post.image && !post.enc){
-          return post.caption
-            ? `<div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;line-height:1.55;padding:18px 6px 4px;white-space:pre-wrap;word-break:break-word">${esc(post.caption)}</div>`
+          return captionSansLink(post)
+            ? `<div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;line-height:1.55;padding:18px 6px 4px;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(post))}</div>`
             : '';
         }
         const pb=photoBox(net,post);
@@ -4999,7 +5107,7 @@ function buildPostView(net){
         }
         return `<div onclick="openZoomCurrent()" ${pb.attr} style="border-radius:18px;width:100%;aspect-ratio:1;cursor:zoom-in;${pb.style}">${pb.inner}</div>`;
       })()}
-      ${(post.image||post.enc)&&post.caption?`<div style="font-family:'Playfair Display',serif;font-style:italic;color:${C.textDim};font-size:14px;margin:12px 4px 0">${esc(post.caption)}</div>`:''}
+      ${(post.image||post.enc)&&captionSansLink(post)?`<div style="font-family:'Playfair Display',serif;font-style:italic;color:${C.textDim};font-size:14px;margin:12px 4px 0">${esc(captionSansLink(post))}</div>`:''}
       ${post.poll?`<div style="margin:14px 2px 0">${pollHTML(net,post)}</div>`:''}
       ${post.link?linkCardHTML(post):''}
       <div style="display:flex;align-items:center;gap:18px;margin:14px 4px 18px">
@@ -5205,7 +5313,9 @@ function renderApp(){
     // Re-apply digital zoom (CSS) after a re-render recreated the <video>.
     if(v && (A.camZoom||1)>1 && !A._camHwZoom){ v.style.transformOrigin='center center'; v.style.transform=(A.cameraFacing==='user'?'scaleX(-1) ':'')+'scale('+(A.camZoom||1)+')'; }
   }
-  if(A.tab===0){ const fs=document.getElementById('feed-scroll'); if(fs) wirePtr(fs); }
+  // Pull-to-refresh on all three tabs — only the active tab's scroller exists
+  // in the DOM at once, so wiring every present id costs nothing extra.
+  ['feed-scroll','network-scroll','mypage-scroll'].forEach(id=>{ const sc=document.getElementById(id); if(sc) wirePtr(sc); });
   updateConnDot();
   if(typeof updateNewPostsPill==='function') updateNewPostsPill();
 }
@@ -5256,6 +5366,8 @@ function updateConnDot(){
   // Show/hide the feed's offline banner in place (no re-render → no flicker)
   const b=document.getElementById('offline-banner');
   if(b) b.style.display = on ? 'none' : 'flex';
+  const bt=document.getElementById('offline-banner-text');
+  if(bt && !on) bt.textContent=_offlineBannerText();
 }
 
 // Transient in-app notification — lives on #app-screen so it survives feed re-renders

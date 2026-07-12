@@ -33,7 +33,7 @@
        base/form/frame vectors. connect-src must stay https:/wss:-wide because users add
        custom relays and members' media lives on arbitrary Blossom hosts. worker-src 'self'
        pre-clears the v0.9 service worker (script-src here would otherwise block it). -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; upgrade-insecure-requests"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -188,7 +188,7 @@
     #app-screen{position:fixed;inset:0;z-index:200;background:radial-gradient(120% 120% at 50% 0%,#1b130c 0%,#0a0a0e 46%,#060608 100%);display:none;align-items:center;justify-content:center;overflow:hidden;font-family:'Inter',sans-serif}
     #app-screen.active{display:flex;animation:appFade .4s ease}
     @keyframes appFade{from{opacity:0}to{opacity:1}}
-    #app-frame{--c-bg:#0F0F14;--c-surface:#1A1A24;--c-surfaceHigh:#24243A;--c-text:#FAF8F5;--c-textDim:rgba(250,248,245,0.5);--c-muted:rgba(255,255,255,0.32);--c-border:rgba(255,255,255,0.08);--c-navBg:rgba(10,10,16,0.97);--c-inputBg:rgba(0,0,0,0.25);width:100%;max-width:440px;height:100%;background:var(--c-bg);position:relative;display:flex;flex-direction:column;overflow:hidden;transition:background .3s;padding-top:env(safe-area-inset-top, 0px)}
+    #app-frame{--c-bg:#0F0F14;--c-surface:#1A1A24;--c-surfaceHigh:#24243A;--c-text:#FAF8F5;--c-textDim:rgba(250,248,245,0.5);--c-muted:rgba(255,255,255,0.32);--c-border:rgba(255,255,255,0.08);--c-navBg:rgba(10,10,16,0.97);--c-inputBg:rgba(0,0,0,0.25);width:100%;max-width:440px;height:100%;background:var(--c-bg);position:relative;display:flex;flex-direction:column;overflow:hidden;padding-top:env(safe-area-inset-top);transition:background .3s;padding-top:env(safe-area-inset-top, 0px)}
     #app-frame.theme-light{--c-bg:#FFF8F2;--c-surface:#FFFFFF;--c-surfaceHigh:#FBEEE3;--c-text:#241A10;--c-textDim:rgba(36,26,16,0.6);--c-muted:rgba(36,26,16,0.42);--c-border:rgba(0,0,0,0.09);--c-navBg:rgba(255,248,242,0.97);--c-inputBg:rgba(0,0,0,0.04)}
     @media(min-width:601px){#app-frame{width:430px;height:min(940px,94vh);border-radius:38px;box-shadow:0 40px 110px rgba(0,0,0,.65),0 0 0 9px #111,0 0 0 10px rgba(255,255,255,.04),0 0 80px rgba(255,140,66,.08)}}
     #app-frame *{font-family:'Inter',sans-serif}
@@ -1630,6 +1630,17 @@ async function idbSet(key,val){
     }catch(e){ resolve(false); }
   });
 }
+function idbKeys(){
+  if(!_db) return Promise.resolve([]);
+  return new Promise(resolve=>{
+    try{
+      const tx=_db.transaction('kv','readonly');
+      const r=tx.objectStore('kv').getAllKeys();
+      r.onsuccess=()=>resolve(Array.from(r.result||[]));
+      r.onerror=()=>resolve([]);
+    }catch(e){ resolve([]); }
+  });
+}
 async function idbDel(key){
   if(!_db) return false;
   return new Promise(resolve=>{
@@ -1754,6 +1765,51 @@ function dataURLtoBlob(dataUrl){
 ════════════════════════════════════════════ */
 const _imgCache={};   // ciphertext sha256 -> object URL (decrypted, runtime only)
 const _imgPending={};  // ciphertext sha256 -> in-flight guard
+
+/* ── Cached media management (Advanced settings) ──────────────
+   Decrypted photos/avatars are cached in IndexedDB (img:/av: keys) so they
+   don't re-download+re-decrypt every open. Clearing is always safe: the
+   ciphertext is still on Blossom and re-fetches on next view. Network data,
+   keys, and session live under different keys and are never touched here. */
+async function cachedMediaBytes(){
+  try{
+    const keys=await idbKeys();
+    let total=0;
+    for(const k of keys){
+      if(typeof k==='string' && (k.startsWith('img:')||k.startsWith('av:'))){
+        const blob=await idbGet(k);
+        if(blob && typeof blob.size==='number') total+=blob.size;
+      }
+    }
+    return total;
+  }catch(_){ return 0; }
+}
+function fmtBytes(b){
+  if(!b) return '0 KB';
+  if(b<1024*1024) return Math.max(1,Math.round(b/1024))+' KB';
+  return (b/(1024*1024)).toFixed(b<10*1024*1024?1:0)+' MB';
+}
+async function clearMediaCache(){
+  try{
+    // 1) revoke in-memory object URLs so nothing dangles
+    Object.values(_imgCache).forEach(u=>{ try{ if(typeof u==='string' && u.startsWith('blob:')) URL.revokeObjectURL(u); }catch(_){ } });
+    for(const k in _imgCache) delete _imgCache[k];
+    for(const k in _imgPending) delete _imgPending[k];
+    // 2) drop cached avatar object URLs off member records so they re-derive
+    Object.values(A.networks||{}).forEach(net=>{
+      (net.members||[]).forEach(m=>{ if(m.avatar && typeof m.avatar==='string' && m.avatar.startsWith('blob:')) m.avatar=null; });
+    });
+    // 3) purge the persisted img:/av: blobs from IndexedDB
+    const keys=await idbKeys();
+    let removed=0;
+    for(const k of keys){
+      if(typeof k==='string' && (k.startsWith('img:')||k.startsWith('av:'))){ await idbDel(k); removed++; }
+    }
+    haptic(10);
+    renderApp();           // photos re-fetch/re-decrypt on view; avatars re-derive
+    showToast(removed?('Cleared '+removed+' cached item'+(removed===1?'':'s')):'Cache already empty');
+  }catch(_){ showToast('Could not clear cache'); }
+}
 const _imgFail={};     // ciphertext sha256 -> failed-fetch count (pruned/offline photos)
 const _blurCache={};   // blurhash string -> placeholder data URL
 
@@ -2085,6 +2141,7 @@ async function enterApp(npub){
     editCaptionId:null,
     editCaptionDraft:'',
     showAbout:false,
+    showRoadmap:false,
     showKeyBackup:false,
     showAdvanced:false,
     showWhatsNew:false,
@@ -2394,6 +2451,48 @@ function buildWhatsNew(){
   </div>`;
 }
 
+const ROADMAP=[
+  { status:'progress', title:'Works offline', text:'See your networks and queue posts with no signal — they send when you\u2019re back.' },
+  { status:'planned', title:'Multiple photos per post', text:'Share a few shots in one moment, shown as a neat grid.' },
+  { status:'planned', title:'Stronger member controls', text:'When someone leaves a network, they lose access for good — real removal, not just hidden.' },
+  { status:'exploring', title:'Password-protected key backup', text:'Optionally lock your saved key behind a passphrase, safe to keep anywhere.' },
+  { status:'exploring', title:'Edit photos before sharing', text:'Rotate and crop a photo right in the app before it goes to your network.' },
+  { status:'exploring', title:'Disappearing photos', text:'Share a moment that fades after a day.' },
+];
+function buildRoadmap(){
+  const tag={
+    progress:['IN PROGRESS',`background:${C.accentDim};color:${C.accent}`],
+    planned:['PLANNED',`background:rgba(245,200,66,0.15);color:#F5C842`],
+    exploring:['EXPLORING',`background:rgba(255,255,255,0.08);color:${C.muted}`],
+  };
+  const rows=ROADMAP.map(it=>{
+    const [label,st]=tag[it.status]||tag.exploring;
+    return `<div style="background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:5px">
+        <span style="${st};font-size:9px;font-weight:800;letter-spacing:.5px;padding:2px 7px;border-radius:6px;flex-shrink:0">${label}</span>
+        <span style="color:${C.text};font-size:14px;font-weight:700">${esc(it.title)}</span>
+      </div>
+      <div style="color:${C.textDim};font-size:13px;line-height:1.5">${esc(it.text)}</div>
+    </div>`;
+  }).join('');
+  return `
+  <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:74;display:flex;flex-direction:column;overflow-y:auto">
+    <div style="padding:20px 20px 10px;display:flex;align-items:center;gap:12px;flex-shrink:0;border-bottom:1px solid var(--c-border)">
+      <button aria-label="Back" onclick="closeRoadmap()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">‹</button>
+      <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">What's next</div>
+    </div>
+    <div style="padding:20px 18px 48px">
+      <div style="color:${C.muted};font-size:12px;line-height:1.6;margin-bottom:18px">Where Moments is heading. Plans shift as we learn what matters — no promises on timing.</div>
+      ${rows}
+      <div style="color:${C.muted};font-size:11px;line-height:1.6;margin-top:18px;padding-top:16px;border-top:1px solid var(--c-border)">
+        One honest note: today, anyone you share a network\u2019s join code with can see everything in it, and a password only adds a small speed bump. Treat the code itself as the real key. Stronger member controls (above) will fix this properly.
+      </div>
+    </div>
+  </div>`;
+}
+function openRoadmap(){ A.showRoadmap=true; A.showSettings=false; renderApp(); }
+function closeRoadmap(){ A.showRoadmap=false; renderApp(); }
+
 function reconnectRelays(){
   try{ Relay.reconnectAll(); }catch(_){}
   showToast('Reconnecting to relays…');
@@ -2450,6 +2549,13 @@ function buildAdvanced(){
         </div>
         <div id="relay-err" style="color:${C.red};font-size:11px;margin-top:6px;display:none"></div>
         <button onclick="reconnectRelays()" style="width:100%;margin-top:12px;background:${C.surfaceHigh};color:${C.text};border:1px solid var(--c-border);border-radius:12px;padding:11px 0;font-size:13px;font-weight:700;cursor:pointer">↻ Reconnect all</button>
+      </div>
+
+      <!-- Cached media -->
+      <div style="background:${C.surface};border-radius:16px;padding:16px;margin-bottom:14px">
+        <div style="color:${C.text};font-size:13px;font-weight:700;margin-bottom:6px">Cached photos</div>
+        <div style="color:${C.muted};font-size:12px;line-height:1.6;margin-bottom:12px">Moments keeps decrypted photos on your device so they load instantly next time. Clearing is safe — they re-download from your network when you view them again. Your posts, networks, and key are never affected.</div>
+        <button onclick="clearMediaCache()" style="width:100%;background:${C.surfaceHigh};color:${C.text};border:1px solid var(--c-border);border-radius:12px;padding:11px 0;font-size:13px;font-weight:700;cursor:pointer">Clear cached photos</button>
       </div>
 
       <!-- Relay tips -->
@@ -4455,7 +4561,8 @@ function buildNetwork(net){
       </div>
       <span style="color:${net.membersCanPost===false?C.accent:C.muted};font-size:13px;font-weight:700">${net.membersCanPost===false?'Owner only':'Everyone'}</span>
     </button>`:''}
-    ${owner?`<button onclick="deleteNetworkAsk('${net.id}')" style="width:100%;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:16px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer">Delete network</button>`:''}
+    <div style="height:1px;background:var(--c-border);margin:22px 4px 16px"></div>
+    ${owner?`<button onclick="deleteNetworkAsk('${net.id}')" style="width:100%;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:16px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:10px">Delete network</button>`:''}
     <button onclick="leaveNetwork('${net.id}')" style="width:100%;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:16px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;margin-top:14px">Leave network</button>
   </div>`;
 }
@@ -4470,14 +4577,20 @@ function clearAllActivity(){
   const myPk=myPubkey();
   const isMine=p=>p.memberId==='u1'||p.authorPk===myPk;
   // Dismiss exactly the keys buildActivity derives, so the two stay in lockstep.
-  (net.posts||[]).filter(isMine).forEach(p=>{
-    if(p.likeBy) Object.keys(p.likeBy).forEach(pk=>{
-      const l=p.likeBy[pk];
-      if(l && l.v && pk!==myPk && pk!=='u1') net.activityDismissed['like:'+p.id+':'+pk]=now;
-    });
-    (p.replies||[]).forEach(r=>{
-      if(r.memberId!=='u1' && r.memberId!==myPk) net.activityDismissed['comment:'+r.id]=now;
-    });
+  const mineReply = r => r.memberId==='u1' || r.memberId===myPk || r.authorPk===myPk;
+  (net.posts||[]).forEach(p=>{
+    const mineP = p.memberId==='u1' || p.authorPk===myPk;
+    if(mineP){
+      if(p.likeBy) Object.keys(p.likeBy).forEach(pk=>{
+        const l=p.likeBy[pk];
+        if(l && l.v && pk!==myPk && pk!=='u1') net.activityDismissed['like:'+p.id+':'+pk]=now;
+      });
+      (p.replies||[]).forEach(r=>{
+        if(r.memberId!=='u1' && r.memberId!==myPk) net.activityDismissed['comment:'+r.id]=now;
+      });
+    } else if((p.replies||[]).some(mineReply)){
+      (p.replies||[]).forEach(r=>{ if(!mineReply(r)) net.activityDismissed['threadreply:'+r.id]=now; });
+    }
   });
   haptic(10); saveData(); renderApp();
 }
@@ -4506,6 +4619,18 @@ function buildActivity(net){
       }
     });
   });
+  // Replies in threads I commented on but don't own — someone answering after me.
+  const mineReply = r => r.memberId==='u1' || r.memberId===myPk || r.authorPk===myPk;
+  (net.posts||[]).filter(p=>!isMine(p)).forEach(p=>{
+    const reps=p.replies||[];
+    if(!reps.some(mineReply)) return;                 // I never commented here
+    const label = p.caption ? p.caption.slice(0,40) : (p.poll?'a poll':(p.image||p.enc?'a photo':'a post'));
+    reps.forEach(r=>{
+      if(mineReply(r)) return;                         // not my own comment
+      const key='threadreply:'+r.id;                   // distinct namespace from post-owner comments
+      if(!dismissed[key]) items.push({ key, kind:'threadreply', pk:r.memberId, ts:r.ts||0, postId:p.id, label, text:r.text||'' });
+    });
+  });
   items.sort((a,b)=>(b.ts||0)-(a.ts||0));
 
   if(!items.length){
@@ -4525,8 +4650,10 @@ function buildActivity(net){
     const when=it.ts?esc(relTime(it.ts*1000)):'';
     const verb = it.kind==='like'
       ? `<span style="color:${C.warm}">♥ liked</span>`
-      : `<span style="color:${C.accent}">💬 commented on</span>`;
-    const extra = it.kind==='comment' && it.text
+      : it.kind==='threadreply'
+        ? `<span style="color:${C.accent}">💬 also replied on</span>`
+        : `<span style="color:${C.accent}">💬 commented on</span>`;
+    const extra = (it.kind==='comment'||it.kind==='threadreply') && it.text
       ? `<div style="color:${C.textDim};font-size:13px;margin-top:3px;white-space:pre-wrap;word-break:break-word">“${esc(it.text.slice(0,140))}”</div>`
       : '';
     return `<div style="background:${C.surface};border-radius:14px;padding:12px 14px;display:flex;gap:11px;align-items:flex-start">
@@ -4908,6 +5035,16 @@ function buildSettings(){
         <span style="color:${C.muted};font-size:18px">›</span>
       </button>
 
+      <!-- What's next (roadmap) -->
+      <button onclick="openRoadmap()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
+        <span style="font-size:20px">🗺️</span>
+        <div style="flex:1;min-width:0">
+          <div style="color:${C.text};font-size:14px;font-weight:700">What's next</div>
+          <div style="color:${C.muted};font-size:12px;margin-top:2px">The roadmap for Moments</div>
+        </div>
+        <span style="color:${C.muted};font-size:18px">›</span>
+      </button>
+
       <!-- Advanced -->
       <button onclick="openAdvanced()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
         <span style="font-size:20px">⚙</span>
@@ -5284,6 +5421,7 @@ function renderApp(){
       ${A.showKeyBackup?buildKeyBackup():""}
       ${A.showAdvanced?buildAdvanced():""}
       ${A.showWhatsNew?buildWhatsNew():""}
+      ${A.showRoadmap?buildRoadmap():""}
       ${A.confirmMsg?buildConfirm():""}
       ${A.confirmDeleteNet?buildDeleteNetConfirm():""}
       ${A.menuPostId?buildPostMenu():""}
@@ -5439,7 +5577,7 @@ function swipeAllowed(){
   if(el && (el.tagName==='INPUT'||el.tagName==='TEXTAREA')) return false;   // typing
   if(typeof _zoomOpen!=='undefined' && _zoomOpen) return false;             // lightbox pans
   return !(A.viewPostId||A.replyPostId||A.profileId||A.showInvite||A.showCamera||
-           A.showSettings||A.showAbout||A.showKeyBackup||A.showAdvanced||A.showWhatsNew||
+           A.showSettings||A.showAbout||A.showKeyBackup||A.showAdvanced||A.showWhatsNew||A.showRoadmap||
            A.showScanner||A.showJoin||A.showNetPicker||A.editProfile);
 }
 document.addEventListener('touchstart',e=>{

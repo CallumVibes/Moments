@@ -814,6 +814,7 @@ async function handleRemoteEvent(netId, ev){
       let _lk=null;
       if(payload.link && typeof payload.link.url==='string' && /^https?:\/\//.test(payload.link.url)){
         _lk={ url:String(payload.link.url).slice(0,600),
+              raw:payload.link.raw?String(payload.link.raw).slice(0,600):null,
               domain:String(payload.link.domain||'').slice(0,80),
               title:payload.link.title?String(payload.link.title).slice(0,140):null,
               img:(typeof payload.link.img==='string' && payload.link.img.startsWith('data:image/'))?payload.link.img.slice(0,200000):null };
@@ -2317,6 +2318,12 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.8.5', date:'July 2026', title:'Quality of life', changes:[
+    ['new','Tracking junk is quietly stripped from links you paste, so you share a clean URL'],
+    ['new','Turn vibration on or off in Advanced settings'],
+    ['new','Clear cached photos from Advanced settings to free up space — your posts and networks are untouched'],
+    ['new','Get an activity notice when someone else replies in a thread you commented on'],
+    ['new','Tap your own avatar anywhere to jump to your page'],
+    ['change','Tidied the composer, the network settings layout, and the top of the screen on notched phones'],
     ['new','Undo a post within 4 seconds of sharing — tap Undo on the toast and it never leaves your device'],
     ['new','Pull down to refresh on the Network and My Page tabs, not just the Feed'],
     ['new','The offline banner now counts what\u2019s waiting — \u201c3 updates waiting to sync\u201d instead of a vague promise'],
@@ -2550,6 +2557,18 @@ function buildAdvanced(){
         <div id="relay-err" style="color:${C.red};font-size:11px;margin-top:6px;display:none"></div>
         <button onclick="reconnectRelays()" style="width:100%;margin-top:12px;background:${C.surfaceHigh};color:${C.text};border:1px solid var(--c-border);border-radius:12px;padding:11px 0;font-size:13px;font-weight:700;cursor:pointer">↻ Reconnect all</button>
       </div>
+
+      <!-- Haptics -->
+      <button onclick="setHaptics(${_hapticsOn?'false':'true'})" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;margin-bottom:14px;cursor:pointer;display:flex;align-items:center;gap:12px;text-align:left">
+        <span style="font-size:18px">📳</span>
+        <div style="flex:1;min-width:0">
+          <div style="color:${C.text};font-size:14px;font-weight:600">Vibration</div>
+          <div style="color:${C.muted};font-size:12px;margin-top:2px">${_hapticsOn?'On — subtle taps on likes, posts, and actions':'Off'}</div>
+        </div>
+        <span style="flex-shrink:0;width:44px;height:26px;border-radius:13px;background:${_hapticsOn?C.accent:C.surfaceHigh};border:1px solid ${_hapticsOn?C.accent:'var(--c-border)'};position:relative;transition:background .15s">
+          <span style="position:absolute;top:2px;left:${_hapticsOn?'20px':'2px'};width:20px;height:20px;border-radius:50%;background:#fff;transition:left .15s"></span>
+        </span>
+      </button>
 
       <!-- Cached media -->
       <div style="background:${C.surface};border-radius:16px;padding:16px;margin-bottom:14px">
@@ -4069,8 +4088,10 @@ function detectComposerLink(v){
     if(pp._linkUrl===url) return;
     pp._linkUrl=url;
     if(slot) slot.innerHTML='<div style="color:'+C.muted+';font-size:12px;padding:4px 2px 8px">Fetching preview…</div>';
-    const link=await buildLinkPreview(url);
+    const cleaned=cleanUrl(url);                       // silent tracker removal
+    const link=await buildLinkPreview(cleaned.clean);
     if(A.pendingPhoto!==pp || pp._linkUrl!==url) return; // composer changed meanwhile
+    if(link) link.raw=url;                              // original text, for caption stripping
     pp.link=link;
     const slot2=document.getElementById('composer-link-slot');
     if(slot2) slot2.innerHTML=composerLinkCard(link);
@@ -4081,6 +4102,33 @@ function removeComposerLink(){
   pp._linkDismissed=pp._linkUrl; pp.link=null; pp._linkUrl=null;
   const slot=document.getElementById('composer-link-slot');
   if(slot) slot.innerHTML='';
+}
+// Known tracking params stripped silently from pasted links. Denylist only —
+// we never remove unknown params (they may be load-bearing, e.g. youtube ?v=).
+const _TRACKER_PARAMS=new Set([
+  'utm_source','utm_medium','utm_campaign','utm_term','utm_content','utm_name','utm_id','utm_reader','utm_social','utm_social-type',
+  'fbclid','gclid','gclsrc','dclid','msclkid','yclid','twclid','igshid','igsh','mc_eid','mc_cid','_hsenc','_hsmi','vero_id',
+  'oly_anon_id','oly_enc_id','wickedid','soc_src','soc_trk','ref_src','ref_url','si','spm','scm','ncid','cmpid'
+]);
+// Returns {clean, changed}. Only the query string is touched; path/host untouched.
+// On any parse failure the original url passes through unmodified.
+function cleanUrl(url){
+  try{
+    const u=new URL(url);
+    let changed=false;
+    // URLSearchParams keeps order; collect keys first (can't delete while iterating)
+    const keys=[...u.searchParams.keys()];
+    keys.forEach(k=>{
+      if(_TRACKER_PARAMS.has(k.toLowerCase())){ u.searchParams.delete(k); changed=true; }
+    });
+    if(!changed) return { clean:url, changed:false };
+    // Rebuild without a trailing '?' if the query is now empty
+    let out=u.origin+u.pathname;
+    const qs=u.searchParams.toString();
+    if(qs) out+='?'+qs;
+    if(u.hash) out+=u.hash;
+    return { clean:out, changed:true };
+  }catch(_){ return { clean:url, changed:false }; }
 }
 async function buildLinkPreview(url){
   let domain=''; try{ domain=new URL(url).hostname.replace(/^www\./,''); }catch(_){ }
@@ -4125,7 +4173,10 @@ function captionSansLink(post){
   const cap=post.caption||'';
   if(!post.link || !post.link.url) return cap;
   const m=cap.match(_LINK_RX);
-  if(m && m[0].replace(/[).,;!?]+$/,'')===post.link.url){
+  if(!m) return cap;
+  const found=m[0].replace(/[).,;!?]+$/,'');
+  // The caption holds the ORIGINAL pasted url; link.url may be the cleaned form.
+  if(found===post.link.url || found===post.link.raw){
     return (cap.slice(0,m.index)+cap.slice(m.index+m[0].length)).replace(/\s{2,}/g,' ').trim();
   }
   return cap;
@@ -4162,7 +4213,7 @@ async function sharePhoto(){
   const post={ id:"p"+Date.now(), memberId:"u1", authorPk:myPubkey(),
     caption:caption,
     image:hasPhoto?pp.image:null, enc:null, hosted:!!(pp&&pp.remote), isVideo:!!(pp&&pp.isVideo),
-    link:pp.link?{url:pp.link.url,domain:pp.link.domain,title:pp.link.title||null,img:pp.link.img||null}:null,
+    link:pp.link?{url:pp.link.url,raw:pp.link.raw||pp.link.url,domain:pp.link.domain,title:pp.link.title||null,img:pp.link.img||null}:null,
     time:"just now", likes:0, liked:false, likeBy:{}, replies:[], ts:Math.floor(Date.now()/1000),
     status:'sending' };
   // keep the source bytes so we can (re)encrypt + (re)upload on retry (photo posts only)
@@ -4713,13 +4764,12 @@ function buildMyPage(net){
   const upload = A.showUpload ? `
     <div style="background:${C.surface};border-radius:22px;padding:20px;margin-bottom:18px;border:1.5px solid ${C.accentBorder}">
       <div style="color:${C.text};font-size:15px;font-weight:600;margin-bottom:4px">${pollMode?'Create a poll':'Share a moment'}</div>
-      <div style="color:${C.muted};font-size:12px;margin-bottom:14px">${pollMode?'Everyone in '+esc(net.name)+' gets one vote.':'Post text, a photo, or both · only '+esc(net.name)+' can see this.'}</div>
+      <div style="color:${C.muted};font-size:12px;margin-bottom:14px">${pollMode?'Everyone in '+esc(net.name)+' gets one vote.':'Post text, a photo, or a link · only '+esc(net.name)+' can see this.'}</div>
       <div style="display:flex;gap:8px;margin-bottom:14px">
         <button onclick="setPollMode(false)" style="flex:1;background:${!pollMode?C.accentDim:'transparent'};border:1px solid ${!pollMode?C.accentBorder:'var(--c-border)'};color:${!pollMode?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">📷 Post</button>
         <button onclick="setPollMode(true)" style="flex:1;background:${pollMode?C.accentDim:'transparent'};border:1px solid ${pollMode?C.accentBorder:'var(--c-border)'};color:${pollMode?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">📊 Poll</button>
       </div>
-      ${pollUI}
-      <textarea id="caption-input" maxlength="280" oninput="setPhotoCaption(this.value)" placeholder="${pollMode?'Ask a question…':'What\u2019s on your mind?'}" rows="2" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:6px;resize:none;line-height:1.5">${esc(pp.caption)}</textarea>
+      ${pollMode ? (pollUI + `<textarea id="caption-input" maxlength="280" oninput="setPhotoCaption(this.value)" placeholder="${pollMode?'Ask a question…':'What\u2019s on your mind?'}" rows="2" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:6px;resize:none;line-height:1.5">${esc(pp.caption)}</textarea>`) : (`<textarea id="caption-input" maxlength="280" oninput="setPhotoCaption(this.value)" placeholder="${pollMode?'Ask a question…':'What\u2019s on your mind?'}" rows="2" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:6px;resize:none;line-height:1.5">${esc(pp.caption)}</textarea>` + pollUI)}
       <div id="composer-link-slot">${(!pollMode && A.pendingPhoto && A.pendingPhoto.link)?composerLinkCard(A.pendingPhoto.link):''}</div>
       <div id="upload-err" style="color:${C.warm};font-size:12px;min-height:16px;margin-bottom:8px"></div>
       <div style="display:flex;gap:10px">
@@ -4746,7 +4796,7 @@ function buildMyPage(net){
             <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${p.id}')" style="position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.55);border:none;color:#fff;border-radius:8px;padding:2px 7px;cursor:pointer;font-size:14px;font-weight:700;line-height:1.4">···</button>
           </div>
           <div style="padding:8px 10px 10px">
-            <div style="color:${C.textDim};font-size:11px;font-family:'Playfair Display',serif;font-style:italic;margin-bottom:8px;min-height:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.caption||'')}</div>
+            <div style="color:${C.textDim};font-size:11px;font-family:'Playfair Display',serif;font-style:italic;margin-bottom:8px;min-height:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(captionSansLink(p))}</div>
             ${actionRow(p)}
           </div>
         </div>`).join('')}</div>` : '';
@@ -4754,11 +4804,12 @@ function buildMyPage(net){
   const textList = textPosts.length? `<div style="display:flex;flex-direction:column;gap:12px">${textPosts.map(p=>`
         <div style="background:${C.surface};border-radius:16px;padding:14px 16px">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
-            <div onclick="openPostView('${p.id}')" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word;flex:1">${esc(p.caption||'')}</div>
+            <div onclick="openPostView('${p.id}')" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word;flex:1">${esc(captionSansLink(p))}</div>
             <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${p.id}')" style="background:none;border:none;color:${C.muted};font-size:18px;cursor:pointer;padding:0 2px;line-height:1;flex-shrink:0">···</button>
           </div>
           <div class="post-time" data-ts="${p.ts||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span>${postStatus(net,p)}</div>
           ${p.poll?`<div style="margin-top:10px">${pollHTML(net,p)}</div>`:''}
+          ${p.link?linkCardHTML(p):''}
           <div style="margin-top:12px">${actionRow(p)}</div>
         </div>`).join('')}</div>` : '';
 
@@ -4851,7 +4902,7 @@ function buildProfile(net){
     ? `<div style="text-align:center;color:${C.muted};font-size:13px;padding:40px 0">No photos yet</div>`
     : `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${myPosts.map(p=>`
         <div onclick="openPostView('${p.id}')" ${(()=>{const pb=photoBox(net,p);return pb.attr;})()} style="border-radius:16px;height:155px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()};position:relative;overflow:hidden">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
-          <div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.5));padding:8px 10px;color:#FAF8F5;font-size:11px;font-family:'Playfair Display',serif">${esc(p.caption)}</div>
+          <div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.5));padding:8px 10px;color:#FAF8F5;font-size:11px;font-family:'Playfair Display',serif">${esc(captionSansLink(p))}</div>
         </div>`).join('')}</div>`;
 
   return `
@@ -5562,7 +5613,9 @@ function showToast(msg){
   setTimeout(()=>{ t.style.opacity='0'; t.style.transform='translateX(-50%) translateY(-12px)'; setTimeout(()=>{ if(t.parentNode) t.parentNode.removeChild(t); },300); }, 3400);
 }
 // Subtle haptic feedback (no-op where unsupported)
-function haptic(ms){ try{ if(navigator.vibrate) navigator.vibrate(ms||12); }catch(_){} }
+let _hapticsOn = (()=>{ try{ return localStorage.getItem('moments-haptics')!=='0'; }catch(_){ return true; } })();
+function setHaptics(on){ _hapticsOn=!!on; try{ localStorage.setItem('moments-haptics', on?'1':'0'); }catch(_){ } if(on){ try{ navigator.vibrate&&navigator.vibrate(12); }catch(_){ } } renderApp(); }
+function haptic(ms){ if(!_hapticsOn) return; try{ if(navigator.vibrate) navigator.vibrate(ms||12); }catch(_){} }
 
 /* ── Swipe between tabs (Feed ⇄ My Page) ──
    Complements the bottom-nav taps, never replaces them. Only the two bottom

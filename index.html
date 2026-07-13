@@ -802,8 +802,13 @@ async function handleRemoteEvent(netId, ev){
     if(!net.posts.find(p=>p.id===ev.id)){
       // Skip if already deleted by the same author (delete arrived before the post)
       if(net.deleted && net.deleted[ev.id]===pk) return;
-      // Skip if the network owner removed this post (moderation tombstone)
-      if(net.modDel && net.modDel[ev.id] && net.ownerPk && net.modDel[ev.id]===net.ownerPk) return;
+      // Network owner removed this post (moderation tombstone). Everyone else
+      // drops it; the ORIGINAL AUTHOR keeps it, flagged as hidden-from-others,
+      // so they can still see it and issue their own NIP-09 deletion.
+      if(net.modDel && net.modDel[ev.id] && net.ownerPk && net.modDel[ev.id]===net.ownerPk){
+        if(pk!==myPubkey()) return;   // not mine → hide as before
+        // mine → fall through and keep it; the modHidden flag is set below
+      }
       // If the owner locked posting to owner-only, ignore new posts from other members
       // (posts made before the lock, and the owner's own posts, are always kept).
       if(net.membersCanPost===false && net.ownerPk && pk!==net.ownerPk && ev.created_at >= (net.postLockTs||0)) return;
@@ -819,7 +824,8 @@ async function handleRemoteEvent(netId, ev){
               title:payload.link.title?String(payload.link.title).slice(0,140):null,
               img:(typeof payload.link.img==='string' && payload.link.img.startsWith('data:image/'))?payload.link.img.slice(0,200000):null };
       }
-      net.posts.push({ id:ev.id, memberId:memId, authorPk:pk, caption:payload.caption||'',
+      const _modHidden = !!(net.modDel && net.modDel[ev.id] && net.ownerPk && net.modDel[ev.id]===net.ownerPk);
+      net.posts.push({ id:ev.id, memberId:memId, authorPk:pk, caption:payload.caption||'', modHidden:_modHidden,
         image:(!enc && payload.image)?payload.image:null, enc,
         poll:payload.poll||null, link:_lk, voteBy:{},
         time:relTime(ev.created_at*1000), likes:0, liked:false, likeBy:{}, replies:[], ts:ev.created_at });
@@ -1084,8 +1090,16 @@ function reconcileNetwork(netId){
   // Re-apply owner moderation removals. This is where a mod-delete that arrived
   // BEFORE the owner's meta (so ownerPk was unknown at the time) finally lands.
   if(net.modDel && net.ownerPk){
+    const me=myPubkey();
     const before=net.posts.length;
-    net.posts=net.posts.filter(p=>net.modDel[p.id]!==net.ownerPk);
+    // Remove owner-moderated posts — EXCEPT the viewer's own, which stay visible
+    // to their author (flagged) so they can still NIP-09 delete them.
+    net.posts=net.posts.filter(p=>{
+      if(net.modDel[p.id]!==net.ownerPk) return true;         // not moderated
+      const mine=(p.authorPk===me || p.memberId==='u1');
+      if(mine){ if(!p.modHidden){ p.modHidden=true; changed=true; } return true; }
+      return false;                                            // others' → drop
+    });
     if(net.posts.length!==before) changed=true;
   }
   // Re-apply reply deletions the same way (a deleted comment must stay deleted
@@ -2143,6 +2157,8 @@ async function enterApp(npub){
     editCaptionDraft:'',
     showAbout:false,
     showRoadmap:false,
+    showContact:false,
+    showEcosystem:false,
     showKeyBackup:false,
     showAdvanced:false,
     showWhatsNew:false,
@@ -2464,6 +2480,9 @@ const ROADMAP=[
   { status:'planned', title:'Stronger member controls', text:'When someone leaves a network, they lose access for good — real removal, not just hidden.' },
   { status:'exploring', title:'Password-protected key backup', text:'Optionally lock your saved key behind a passphrase, safe to keep anywhere.' },
   { status:'exploring', title:'Edit photos before sharing', text:'Rotate and crop a photo right in the app before it goes to your network.' },
+  { status:'exploring', title:'A dedicated Moments relay', text:'A reliable relay run for Moments, so things just work by default — and because Moments is open, you can always choose your own or run one yourself.' },
+  { status:'exploring', title:'Push notifications', text:'Get notified when someone posts, likes, or replies — even when the app is closed.' },
+  { status:'exploring', title:'Photos that always load', text:'Reliable delivery so nothing in your feed is ever stuck or missing, wherever it was shared from.' },
   { status:'exploring', title:'Disappearing photos', text:'Share a moment that fades after a day.' },
 ];
 function buildRoadmap(){
@@ -2499,6 +2518,95 @@ function buildRoadmap(){
 }
 function openRoadmap(){ A.showRoadmap=true; A.showSettings=false; renderApp(); }
 function closeRoadmap(){ A.showRoadmap=false; renderApp(); }
+function openContact(){ A.showContact=true; A.showSettings=false; renderApp(); }
+function closeContact(){ A.showContact=false; renderApp(); }
+function openEcosystem(){ A.showEcosystem=true; A.showSettings=false; renderApp(); }
+function closeEcosystem(){ A.showEcosystem=false; renderApp(); }
+const _NOSTR_APPS=[
+  { name:'Primal', plat:'iOS · Android · Web', desc:'The easiest place to start — clean and fast.', url:'https://primal.net', emoji:'🟣' },
+  { name:'Damus', plat:'iPhone · iPad · Mac', desc:'The polished choice on Apple devices.', url:'https://damus.io', emoji:'🟪' },
+  { name:'Amethyst', plat:'Android', desc:'The most popular client on Android.', url:'https://amethyst.social', emoji:'💜' },
+  { name:'Amber', plat:'Android · signer', desc:'Signs in to other apps without ever handing over your key. The safe way to explore.', url:'https://github.com/greenart7c3/Amber', emoji:'🔑' },
+  { name:'Zapstore', plat:'Android · app store', desc:'An open app store where every app is signed by its developer and verified before you install.', url:'https://zapstore.dev', emoji:'🛒' },
+];
+function buildEcosystem(){
+  const cards=_NOSTR_APPS.map(a=>`
+    <a href="${a.url}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
+      <span style="font-size:22px;flex-shrink:0">${a.emoji}</span>
+      <div style="flex:1;min-width:0">
+        <div style="color:${C.text};font-size:14px;font-weight:600">${a.name} <span style="color:${C.muted};font-size:11px;font-weight:500">· ${a.plat}</span></div>
+        <div style="color:${C.textDim};font-size:12px;line-height:1.5;margin-top:2px">${a.desc}</div>
+      </div>
+      <span style="color:${C.muted};font-size:18px;flex-shrink:0">↗</span>
+    </a>`).join('');
+  return `
+  <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:74;display:flex;flex-direction:column;overflow-y:auto">
+    <div style="padding:20px 20px 10px;display:flex;align-items:center;gap:12px;flex-shrink:0;border-bottom:1px solid var(--c-border)">
+      <button aria-label="Back" onclick="closeEcosystem()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">‹</button>
+      <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">Your key works everywhere</div>
+    </div>
+    <div style="padding:22px 20px 48px">
+      <div style="color:${C.textDim};font-size:14px;line-height:1.7;margin-bottom:14px">Your Moments key isn\u2019t just for Moments. It\u2019s a portable identity you own — the same key signs you in to a whole world of independent apps, from social feeds to podcasts and music. No new account, no sign-up. That\u2019s the quiet superpower behind Moments: your identity is truly yours.</div>
+
+      <div style="background:${C.accentDim};border:1px solid ${C.accentBorder};border-radius:14px;padding:14px 16px;margin-bottom:14px">
+        <div style="color:${C.text};font-size:13px;font-weight:700;margin-bottom:4px">Your private Moments stay private</div>
+        <div style="color:${C.textDim};font-size:12.5px;line-height:1.6">These apps show the public side of your identity. Your Moments photos are encrypted to your networks and won\u2019t appear in them — opening one shows a fresh, empty profile, and that\u2019s exactly as intended.</div>
+      </div>
+
+      <div style="background:rgba(245,200,66,0.1);border:1px solid rgba(245,200,66,0.3);border-radius:14px;padding:14px 16px;margin-bottom:20px">
+        <div style="color:#F5C842;font-size:13px;font-weight:700;margin-bottom:4px">⚠ Guard your key</div>
+        <div style="color:${C.textDim};font-size:12.5px;line-height:1.6">Pasting your private key into an app means trusting it completely. Prefer a signer like <strong style="color:${C.text}">Amber</strong>, which signs you in without ever handing over the key itself. Only ever paste your key into apps you fully trust.</div>
+      </div>
+
+      <div style="color:${C.muted};font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;margin-bottom:10px">A few good places to start</div>
+      ${cards}
+
+      <a href="https://nostrapps.com" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:none;border:1px dashed var(--c-border);border-radius:16px;padding:14px 16px;margin-bottom:10px">
+        <span style="font-size:20px;flex-shrink:0">🧭</span>
+        <div style="flex:1;min-width:0">
+          <div style="color:${C.text};font-size:14px;font-weight:600">Discover more</div>
+          <div style="color:${C.textDim};font-size:12px;line-height:1.5;margin-top:2px">Browse the full directory of Nostr apps by category.</div>
+        </div>
+        <span style="color:${C.muted};font-size:18px;flex-shrink:0">↗</span>
+      </a>
+
+      <div style="color:${C.muted};font-size:11px;line-height:1.6;margin-top:8px">Moments isn\u2019t affiliated with these apps — they\u2019re independent projects in the Nostr ecosystem, shared so you can see your identity is your own.</div>
+    </div>
+  </div>`;
+}
+function buildContact(){
+  return `
+  <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:74;display:flex;flex-direction:column;overflow-y:auto">
+    <div style="padding:20px 20px 10px;display:flex;align-items:center;gap:12px;flex-shrink:0;border-bottom:1px solid var(--c-border)">
+      <button aria-label="Back" onclick="closeContact()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">‹</button>
+      <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">Contact</div>
+    </div>
+    <div style="padding:24px 20px 48px">
+      <div style="color:${C.muted};font-size:13px;line-height:1.7;margin-bottom:18px">Questions, bug reports, or ideas — reach out any way you like. Feedback shapes where Moments goes next.</div>
+      <a href="mailto:moments@crust3822.anonaddy.com" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
+        <span style="font-size:20px">✉️</span>
+        <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">Email</div><div style="color:${C.accent};font-size:13px;word-break:break-all;margin-top:2px">moments@crust3822.anonaddy.com</div></div>
+        <span style="color:${C.muted};font-size:18px;flex-shrink:0">›</span>
+      </a>
+      <div style="display:flex;align-items:center;gap:12px;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
+        <span style="font-size:20px">🔒</span>
+        <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">Signal</div><div style="color:${C.accent};font-size:13px;margin-top:2px">callum.21</div></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px">
+        <span style="font-size:20px">⚡</span>
+        <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">Nostr</div><div style="color:${C.accent};font-size:13px;margin-top:2px">callum@nostr.fan</div></div>
+      </div>
+
+      <div style="color:${C.text};font-family:'Playfair Display',serif;font-size:16px;font-weight:600;margin:26px 0 6px">Support Moment's</div>
+      <div style="color:${C.muted};font-size:13px;line-height:1.7;margin-bottom:12px">Moments has no ads and no subscriptions. If it's useful to you, a Bitcoin Lightning tip helps keep it going — entirely optional.</div>
+      <button onclick="supportLightning()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
+        <span style="font-size:20px">⚡</span>
+        <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">Buy me a coffee</div><div style="color:${C.accent};font-size:13px;margin-top:2px">Tip over Lightning</div></div>
+        <span style="color:#F5C842;font-size:13px;font-weight:700;flex-shrink:0">Zap →</span>
+      </button>
+    </div>
+  </div>`;
+}
 
 function reconnectRelays(){
   try{ Relay.reconnectAll(); }catch(_){}
@@ -2557,18 +2665,6 @@ function buildAdvanced(){
         <div id="relay-err" style="color:${C.red};font-size:11px;margin-top:6px;display:none"></div>
         <button onclick="reconnectRelays()" style="width:100%;margin-top:12px;background:${C.surfaceHigh};color:${C.text};border:1px solid var(--c-border);border-radius:12px;padding:11px 0;font-size:13px;font-weight:700;cursor:pointer">↻ Reconnect all</button>
       </div>
-
-      <!-- Haptics -->
-      <button onclick="setHaptics(${_hapticsOn?'false':'true'})" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;margin-bottom:14px;cursor:pointer;display:flex;align-items:center;gap:12px;text-align:left">
-        <span style="font-size:18px">📳</span>
-        <div style="flex:1;min-width:0">
-          <div style="color:${C.text};font-size:14px;font-weight:600">Vibration</div>
-          <div style="color:${C.muted};font-size:12px;margin-top:2px">${_hapticsOn?'On — subtle taps on likes, posts, and actions':'Off'}</div>
-        </div>
-        <span style="flex-shrink:0;width:44px;height:26px;border-radius:13px;background:${_hapticsOn?C.accent:C.surfaceHigh};border:1px solid ${_hapticsOn?C.accent:'var(--c-border)'};position:relative;transition:background .15s">
-          <span style="position:absolute;top:2px;left:${_hapticsOn?'20px':'2px'};width:20px;height:20px;border-radius:50%;background:#fff;transition:left .15s"></span>
-        </span>
-      </button>
 
       <!-- Cached media -->
       <div style="background:${C.surface};border-radius:16px;padding:16px;margin-bottom:14px">
@@ -3420,7 +3516,8 @@ function createNetwork(){
   saveData(); switchNetwork(id);
   haptic(18); showToast('Network created');
   requestNotifPermission();
-  publishMeta(id);   // share the network name + owner with everyone who joins
+  publishMeta(id);          // share the network name + owner with everyone who joins
+  publishProfileTo(id);     // announce the creator as a member, so joiners see them even before any posts exist
 }
 
 function joinNetworkByCode(){
@@ -4521,6 +4618,7 @@ function buildFeed(net){
             ${captionSansLink(post)?`<div style="font-family:'Playfair Display',serif;${(post.image||post.enc)?'font-style:italic;font-size:13px;color:'+C.textDim:'font-size:16px;line-height:1.5;color:'+C.text};margin-bottom:10px;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(post))}</div>`:''}
             ${post.poll?pollHTML(net,post):''}
             ${post.link?linkCardHTML(post):''}
+            ${post.modHidden?`<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:12px;padding:10px 12px;margin:10px 0 4px;font-size:12px;color:${C.red};line-height:1.5">🚫 The network owner hid this from other members. Only you can still see it. You can delete it below to remove it everywhere.</div>`:''}
             <div style="display:flex;align-items:center;gap:14px">
               <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" onpointerdown="likePress('${post.id}')" onpointerup="likeRelease('${post.id}')" onpointercancel="likeCancel()" onpointerleave="likeCancel()" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:13px;font-weight:600;user-select:none;-webkit-user-select:none">
                 <span style="font-size:17px">${post.liked?"♥":"♡"}</span>
@@ -5066,6 +5164,17 @@ function buildSettings(){
         </button>
       </div>
 
+      <!-- Vibration -->
+      <div style="background:${C.surface};border-radius:18px;padding:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px">
+        <div style="min-width:0">
+          <div style="color:${C.text};font-size:14px;font-weight:700">Vibration</div>
+          <div style="color:${C.muted};font-size:11px">${_hapticsOn?'On · subtle taps on actions':'Off'}</div>
+        </div>
+        <button onclick="setHaptics(${_hapticsOn?'false':'true'})" title="Toggle vibration" aria-label="Toggle vibration" style="position:relative;flex-shrink:0;width:54px;height:30px;border-radius:30px;border:none;cursor:pointer;background:${_hapticsOn?C.accent:C.surfaceHigh}">
+          <span style="position:absolute;top:3px;left:${_hapticsOn?'27px':'3px'};width:24px;height:24px;border-radius:50%;background:#fff;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,0.3)"></span>
+        </button>
+      </div>
+
       <!-- Key backup row -->
       <button onclick="openKeyBackup()" style="width:100%;background:${C.surface};border:1px solid ${backed?'var(--c-border)':'rgba(245,200,66,0.35)'};border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
         <span style="font-size:20px">🔑</span>
@@ -5106,14 +5215,24 @@ function buildSettings(){
         <span style="color:${C.muted};font-size:18px">›</span>
       </button>
 
-      <!-- Support -->
-      <button onclick="supportLightning()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
-        <span style="font-size:20px">⚡</span>
+      <!-- Contact -->
+      <button onclick="openContact()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-bottom:12px">
+        <span style="font-size:20px">💬</span>
         <div style="flex:1;min-width:0">
-          <div style="color:${C.text};font-size:14px;font-weight:700">Support Moment's</div>
-          <div style="color:${C.muted};font-size:12px;margin-top:2px">Buy me a coffee ⚡</div>
+          <div style="color:${C.text};font-size:14px;font-weight:700">Contact</div>
+          <div style="color:${C.muted};font-size:12px;margin-top:2px">Questions, bugs, or ideas</div>
         </div>
-        <span style="color:#F5C842;font-size:13px;font-weight:700">Zap →</span>
+        <span style="color:${C.muted};font-size:18px">›</span>
+      </button>
+
+      <!-- Nostr ecosystem -->
+      <button onclick="openEcosystem()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-bottom:12px">
+        <span style="font-size:20px">🌐</span>
+        <div style="flex:1;min-width:0">
+          <div style="color:${C.text};font-size:14px;font-weight:700">Your key works everywhere</div>
+          <div style="color:${C.muted};font-size:12px;margin-top:2px">Use your Moments identity in other apps</div>
+        </div>
+        <span style="color:${C.muted};font-size:18px">›</span>
       </button>
 
       <!-- About + Log out -->
@@ -5473,6 +5592,8 @@ function renderApp(){
       ${A.showAdvanced?buildAdvanced():""}
       ${A.showWhatsNew?buildWhatsNew():""}
       ${A.showRoadmap?buildRoadmap():""}
+      ${A.showContact?buildContact():""}
+      ${A.showEcosystem?buildEcosystem():""}
       ${A.confirmMsg?buildConfirm():""}
       ${A.confirmDeleteNet?buildDeleteNetConfirm():""}
       ${A.menuPostId?buildPostMenu():""}
@@ -5630,7 +5751,7 @@ function swipeAllowed(){
   if(el && (el.tagName==='INPUT'||el.tagName==='TEXTAREA')) return false;   // typing
   if(typeof _zoomOpen!=='undefined' && _zoomOpen) return false;             // lightbox pans
   return !(A.viewPostId||A.replyPostId||A.profileId||A.showInvite||A.showCamera||
-           A.showSettings||A.showAbout||A.showKeyBackup||A.showAdvanced||A.showWhatsNew||A.showRoadmap||
+           A.showSettings||A.showAbout||A.showKeyBackup||A.showAdvanced||A.showWhatsNew||A.showRoadmap||A.showContact||A.showEcosystem||
            A.showScanner||A.showJoin||A.showNetPicker||A.editProfile);
 }
 document.addEventListener('touchstart',e=>{

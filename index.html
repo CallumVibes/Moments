@@ -2285,11 +2285,17 @@ function toggleTheme(){
   A.profile.theme = (A.profile.theme==='light') ? 'dark' : 'light';
   saveData(); applyTheme(); renderApp();
 }
-function openSettings(){ A.showSettings=true; A.showNetPicker=false; renderApp(); }
+function openSettings(){
+  // Always land on the main Settings list — clear any open sub-screen so the
+  // gear icon reliably returns here from Advanced, Contact, Key backup, etc.
+  A.showAdvanced=false; A.showAbout=false; A.showWhatsNew=false; A.showRoadmap=false;
+  A.showContact=false; A.showEcosystem=false; A.showKeyBackup=false;
+  A.showSettings=true; A.showNetPicker=false; renderApp();
+}
 function closeSettings(){ A.showSettings=false; renderApp(); }
 let _relayStatusTimer=null;
 function openAdvanced(){ A.showAdvanced=true; A.showSettings=false; renderApp(); startRelayStatusPoll(); }
-function closeAdvanced(){ A.showAdvanced=false; stopRelayStatusPoll(); renderApp(); }
+function closeAdvanced(){ A.showAdvanced=false; stopRelayStatusPoll(); A.showSettings=true; renderApp(); }
 function startRelayStatusPoll(){
   stopRelayStatusPoll();
   _relayStatusTimer=setInterval(updateRelayDots, 1200);
@@ -2310,7 +2316,7 @@ function updateRelayDots(){
   });
 }
 function openAbout(){ A.showAbout=true; A.showSettings=false; renderApp(); }
-function closeAbout(){ A.showAbout=false; renderApp(); }
+function closeAbout(){ A.showAbout=false; A.showSettings=true; renderApp(); }
 
 // Tip the developer over Bitcoin Lightning. Opens the phone's Lightning wallet
 // via the lightning: URI; if no wallet handles it, copy the address as a fallback.
@@ -2332,12 +2338,19 @@ function supportLightning(){
 }
 
 function openWhatsNew(){ A.showWhatsNew=true; A.showSettings=false; renderApp(); try{ localStorage.setItem('moments-seen-version', CHANGELOG[0].v); }catch(_){} }
-function closeWhatsNew(){ A.showWhatsNew=false; renderApp(); }
+function closeWhatsNew(){ A.showWhatsNew=false; A.showSettings=true; renderApp(); }
 function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-version')!==CHANGELOG[0].v; }catch(_){ return false; } }
 
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.8.5', date:'July 2026', title:'Quality of life', changes:[
+    ['new','Save your key straight to your password manager'],
+    ['new','Hide the key backup screen once you\u2019ve saved your key — bring it back any time from Advanced'],
+    ['new','\u201cYour key works everywhere\u201d — use your Moments identity across other Nostr apps'],
+    ['new','Moment\u2019s is coming to Zapstore'],
+    ['change','Contact now has its own screen — email, Signal, and Nostr in one place'],
+    ['fix','An owner hiding a post no longer hides it from the person who posted it — you can still see and delete your own'],
+    ['fix','New members now show up in the member count for everyone'],
     ['new','Tracking junk is quietly stripped from links you paste, so you share a clean URL'],
     ['new','Turn vibration on or off in Advanced settings'],
     ['new','Clear cached photos from Advanced settings to free up space — your posts and networks are untouched'],
@@ -2352,7 +2365,7 @@ const CHANGELOG=[
     ['new','Polls can now have an end time — 1 hour to 1 week. Voting closes for everyone when time runs out'],
     ['new','Filter your feed by This week, Last week, or All'],
     ['new','Owners can delete a whole network — type DELETE NETWORK to confirm, and it disappears from every member\u2019s app. Networks abandoned by their last member clean themselves up too'],
-    ['new','Swipe left and right to move between Feed and My Page'],
+    ['new','Swipe to move through your feed filters, and between your Posts and Activity on My Page'],
     ['new','Tap any avatar — in comments, likes, or activity — to see that person\u2019s profile'],
     ['new','Tap a post\u2019s \u201c3d ago\u201d to see the exact date and time; opening a post shows the full date automatically'],
     ['new','Reorder your networks or leave one straight from the network switcher — tap Edit'],
@@ -2530,11 +2543,11 @@ function buildRoadmap(){
   </div>`;
 }
 function openRoadmap(){ A.showRoadmap=true; A.showSettings=false; renderApp(); }
-function closeRoadmap(){ A.showRoadmap=false; renderApp(); }
+function closeRoadmap(){ A.showRoadmap=false; A.showSettings=true; renderApp(); }
 function openContact(){ A.showContact=true; A.showSettings=false; renderApp(); }
-function closeContact(){ A.showContact=false; renderApp(); }
+function closeContact(){ A.showContact=false; A.showSettings=true; renderApp(); }
 function openEcosystem(){ A.showEcosystem=true; A.showSettings=false; renderApp(); }
-function closeEcosystem(){ A.showEcosystem=false; renderApp(); }
+function closeEcosystem(){ A.showEcosystem=false; A.showSettings=true; renderApp(); }
 const _NOSTR_APPS=[
   { name:'Primal', plat:'iOS · Android · Web', desc:'The easiest place to start — clean and fast.', url:'https://primal.net', emoji:'🟣' },
   { name:'Damus', plat:'iPhone · iPad · Mac', desc:'The polished choice on Apple devices.', url:'https://damus.io', emoji:'🟪' },
@@ -2679,6 +2692,15 @@ function buildAdvanced(){
         <button onclick="reconnectRelays()" style="width:100%;margin-top:12px;background:${C.surfaceHigh};color:${C.text};border:1px solid var(--c-border);border-radius:12px;padding:11px 0;font-size:13px;font-weight:700;cursor:pointer">↻ Reconnect all</button>
       </div>
 
+      ${A.profile&&A.profile.backupHidden ? `<button onclick="setBackupHidden(false)" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;margin-bottom:14px;cursor:pointer;display:flex;align-items:center;gap:12px;text-align:left">
+        <span style="font-size:18px">🔑</span>
+        <div style="flex:1;min-width:0">
+          <div style="color:${C.text};font-size:14px;font-weight:600">Show key backup</div>
+          <div style="color:${C.muted};font-size:12px;margin-top:2px">Bring the key backup screen back to Settings</div>
+        </div>
+        <span style="color:${C.muted};font-size:18px">›</span>
+      </button>` : ''}
+
       <!-- Cached media -->
       <div style="background:${C.surface};border-radius:16px;padding:16px;margin-bottom:14px">
         <div style="color:${C.text};font-size:13px;font-weight:700;margin-bottom:6px">Cached photos</div>
@@ -2745,7 +2767,7 @@ function resetRelays(){
   showToast('Relays reset to defaults');
 }
 function openKeyBackup(){ A.showKeyBackup=true; A.showSettings=false; renderApp(); }
-function closeKeyBackup(){ A.showKeyBackup=false; renderApp(); }
+function closeKeyBackup(){ A.showKeyBackup=false; A.showSettings=true; renderApp(); }
 function keyFileContents(){
   const date=new Date().toISOString().split('T')[0];
   return [
@@ -2772,6 +2794,20 @@ function confirmKeyBackedUp(){
   markKeyBackedUp();
   showToast('Key marked as backed up ✓');
   renderApp();
+}
+function hideBackupAsk(){
+  askConfirm(
+    'Hide key backup from Settings? Your key is the only way back into your account and there is no recovery if it\u2019s lost. Make sure it\u2019s safely saved first. You can restore this screen any time from Settings \u2192 Advanced.',
+    'Hide it',
+    ()=>{ setBackupHidden(true); }
+  );
+}
+function setBackupHidden(hidden){
+  if(A && A.profile){ A.profile.backupHidden=!!hidden; saveData(); }
+  if(hidden){ A.showKeyBackup=false; A.showSettings=true; }
+  haptic(10);
+  renderApp();
+  showToast(hidden?'Key backup hidden — restore it from Advanced':'Key backup restored to Settings');
 }
 function saveToPasswordManager(btn){
   // The web can't write to a password manager directly; the reliable path is to
@@ -4708,6 +4744,10 @@ function buildNetwork(net){
 
   return `
   <div id="network-scroll" class="hide-scroll" style="flex:1;overflow-y:auto;padding:0 16px calc(80px + env(safe-area-inset-bottom, 0px))">
+    <div style="display:flex;align-items:center;gap:12px;padding:6px 0 14px">
+      <button aria-label="Back to feed" onclick="setTab(0)" title="Back to feed" style="background:${C.surfaceHigh};border:none;color:${C.text};border-radius:12px;width:38px;height:38px;font-size:18px;cursor:pointer">←</button>
+      <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">Network</div>
+    </div>
     <div style="background:${C.surface};border-radius:22px;padding:20px;margin-bottom:14px">
       <div style="color:${C.textDim};font-size:10px;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:4px">Your network</div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:18px">
@@ -5209,14 +5249,14 @@ function buildSettings(){
       </div>
 
       <!-- Key backup row -->
-      <button onclick="openKeyBackup()" style="width:100%;background:${C.surface};border:1px solid ${backed?'var(--c-border)':'rgba(245,200,66,0.35)'};border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
+      ${A.profile&&A.profile.backupHidden ? '' : `<button onclick="openKeyBackup()" style="width:100%;background:${C.surface};border:1px solid ${backed?'var(--c-border)':'rgba(245,200,66,0.35)'};border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
         <span style="font-size:20px">🔑</span>
         <div style="flex:1;min-width:0">
           <div style="color:${C.text};font-size:14px;font-weight:700">Your moment key</div>
           <div style="color:${C.muted};font-size:12px;margin-top:2px">${backed?'✓ Backed up':'⚠ Not backed up yet'}</div>
         </div>
         <span style="color:${C.muted};font-size:18px">›</span>
-      </button>
+      </button>`}
 
       <!-- What's New -->
       <button onclick="openWhatsNew()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
@@ -5301,7 +5341,9 @@ function buildKeyBackup(){
       </div>
 
       ${backed
-        ? `<div style="text-align:center;color:${C.accent};font-size:13px;font-weight:700;padding:8px 0 0">✓ You've confirmed your key is backed up</div>`
+        ? `<div style="text-align:center;color:${C.accent};font-size:13px;font-weight:700;padding:8px 0 0">✓ You've confirmed your key is backed up</div>
+           <button onclick="hideBackupAsk()" style="width:100%;background:none;border:1px solid var(--c-border);color:${C.muted};border-radius:14px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer;margin-top:14px">Hide this from Settings</button>
+           <div style="color:${C.muted};font-size:11px;text-align:center;line-height:1.5;margin-top:8px">Tidies your Settings. You can bring it back any time from Settings → Advanced.</div>`
         : `<button onclick="confirmKeyBackedUp()" style="width:100%;background:${C.surfaceHigh};color:${C.text};border:1.5px solid ${C.accentBorder};border-radius:14px;padding:14px 0;font-size:14px;font-weight:700;cursor:pointer">I've backed up my key&nbsp;&nbsp;✓</button>`}
     </div>
   </div>`;
@@ -5797,9 +5839,24 @@ document.addEventListener('touchend',e=>{
   // deliberate horizontal flick: fast, far, and clearly more sideways than vertical
   if(dt>600 || Math.abs(dx)<70 || Math.abs(dx)<Math.abs(dy)*1.8) return;
   const cur=A.tab||0;
-  // Feed (0) ⇄ My Page (2) only. From Network (1), a swipe exits to a bottom tab.
-  if(dx<0 && cur!==2){ haptic(8); setTab(2); }
-  else if(dx>0 && cur!==0){ haptic(8); setTab(0); }
+  // On the Feed, a horizontal swipe cycles the range filter (This week → Last week → All).
+  // Left = wider/older, right = narrower/newer; clamped at both ends (no wrap).
+  if(cur===0){
+    const order=['week','lastweek','all'];
+    const i=order.indexOf(A.feedRange||'week');
+    if(dx<0 && i<order.length-1){ haptic(8); setFeedRange(order[i+1]); }
+    else if(dx>0 && i>0){ haptic(8); setFeedRange(order[i-1]); }
+    return;
+  }
+  // Screens: My Page has Posts | Activity. Swipe moves between them only —
+  // it never jumps out to Feed (use the tab bar for that).
+  if(cur===2){
+    const onActivity=(A.myTab==='activity');
+    if(dx<0){ if(!onActivity){ haptic(8); setMyTab('activity'); } }   // left → Activity
+    else    { if(onActivity){ haptic(8); setMyTab('posts'); } }        // right → Posts
+    return;
+  }
+  // Network (1): no swipe navigation.
 },{passive:true});
 
 /* ── Floating orbs ── */

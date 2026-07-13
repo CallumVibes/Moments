@@ -229,6 +229,10 @@
   </div>
   <p class="slogan">Your <span>network</span> only</p>
   <button class="btn-signup" id="hero-signup-btn" onclick="openModal('signup')">Sign Up <span class="btn-arrow">→</span></button>
+  <a href="https://zapstore.dev/" target="_blank" rel="noopener" style="margin-top:18px;display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,140,66,.28);border-radius:100px;padding:8px 16px;color:var(--muted);font-size:.78rem;font-weight:500;text-decoration:none;cursor:pointer">
+    <svg width="11" height="18" viewBox="0 0 19 32" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0"><path d="M18.8379 13.9711L8.84956 0.356086C8.30464 -0.386684 7.10438 0.128479 7.30103 1.02073L9.04686 8.94232C9.16268 9.46783 8.74887 9.96266 8.19641 9.9593L0.871032 9.91477C0.194934 9.91066 -0.223975 10.6293 0.126748 11.1916L7.69743 23.3297C7.99957 23.8141 7.73264 24.4447 7.16744 24.5816L5.40958 25.0076C4.70199 25.179 4.51727 26.0734 5.10186 26.4974L12.4572 31.8326C12.9554 32.194 13.6711 31.9411 13.8147 31.3529L15.8505 23.0152C16.0137 22.3465 15.3281 21.7801 14.6762 22.0452L13.0661 22.7001C12.5619 22.9052 11.991 22.6092 11.8849 22.0877L10.7521 16.5224C10.6486 16.014 11.038 15.5365 11.5704 15.5188L18.1639 15.2998C18.8529 15.2769 19.2383 14.517 18.8379 13.9711Z" fill="var(--accent)"/></svg>
+    <span>Coming soon to <strong style="color:var(--accent);font-weight:700">Zapstore</strong></span>
+  </a>
   <button id="install-btn" onclick="installApp()" style="display:none;margin-top:16px;background:none;border:1px solid rgba(255,140,66,.4);color:var(--accent);border-radius:100px;padding:11px 26px;font-family:'Inter',sans-serif;font-size:.85rem;font-weight:600;letter-spacing:.02em;cursor:pointer">⬇ Install app</button>
   <div id="ios-hint" style="display:none;margin-top:16px;max-width:300px;color:var(--muted);font-size:.78rem;line-height:1.6;text-align:center">Tip: tap the <strong style="color:var(--text)">Share</strong> icon, then <strong style="color:var(--text)">Add to Home Screen</strong> to install Moment's.</div>
   <ul class="hero-links">
@@ -2468,16 +2472,25 @@ function buildWhatsNew(){
       <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">What's New</div>
     </div>
     <div style="padding:20px 18px 48px">
+      <button onclick="openRoadmap()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-bottom:18px">
+        <span style="font-size:20px">🗺️</span>
+        <div style="flex:1;min-width:0">
+          <div style="color:${C.text};font-size:14px;font-weight:700">What's next</div>
+          <div style="color:${C.muted};font-size:12px;margin-top:2px">The road ahead for Moments</div>
+        </div>
+        <span style="color:${C.muted};font-size:18px">›</span>
+      </button>
       ${entries}
-      <div style="text-align:center;color:${C.muted};font-size:10px;letter-spacing:.5px;margin-top:8px">Moments — share together 🧡 Callum</div>
+      <div style="text-align:center;color:${C.muted};font-size:10px;letter-spacing:.5px;margin-top:16px">Moments — share together 🧡 Callum</div>
     </div>
   </div>`;
 }
 
 const ROADMAP=[
   { status:'progress', title:'Works offline', text:'See your networks and queue posts with no signal — they send when you\u2019re back.' },
+  { status:'planned', title:'Get Moments on Zapstore', text:'Install Moments as a proper Android app from Zapstore, the open Nostr app store — coming soon.' },
   { status:'planned', title:'Multiple photos per post', text:'Share a few shots in one moment, shown as a neat grid.' },
-  { status:'planned', title:'Stronger member controls', text:'When someone leaves a network, they lose access for good — real removal, not just hidden.' },
+  { status:'planned', title:'Stronger member controls', text:'Leave and rejoin a network any time — unless an owner has blocked you. Blocking means blocked: no way back in, and no access to what\\u2019s shared next.' },
   { status:'exploring', title:'Password-protected key backup', text:'Optionally lock your saved key behind a passphrase, safe to keep anywhere.' },
   { status:'exploring', title:'Edit photos before sharing', text:'Rotate and crop a photo right in the app before it goes to your network.' },
   { status:'exploring', title:'A dedicated Moments relay', text:'A reliable relay run for Moments, so things just work by default — and because Moments is open, you can always choose your own or run one yourself.' },
@@ -2527,7 +2540,7 @@ const _NOSTR_APPS=[
   { name:'Damus', plat:'iPhone · iPad · Mac', desc:'The polished choice on Apple devices.', url:'https://damus.io', emoji:'🟪' },
   { name:'Amethyst', plat:'Android', desc:'The most popular client on Android.', url:'https://amethyst.social', emoji:'💜' },
   { name:'Amber', plat:'Android · signer', desc:'Signs in to other apps without ever handing over your key. The safe way to explore.', url:'https://github.com/greenart7c3/Amber', emoji:'🔑' },
-  { name:'Zapstore', plat:'Android · app store', desc:'An open app store where every app is signed by its developer and verified before you install.', url:'https://zapstore.dev', emoji:'🛒' },
+  { name:'Zapstore', plat:'Android · app store', desc:'An open app store where every app is signed by its developer and verified before you install.', url:'https://zapstore.dev', emoji:'⚡' },
 ];
 function buildEcosystem(){
   const cards=_NOSTR_APPS.map(a=>`
@@ -2601,7 +2614,7 @@ function buildContact(){
       <div style="color:${C.muted};font-size:13px;line-height:1.7;margin-bottom:12px">Moments has no ads and no subscriptions. If it's useful to you, a Bitcoin Lightning tip helps keep it going — entirely optional.</div>
       <button onclick="supportLightning()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
         <span style="font-size:20px">⚡</span>
-        <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">Buy me a coffee</div><div style="color:${C.accent};font-size:13px;margin-top:2px">Tip over Lightning</div></div>
+        <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">cal@cake.cash</div><div style="color:${C.accent};font-size:13px;margin-top:2px">Tip over Lightning</div></div>
         <span style="color:#F5C842;font-size:13px;font-weight:700;flex-shrink:0">Zap →</span>
       </button>
     </div>
@@ -2759,6 +2772,26 @@ function confirmKeyBackedUp(){
   markKeyBackedUp();
   showToast('Key marked as backed up ✓');
   renderApp();
+}
+function saveToPasswordManager(btn){
+  // The web can't write to a password manager directly; the reliable path is to
+  // present the key in a manager-recognizable password field and let the browser
+  // offer to save it. Surface the hidden form, focus the password so the manager
+  // sees it (best-effort: whether the prompt fires depends on the browser/manager).
+  const form=document.getElementById('pm-save-form');
+  const pass=document.getElementById('pm-pass');
+  try{
+    if(form){ form.style.pointerEvents=''; form.style.opacity='0.01'; form.setAttribute('aria-hidden','false'); }
+    if(pass){
+      pass.removeAttribute('readonly'); pass.removeAttribute('tabindex');
+      pass.focus(); pass.select();
+      setTimeout(()=>{ try{ pass.setAttribute('readonly','readonly'); pass.blur(); if(form){ form.style.pointerEvents='none'; form.style.opacity='0'; form.setAttribute('aria-hidden','true'); } }catch(_){ } }, 400);
+    }
+    haptic(12);
+    if(btn){ const o=btn.textContent; btn.textContent='Check your password manager…'; setTimeout(()=>{ try{ btn.textContent=o; }catch(_){ } }, 2600); }
+    showToast('If your password manager didn\u2019t offer to save, use Download instead.');
+    if(A && A.profile && !A.profile.keyBackedUp){ A.profile.keyBackedUp=true; saveData(); }
+  }catch(_){ showToast('Couldn\u2019t open the save prompt — use Download instead.'); }
 }
 function backupKeyDownload(){
   const content=keyFileContents();
@@ -5195,16 +5228,6 @@ function buildSettings(){
         <span style="color:${C.muted};font-size:18px">›</span>
       </button>
 
-      <!-- What's next (roadmap) -->
-      <button onclick="openRoadmap()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
-        <span style="font-size:20px">🗺️</span>
-        <div style="flex:1;min-width:0">
-          <div style="color:${C.text};font-size:14px;font-weight:700">What's next</div>
-          <div style="color:${C.muted};font-size:12px;margin-top:2px">The roadmap for Moments</div>
-        </div>
-        <span style="color:${C.muted};font-size:18px">›</span>
-      </button>
-
       <!-- Advanced -->
       <button onclick="openAdvanced()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
         <span style="font-size:20px">⚙</span>
@@ -5263,9 +5286,17 @@ function buildKeyBackup(){
         <div style="color:${C.muted};font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;margin-bottom:8px">Moment key (nsec) — never share</div>
         <div onclick="toggleReveal(this)" style="background:#0F0F14;border:1px solid rgba(245,200,66,0.25);border-radius:10px;padding:11px 13px;color:#fbbf24;font-family:monospace;font-size:11px;word-break:break-all;line-height:1.5;filter:blur(6px);cursor:pointer;user-select:all">${esc(_nsec)}</div>
         <div style="color:${C.muted};font-size:10px;text-align:center;margin:6px 0 14px">tap the key to reveal · tap again to hide</div>
+        <form id="pm-save-form" aria-hidden="true" style="position:absolute;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none" onsubmit="return false">
+          <input type="text" id="pm-user" name="username" autocomplete="username" value="Moment key · ${esc(_npub||'moments')}" readonly tabindex="-1"/>
+          <input type="password" id="pm-pass" name="password" autocomplete="new-password" value="${esc(_nsec||'')}" readonly tabindex="-1"/>
+        </form>
+
+        <button onclick="saveToPasswordManager(this)" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:14px 0;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:6px">🔐 Save to password manager</button>
+        <div style="color:${C.muted};font-size:11px;text-align:center;line-height:1.5;margin-bottom:14px">Recommended — kept encrypted, synced across your devices, and out of your downloads folder.</div>
+
         <div style="display:flex;gap:10px">
-          <button onclick="backupKeyDownload()" style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:13px 0;font-size:13px;font-weight:700;cursor:pointer">⬇ Download key file</button>
-          <button onclick="copySecretKey(this)" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:13px 0;font-size:13px;font-weight:700;cursor:pointer">Copy key</button>
+          <button onclick="backupKeyDownload()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">⬇ Download key file</button>
+          <button onclick="copySecretKey(this)" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">Copy key</button>
         </div>
       </div>
 

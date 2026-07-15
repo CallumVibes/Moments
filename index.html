@@ -24,7 +24,7 @@
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
 -->
-<html lang="en" class="landing-light">
+<html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <!-- CSP notes: script-src needs 'unsafe-inline' (all logic + event handlers are inline
@@ -43,13 +43,13 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="Moment's"/>
   <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800;900&family=DM+Sans:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Baloo+2:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
-  <script>try{if(localStorage.getItem('landing-theme')==='dark')document.documentElement.classList.remove('landing-light');}catch(e){}</script>
+  <script>try{if(localStorage.getItem('landing-theme')==='light')document.documentElement.classList.add('landing-light');}catch(e){}</script>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
     :root{--bg:#0F0F14;--surface:#1A1A24;--surfaceHigh:#24243A;--accent:#FF8C42;--accentSoft:#FF8C4218;--accentBorder:#FF8C4240;--warm:#F2C4B0;--text:#FAF8F5;--textDim:rgba(250,248,245,.5);--muted:rgba(255,255,255,.32);--red:#f87171;--green:#FF8C42}
     html.landing-light{--bg:#FFF8F2;--surface:#FFFFFF;--surfaceHigh:#FBEEE3;--text:#241A10;--textDim:rgba(36,26,16,.6);--muted:rgba(36,26,16,.42);--accentSoft:#FF8C4214;--accentBorder:#FF8C4238}
     html.landing-light body{background:var(--bg)}
-    html.landing-light .bubble-text{background:linear-gradient(165deg,#241A10 0%,#a04510 55%,#FF8C42 100%);-webkit-background-clip:text;background-clip:text;filter:drop-shadow(0 0 28px rgba(255,140,66,.22)) drop-shadow(0 10px 28px rgba(0,0,0,.12))}
+    html.landing-light .bubble-text{background:linear-gradient(165deg,#241A10 0%,#a04510 55%,#FF8C42 100%);-webkit-background-clip:text;background-clip:text}
     html.landing-light .bubble-text::before{background:linear-gradient(170deg,rgba(255,255,255,.55) 0%,rgba(255,255,255,0) 45%);-webkit-background-clip:text;background-clip:text}
     html.landing-light .blob-1{opacity:.14}
     html.landing-light .blob-2{opacity:.18}
@@ -77,7 +77,14 @@
     .nav-links a:hover{color:var(--accent)}
     .hero{display:flex;flex-direction:column;align-items:center;text-align:center;position:relative;z-index:2}
     .bubble-wrap{position:relative;display:inline-block;margin-bottom:6px}
-    .bubble-text{font-family:'Baloo 2',cursive;font-weight:800;font-size:clamp(4.5rem,15vw,10rem);letter-spacing:.005em;line-height:1;color:transparent;background:linear-gradient(165deg,#FAF8F5 0%,#F2C4B0 45%,#FF8C42 100%);-webkit-background-clip:text;background-clip:text;filter:drop-shadow(0 0 36px rgba(255,140,66,.32)) drop-shadow(0 14px 40px rgba(0,0,0,.6));position:relative;z-index:2;user-select:none}
+    .bubble-text{font-family:'Baloo 2',cursive;font-weight:800;font-size:clamp(4.5rem,15vw,10rem);letter-spacing:.005em;line-height:1;color:transparent;background:linear-gradient(165deg,#FAF8F5 0%,#F2C4B0 45%,#FF8C42 100%);-webkit-background-clip:text;background-clip:text;position:relative;z-index:2;user-select:none}
+    /* No filter here on purpose. Chromium computes drop-shadow from the element's
+       UNCLIPPED box when background-clip:text is on the same element, so these
+       shadows never touched the glyphs — they only ever painted the orange
+       rectangle behind the logo. Removing them leaves the letters exactly as they
+       were and takes the box with it. Don't move them to a wrapper: that "fixes"
+       the bug and wraps every letter in a hard dark halo. .bubble-glow below is
+       what gives the logo its lift. */
     .bubble-text::before{content:attr(data-text);position:absolute;top:0;left:0;font-family:'Baloo 2',cursive;font-weight:800;font-size:inherit;letter-spacing:inherit;line-height:inherit;background:linear-gradient(170deg,rgba(255,255,255,.4) 0%,rgba(255,255,255,0) 45%);-webkit-background-clip:text;background-clip:text;color:transparent;pointer-events:none;z-index:3}
     .bubble-glow{position:absolute;bottom:-24px;left:50%;transform:translateX(-50%);width:72%;height:44px;background:radial-gradient(ellipse,rgba(255,140,66,.28) 0%,transparent 70%);filter:blur(14px);pointer-events:none}
     .slogan{font-family:'Inter',sans-serif;font-weight:500;font-size:clamp(.85rem,2.4vw,1.05rem);color:var(--muted);letter-spacing:.32em;text-transform:uppercase;margin-top:26px;margin-bottom:54px}
@@ -159,7 +166,7 @@
       .hero-links a,.hero-links button{font-size:.92rem}
       .modal{padding:32px 22px 26px;margin:14px;border-radius:24px}
       .bubble-wrap{max-width:100%;margin-bottom:2px;overflow:visible}
-      .bubble-text{font-size:clamp(3rem,15vw,4.6rem);max-width:100%;filter:drop-shadow(0 0 20px rgba(255,140,66,.3)) drop-shadow(0 8px 22px rgba(0,0,0,.55))}
+      .bubble-text{font-size:clamp(3rem,15vw,4.6rem);max-width:100%}
       .bubble-glow{bottom:-14px;height:32px}
       .slogan{margin-top:18px;margin-bottom:34px;letter-spacing:.2em;font-size:.74rem}
       .btn-signup{padding:16px 46px;font-size:.95rem;width:auto}
@@ -229,7 +236,7 @@
   </div>
   <p class="slogan">Your <span>network</span> only</p>
   <button class="btn-signup" id="hero-signup-btn" onclick="openModal('signup')">Sign Up <span class="btn-arrow">→</span></button>
-  <a href="https://zapstore.dev/" target="_blank" rel="noopener" style="margin-top:18px;display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,140,66,.28);border-radius:100px;padding:8px 16px;color:var(--muted);font-size:.78rem;font-weight:500;text-decoration:none;cursor:pointer">
+  <a href="https://zapstore.dev/" target="_blank" rel="noopener noreferrer" style="margin-top:18px;display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,140,66,.28);border-radius:100px;padding:8px 16px;color:var(--muted);font-size:.78rem;font-weight:500;text-decoration:none;cursor:pointer">
     <svg width="11" height="18" viewBox="0 0 19 32" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0"><path d="M18.8379 13.9711L8.84956 0.356086C8.30464 -0.386684 7.10438 0.128479 7.30103 1.02073L9.04686 8.94232C9.16268 9.46783 8.74887 9.96266 8.19641 9.9593L0.871032 9.91477C0.194934 9.91066 -0.223975 10.6293 0.126748 11.1916L7.69743 23.3297C7.99957 23.8141 7.73264 24.4447 7.16744 24.5816L5.40958 25.0076C4.70199 25.179 4.51727 26.0734 5.10186 26.4974L12.4572 31.8326C12.9554 32.194 13.6711 31.9411 13.8147 31.3529L15.8505 23.0152C16.0137 22.3465 15.3281 21.7801 14.6762 22.0452L13.0661 22.7001C12.5619 22.9052 11.991 22.6092 11.8849 22.0877L10.7521 16.5224C10.6486 16.014 11.038 15.5365 11.5704 15.5188L18.1639 15.2998C18.8529 15.2769 19.2383 14.517 18.8379 13.9711Z" fill="var(--accent)"/></svg>
     <span>Coming soon to <strong style="color:var(--accent);font-weight:700">Zapstore</strong></span>
   </a>
@@ -329,7 +336,6 @@
         <p>Upload your <strong style="color:var(--accent)">moments-key.txt</strong></p>
         <div class="file-name" id="file-loaded" style="display:none"></div>
       </div>
-      <button class="btn-ghost" id="btn-file-login" style="display:none" onclick="loginFile()">Log In with Key File →</button>
       <div class="field-error" id="login-file-err" style="display:block;margin-top:8px"></div>
       <p class="modal-switch">New here? <a onclick="switchModal('login','signup')">Create your identity</a></p>
     </div>
@@ -1309,10 +1315,14 @@ let _nsec='', _npub='', _fileNsec='';
 let _avatarBlob=null;   // source bytes of the current avatar, for per-network encryption (runtime only)
 let _avatarEncCache={};  // netId -> {url,iv,sha256} of the encrypted avatar already uploaded for that net
 
-// ── Landing page theme (light default, persisted to localStorage) ──
+// ── Landing page theme (dark default, persisted to localStorage) ──
+// First visit is dark. Light applies only if the visitor explicitly chose it, so
+// the test is `!== 'light'` rather than `=== 'dark'` — an absent key must mean
+// dark, not "no preference". Kept in sync with the <head> script above, which
+// does the same test before the stylesheet parses to avoid a flash.
 function applyLandingTheme(){
-  let dark=false;
-  try{ dark = localStorage.getItem('landing-theme')==='dark'; }catch(_){}
+  let dark=true;
+  try{ dark = localStorage.getItem('landing-theme')!=='light'; }catch(_){}
   document.documentElement.classList.toggle('landing-light', !dark);
   const label = dark ? '☀ Light' : '🌙 Dark';
   ['landing-theme-btn','landing-theme-btn-m'].forEach(id=>{
@@ -1320,8 +1330,8 @@ function applyLandingTheme(){
   });
 }
 function toggleLandingTheme(){
-  let dark=false;
-  try{ dark = localStorage.getItem('landing-theme')==='dark'; }catch(_){}
+  let dark=true;
+  try{ dark = localStorage.getItem('landing-theme')!=='light'; }catch(_){}
   try{ localStorage.setItem('landing-theme', dark ? 'light' : 'dark'); }catch(_){}
   applyLandingTheme();
 }
@@ -1345,7 +1355,6 @@ function resetModal(id){
     const ln=document.getElementById('login-nsec'); if(ln) ln.value='';
     const lne=document.getElementById('login-nsec-err'); if(lne) lne.style.display='none';
     const fl=document.getElementById('file-loaded'); if(fl) fl.style.display='none';
-    const bfl=document.getElementById('btn-file-login'); if(bfl) bfl.style.display='none';
     const lfe=document.getElementById('login-file-err'); if(lfe) lfe.textContent='';
     _fileNsec='';
   }
@@ -1562,11 +1571,19 @@ function loadFile(input){
       _fileNsec=match[0];
       document.getElementById('file-loaded').textContent='✓ '+file.name;
       document.getElementById('file-loaded').style.display='block';
-      document.getElementById('btn-file-login').style.display='block';
       document.getElementById('login-file-err').textContent='';
+      // Choosing your key file IS the login — there's nothing left to confirm.
+      loginFile();
     } else {
       document.getElementById('login-file-err').textContent='No valid nsec found. Make sure this is your moments-key.txt file.';
     }
+    // Clear the picker so re-choosing the SAME file fires onchange again; without
+    // this, a failed read can't be retried with the same file.
+    try{ input.value=''; }catch(_){}
+  };
+  reader.onerror=()=>{
+    document.getElementById('login-file-err').textContent='Could not read that file. Try again.';
+    try{ input.value=''; }catch(_){}
   };
   reader.readAsText(file);
 }
@@ -2211,7 +2228,7 @@ async function enterApp(npub){
     if(!_dbReady){ _db=await idbOpen(); _dbReady=true; }
     const saved=await idbGet(dataKey());
     if(saved){
-      if(saved.profile) A.profile={ name:saved.profile.name||"You", bio:saved.profile.bio||"", avatar:saved.profile.avatar||null, keyBackedUp:!!saved.profile.keyBackedUp, theme:(saved.profile.theme==='dark'?'dark':'light') };
+      if(saved.profile) A.profile={ name:saved.profile.name||"You", bio:saved.profile.bio||"", avatar:saved.profile.avatar||null, avatarExternal:!!saved.profile.avatarExternal, keyBackedUp:!!saved.profile.keyBackedUp, backupHidden:!!saved.profile.backupHidden, theme:(saved.profile.theme==='dark'?'dark':'light') };
       if(Array.isArray(saved.relays) && saved.relays.length) A.relays=saved.relays;
       if(saved.joinTs && typeof saved.joinTs==='object') A.joinTs=saved.joinTs;
       if(saved.deletedNets && typeof saved.deletedNets==='object') A.deletedNets=saved.deletedNets;
@@ -2343,6 +2360,20 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
+  { v:'0.8.6', date:'July 2026', title:'Nothing missed', changes:[
+    ['new','A bell at the top of the screen shows what\u2019s new in your activity — tap it to go straight there. It clears once you\u2019ve looked, just like the feed'],
+    ['new','Install Moment\u2019s from Settings — one tap, no instructions to follow. It only shows when your browser can do it, and goes away once the app is on your home screen'],
+    ['change','This week / Last week / All now stay put as you scroll, so you can switch without scrolling back up. Posts and Activity do the same'],
+    ['new','Tap Network to open it, tap it again to go back where you were'],
+    ['new','Copy the Signal username in one tap, and tap Nostr to open the profile'],
+    ['change','Links you tap now open in your browser instead of inside Moment\u2019s, and the site you visit is told nothing about where you came from'],
+    ['fix','Tapping Network or the bell while Settings was open did nothing — it now takes you straight there'],
+    ['change','Logging in with your key file is now one step — pick the file and you\u2019re in, no second button to press'],
+    ['fix','Hiding the key backup screen now sticks — it no longer reappears when you reopen the app or edit your profile'],
+    ['fix','Fixed a stray fragment of code showing in the member controls line on What\u2019s next'],
+    ['change','The welcome screen now opens in dark by default — switch to light any time and it remembers'],
+    ['change','Tidied the logo on the welcome screen — no more faint box behind it'],
+  ]},
   { v:'0.8.5', date:'July 2026', title:'Quality of life', changes:[
     ['new','Save your key straight to your password manager'],
     ['new','Hide the key backup screen once you\u2019ve saved your key — bring it back any time from Advanced'],
@@ -2503,13 +2534,14 @@ const ROADMAP=[
   { status:'progress', title:'Works offline', text:'See your networks and queue posts with no signal — they send when you\u2019re back.' },
   { status:'planned', title:'Get Moments on Zapstore', text:'Install Moments as a proper Android app from Zapstore, the open Nostr app store — coming soon.' },
   { status:'planned', title:'Multiple photos per post', text:'Share a few shots in one moment, shown as a neat grid.' },
-  { status:'planned', title:'Stronger member controls', text:'Leave and rejoin a network any time — unless an owner has blocked you. Blocking means blocked: no way back in, and no access to what\\u2019s shared next.' },
+  { status:'planned', title:'Stronger member controls', text:'Leave and rejoin a network any time — unless an owner has blocked you. Blocking means blocked: no way back in, and no access to what\u2019s shared next.' },
   { status:'exploring', title:'Password-protected key backup', text:'Optionally lock your saved key behind a passphrase, safe to keep anywhere.' },
   { status:'exploring', title:'Edit photos before sharing', text:'Rotate and crop a photo right in the app before it goes to your network.' },
   { status:'exploring', title:'A dedicated Moments relay', text:'A reliable relay run for Moments, so things just work by default — and because Moments is open, you can always choose your own or run one yourself.' },
   { status:'exploring', title:'Push notifications', text:'Get notified when someone posts, likes, or replies — even when the app is closed.' },
   { status:'exploring', title:'Photos that always load', text:'Reliable delivery so nothing in your feed is ever stuck or missing, wherever it was shared from.' },
   { status:'exploring', title:'Disappearing photos', text:'Share a moment that fades after a day.' },
+  { status:'exploring', title:'Discoverable public networks', text:'Find and join networks that choose to be open to anyone — clearly marked as public, and kept well away from your private ones.' },
 ];
 function buildRoadmap(){
   const tag={
@@ -2557,7 +2589,7 @@ const _NOSTR_APPS=[
 ];
 function buildEcosystem(){
   const cards=_NOSTR_APPS.map(a=>`
-    <a href="${a.url}" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
+    <a href="${a.url}" target="_blank" rel="noopener noreferrer" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
       <span style="font-size:22px;flex-shrink:0">${a.emoji}</span>
       <div style="flex:1;min-width:0">
         <div style="color:${C.text};font-size:14px;font-weight:600">${a.name} <span style="color:${C.muted};font-size:11px;font-weight:500">· ${a.plat}</span></div>
@@ -2587,7 +2619,7 @@ function buildEcosystem(){
       <div style="color:${C.muted};font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;margin-bottom:10px">A few good places to start</div>
       ${cards}
 
-      <a href="https://nostrapps.com" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:none;border:1px dashed var(--c-border);border-radius:16px;padding:14px 16px;margin-bottom:10px">
+      <a href="https://nostrapps.com" target="_blank" rel="noopener noreferrer" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:none;border:1px dashed var(--c-border);border-radius:16px;padding:14px 16px;margin-bottom:10px">
         <span style="font-size:20px;flex-shrink:0">🧭</span>
         <div style="flex:1;min-width:0">
           <div style="color:${C.text};font-size:14px;font-weight:600">Discover more</div>
@@ -2600,6 +2632,13 @@ function buildEcosystem(){
     </div>
   </div>`;
 }
+// Copy a contact detail (uses the sandbox-safe clipboard path, not navigator.clipboard directly).
+function copyContact(text, label){
+  copyToClipboard(text).then(ok=>{
+    showToast(ok ? (label+' copied') : text);
+  }).catch(()=>showToast(text));
+}
+
 function buildContact(){
   return `
   <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:74;display:flex;flex-direction:column;overflow-y:auto">
@@ -2617,11 +2656,18 @@ function buildContact(){
       <div style="display:flex;align-items:center;gap:12px;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
         <span style="font-size:20px">🔒</span>
         <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">Signal</div><div style="color:${C.accent};font-size:13px;margin-top:2px">callum.21</div></div>
+        <button onclick="copyContact('callum.21','Signal username')" aria-label="Copy Signal username" title="Copy" style="flex-shrink:0;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:10px;width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="${C.muted}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="11" height="11" rx="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>
       </div>
-      <div style="display:flex;align-items:center;gap:12px;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px">
+      <a href="https://primal.net/p/npub15qc45zlcpftk8e9865h0g5k2zyl3grddr028fdr9plh7ksu7wdwqqmkr83" target="_blank" rel="noopener noreferrer" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px">
         <span style="font-size:20px">⚡</span>
         <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">Nostr</div><div style="color:${C.accent};font-size:13px;margin-top:2px">callum@nostr.fan</div></div>
-      </div>
+        <span style="color:${C.muted};font-size:18px;flex-shrink:0">›</span>
+      </a>
 
       <div style="color:${C.text};font-family:'Playfair Display',serif;font-size:16px;font-weight:600;margin:26px 0 6px">Support Moment's</div>
       <div style="color:${C.muted};font-size:13px;line-height:1.7;margin-bottom:12px">Moments has no ads and no subscriptions. If it's useful to you, a Bitcoin Lightning tip helps keep it going — entirely optional.</div>
@@ -2851,8 +2897,47 @@ function copySecretKey(btn){
 function toggleReveal(el){ el.style.filter = el.style.filter ? '' : 'blur(6px)'; }
 
 // ── State mutators ──
-function setTab(i){ A.tab=i; A.showNetPicker=false; renderApp(); }
-function switchNetwork(id){ A.activeNetId=id; A.showNetPicker=false; A.showJoin=false; A.tab=0; saveData(); renderApp(); activateNetwork(id); }
+// Dismiss Settings and every screen stacked on it.
+// The header (network switcher, bell, Network button) sits OUTSIDE #screen-root,
+// so it stays tappable while a Settings screen covers the app at z-index 74.
+// Anything the header navigates to must clear this whole family or the tap
+// registers, the tab changes, and the user sees nothing move.
+// Mirrors openSettings()'s list, plus stops the relay poll that openAdvanced
+// starts — skipping closeAdvanced() would otherwise leave it running forever.
+function closeSettingsStack(){
+  if(!A) return;
+  if(A.showAdvanced){ try{ stopRelayStatusPoll(); }catch(_){} }
+  A.showSettings=false; A.showAdvanced=false; A.showAbout=false;
+  A.showWhatsNew=false; A.showRoadmap=false; A.showContact=false;
+  A.showEcosystem=false; A.showKeyBackup=false;
+}
+function setTab(i){ A.tab=i; A.showNetPicker=false; closeSettingsStack(); renderApp(); }
+
+// Is the Network screen actually on screen right now? Being on tab 1 isn't enough
+// — Settings, a profile, an invite sheet or the camera all cover it, and in those
+// cases the header button should bring Network INTO view rather than toggle away
+// from something the user can't see.
+function networkOnScreen(){
+  if(!A || A.tab!==1 || A.showJoin) return false;
+  if(A.showSettings||A.showAdvanced||A.showAbout||A.showWhatsNew||A.showRoadmap||
+     A.showContact||A.showEcosystem||A.showKeyBackup) return false;
+  if(A.showInvite||A.profileId||A.replyPostId||A.viewPostId||A.showCamera) return false;
+  return true;
+}
+// Header ◉ Network: in and back out again. Returns you to wherever you came from
+// (Feed by default) rather than always dumping you on Feed.
+function toggleNetwork(){
+  haptic(8);
+  if(networkOnScreen()){
+    const back=(A.prevTab===1||A.prevTab==null)?0:A.prevTab;
+    setTab(back);
+    return;
+  }
+  if(A.tab!==1) A.prevTab=A.tab;
+  A.showInvite=false; A.profileId=null; A.replyPostId=null; A.viewPostId=null; A.showCamera=false;
+  setTab(1);
+}
+function switchNetwork(id){ A.activeNetId=id; A.showNetPicker=false; A.showJoin=false; A.tab=0; closeSettingsStack(); saveData(); renderApp(); activateNetwork(id); }
 function isOwner(net){ return !!(net && net.ownerPk && net.ownerPk===myPubkey()); }
 // Reliable in-app confirm (native confirm() is blocked in some mobile webviews)
 let _confirmCb=null;
@@ -4149,7 +4234,7 @@ async function onPickProfilePic(input){
 }
 function saveProfile(){
   if(!A.profileDraft) return;
-  A.profile={ name:(A.profileDraft.name||'').trim()||'You', bio:(A.profileDraft.bio||'').trim(), avatar:A.profileDraft.avatar||null, avatarExternal:!!A.profileDraft.avatarExternal, keyBackedUp:!!(A.profile&&A.profile.keyBackedUp), theme:(A.profile&&A.profile.theme)||'light' };
+  A.profile={ name:(A.profileDraft.name||'').trim()||'You', bio:(A.profileDraft.bio||'').trim(), avatar:A.profileDraft.avatar||null, avatarExternal:!!A.profileDraft.avatarExternal, keyBackedUp:!!(A.profile&&A.profile.keyBackedUp), backupHidden:!!(A.profile&&A.profile.backupHidden), theme:(A.profile&&A.profile.theme)||'light' };
   if(A.profileDraft.avatarCleared){
     // User removed their picture — drop the source bytes and any cached encrypted
     // copies so the old avatar isn't re-uploaded to networks.
@@ -4334,7 +4419,27 @@ function _inlineLinkImage(src){
     img.src=src;
   });
 }
-function openLink(u){ if(typeof u==='string' && /^https?:\/\//.test(u)) window.open(u,'_blank','noopener'); }
+// Open an outbound link OUTSIDE the app.
+// A real <a target="_blank"> click carries the user gesture through, so the
+// browser treats it as a navigation rather than a scripted popup — window.open()
+// gets popup-blocked in some webviews and falls back to loading in the Moments
+// window itself, which is what we're avoiding. noreferrer matters here beyond the
+// usual: an invite URL carries ?join=CODE, and that code IS the group key. It's
+// stripped from the address bar on load, but that strip sits behind a try/catch —
+// if it ever fails, a Referer header would hand the key to the destination site.
+function openLink(u){
+  if(typeof u!=='string' || !/^https?:\/\//.test(u)) return;
+  try{
+    const a=document.createElement('a');
+    a.href=u; a.target='_blank'; a.rel='noopener noreferrer';
+    a.style.display='none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{ try{ document.body.removeChild(a); }catch(_){} }, 0);
+  }catch(_){
+    try{ window.open(u,'_blank','noopener,noreferrer'); }catch(__){}
+  }
+}
 function captionSansLink(post){
   const cap=post.caption||'';
   if(!post.link || !post.link.url) return cap;
@@ -4711,9 +4816,9 @@ function buildFeed(net){
         <div style="display:flex">${memberStrip}</div>
         <button onclick="setTab(1)" style="background:none;border:none;padding:0;cursor:pointer;color:${C.textDim};font-size:12px;text-align:left" aria-label="See all members">${esc(net.name)} · ${net.members.length} member${net.members.length>1?'s':''}</button>
       </div>
-      <div style="display:flex;gap:6px;padding:0 16px 12px">
+      <div style="position:sticky;top:0;z-index:5;background:${C.bg};display:flex;gap:6px;padding:6px 16px 10px">
         ${[['week','This week'],['lastweek','Last week'],['all','All']].map(([k,label])=>`
-          <button onclick="setFeedRange('${k}')" style="flex:1;background:${range===k?C.accentDim:'none'};border:1px solid ${range===k?C.accentBorder:'var(--c-border)'};color:${range===k?C.accent:C.muted};border-radius:20px;padding:7px 0;font-size:12px;font-weight:700;cursor:pointer">${label}</button>`).join('')}
+          <button onclick="setFeedRange('${k}')" style="flex:1;background:${range===k?C.accentDim:C.bg};border:1px solid ${range===k?C.accentBorder:'var(--c-border)'};color:${range===k?C.accent:C.muted};border-radius:20px;padding:7px 0;font-size:12px;font-weight:700;cursor:pointer">${label}</button>`).join('')}
       </div>
       <div style="display:flex;flex-direction:column;gap:14px;padding:0 16px">${postsHtml}</div>
     </div>
@@ -4791,6 +4896,15 @@ function buildNetwork(net){
 
 function setMyTab(t){ A.myTab=t; renderApp(); }
 
+// Header bell → straight to My Page → Activity, clearing anything sitting on top.
+function openActivity(){
+  A.showNetPicker=false; A.showInvite=false; A.profileId=null;
+  A.replyPostId=null; A.viewPostId=null; A.showCamera=false;
+  closeSettingsStack();
+  A.tab=2; A.myTab='activity';
+  haptic(8); renderApp();
+}
+
 // Gather recent likes + comments OTHERS made on my posts, newest first.
 function clearAllActivity(){
   const net=currentNet(); if(!net) return;
@@ -4816,7 +4930,10 @@ function clearAllActivity(){
   });
   haptic(10); saveData(); renderApp();
 }
-function buildActivity(net){
+// Collect the undismissed activity items for a network, newest first.
+// Single source of truth: buildActivity renders these, the header bell counts them.
+function activityItems(net){
+  if(!net) return [];
   const myPk=myPubkey();
   const isMine = p => p.memberId==='u1' || p.authorPk===myPk;
   const dismissed = net.activityDismissed || {};
@@ -4854,6 +4971,11 @@ function buildActivity(net){
     });
   });
   items.sort((a,b)=>(b.ts||0)-(a.ts||0));
+  return items;
+}
+
+function buildActivity(net){
+  const items=activityItems(net);
 
   if(!items.length){
     return `<div style="text-align:center;padding:44px 24px;line-height:1.7">
@@ -5043,9 +5165,9 @@ function buildMyPage(net){
 
   const myTab = A.myTab==='activity' ? 'activity' : 'posts';
   const subTabs = `
-    <div style="display:flex;gap:8px;margin:4px 0 16px">
-      <button onclick="setMyTab('posts')" style="flex:1;background:${myTab==='posts'?C.accentDim:'transparent'};border:1px solid ${myTab==='posts'?C.accentBorder:'var(--c-border)'};color:${myTab==='posts'?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">Posts</button>
-      <button onclick="setMyTab('activity')" style="flex:1;background:${myTab==='activity'?C.accentDim:'transparent'};border:1px solid ${myTab==='activity'?C.accentBorder:'var(--c-border)'};color:${myTab==='activity'?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">Activity</button>
+    <div style="position:sticky;top:0;z-index:5;background:${C.bg};display:flex;gap:8px;padding:8px 0 10px;margin:4px 0 6px">
+      <button onclick="setMyTab('posts')" style="flex:1;background:${myTab==='posts'?C.accentDim:C.bg};border:1px solid ${myTab==='posts'?C.accentBorder:'var(--c-border)'};color:${myTab==='posts'?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">Posts</button>
+      <button onclick="setMyTab('activity')" style="flex:1;background:${myTab==='activity'?C.accentDim:C.bg};border:1px solid ${myTab==='activity'?C.accentBorder:'var(--c-border)'};color:${myTab==='activity'?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">Activity</button>
     </div>`;
 
   return `
@@ -5267,6 +5389,20 @@ function buildSettings(){
         </div>
         <span style="color:${C.muted};font-size:18px">›</span>
       </button>
+
+      <!-- Install as app. Shown ONLY when we hold a real beforeinstallprompt, so
+           tapping it always installs. Nothing here explains how to install by hand:
+           if we can't do it for you, there's no row. iOS/desktop therefore never see
+           this — Safari has no install API at all, and the landing screen already
+           carries the Add to Home Screen hint for that case. -->
+      ${installState()==='ready' ? `<button onclick="installApp()" style="width:100%;background:${C.surface};border:1px solid ${C.accentBorder};border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
+        <span style="font-size:20px">📲</span>
+        <div style="flex:1;min-width:0">
+          <div style="color:${C.text};font-size:14px;font-weight:700">Install as app</div>
+          <div style="color:${C.muted};font-size:12px;margin-top:2px">Add Moment\u2019s to your home screen</div>
+        </div>
+        <span style="color:${C.accent};font-size:13px;font-weight:700;flex-shrink:0">Install</span>
+      </button>` : ''}
 
       <!-- Advanced -->
       <button onclick="openAdvanced()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
@@ -5589,6 +5725,27 @@ function renderApp(){
   }
   const otherUnread = (A.unread? Object.keys(A.unread).reduce((n,id)=> n + ((net&&id===net.id)?0:(A.unread[id]||0)), 0):0);
 
+  // Bell badge = activity you haven't SEEN yet, matching how the Feed badge behaves.
+  // (It used to count every undismissed item, so it read as a to-do list that only
+  // cleared by ✕-ing each row — two near-identical badges with opposite rules.)
+  // The watermark lives on the network object, which saveData() persists wholesale,
+  // so it survives reloads without touching the loader's field whitelist.
+  // Dismissing rows still works: dismissed items leave activityItems() entirely.
+  const _acts = net ? activityItems(net) : [];
+  // "Seen" only counts when the list is genuinely visible — not merely tab===2.
+  if(net && A.tab===2 && A.myTab==='activity' && !showJoin &&
+     !A.showSettings && !A.showAdvanced && !A.showAbout && !A.showWhatsNew &&
+     !A.showRoadmap && !A.showContact && !A.showEcosystem && !A.showKeyBackup &&
+     !A.showInvite && !A.profileId && !A.replyPostId && !A.viewPostId && !A.showCamera){
+    // Watermark the newest item on screen rather than Date.now(): a device clock
+    // running fast would otherwise mark future arrivals as already seen.
+    const top=_acts.reduce((m,it)=>Math.max(m, it.ts||0), 0);
+    if(top > (net.activitySeen||0)){ net.activitySeen=top; saveData(); }
+  }
+  // Counted AFTER the watermark moves, so landing on Activity clears the bell in
+  // the same frame — the Feed badge zeroes itself before rendering for this reason.
+  const actCount = _acts.filter(it=>(it.ts||0) > (net&&net.activitySeen||0)).length;
+
   // Header
   let header;
   if(showJoin){
@@ -5613,7 +5770,14 @@ function renderApp(){
         <div style="color:${C.accent};font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;padding-left:17px">${esc(net.name)}</div>
       </button>
       <div style="display:flex;align-items:center;gap:8px">
-        <button onclick="setTab(1)" style="background:${A.tab===1?C.accent:C.accentDim};border:1.5px solid ${C.accentBorder};border-radius:12px;padding:7px 13px;color:${A.tab===1?'#0F0F14':C.accent};font-size:12px;font-weight:700;cursor:pointer">◉ Network</button>
+        <button onclick="toggleNetwork()" aria-pressed="${networkOnScreen()?'true':'false'}" title="${networkOnScreen()?'Back':'Network'}" style="background:${A.tab===1?C.accent:C.accentDim};border:1.5px solid ${C.accentBorder};border-radius:12px;padding:7px 13px;color:${A.tab===1?'#0F0F14':C.accent};font-size:12px;font-weight:700;cursor:pointer">◉ Network</button>
+        <button aria-label="${actCount>0?`Activity, ${actCount} new`:'Activity'}" onclick="openActivity()" title="Activity" style="background:none;border:1.5px solid ${actCount>0?C.accentBorder:'rgba(255,255,255,0.12)'};border-radius:12px;padding:7px 10px;cursor:pointer;position:relative;display:flex;align-items:center;justify-content:center">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${actCount>0?C.accent:C.muted}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+            <path d="M13.7 21a2 2 0 0 1-3.4 0"/>
+          </svg>
+          ${actCount>0?`<span style="position:absolute;top:-5px;right:-5px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:${C.warm};color:#0F0F14;font-size:9px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 0 6px ${C.warm}">${actCount>99?'99+':actCount}</span>`:''}
+        </button>
         <button aria-label="Settings" onclick="openSettings()" title="Settings" style="background:none;border:1.5px solid rgba(255,255,255,0.12);border-radius:12px;padding:7px 11px;color:${C.muted};font-size:15px;font-weight:600;cursor:pointer">⚙</button>
       </div>
     </div>`;
@@ -5916,17 +6080,39 @@ setupPWA();
 
 /* ── Install affordances ── */
 let _deferredPrompt=null;
+
+// Can we actually install, right now, on tap? Only true when the browser has
+// handed us a real beforeinstallprompt. There's no fallback and no UA sniffing:
+// no other browser exposes any way to install programmatically, so anywhere this
+// is false the Settings row simply isn't rendered.
+function installState(){
+  try{
+    if(!_deferredPrompt) return 'no';
+    // Belt and braces — a prompt shouldn't survive into an installed window.
+    const standalone = ('standalone' in navigator && navigator.standalone) || matchMedia('(display-mode: standalone)').matches;
+    return standalone ? 'no' : 'ready';
+  }catch(_){ return 'no'; }
+}
+
 window.addEventListener('beforeinstallprompt', e=>{
   e.preventDefault(); _deferredPrompt=e;
   const b=document.getElementById('install-btn'); if(b) b.style.display='inline-flex';
+  // The prompt can land after Settings is already on screen — refresh so the
+  // Install row appears rather than waiting for the next navigation.
+  try{ if(typeof A!=='undefined' && A.showSettings) renderApp(); }catch(_){}
 });
-window.addEventListener('appinstalled', ()=>{ _deferredPrompt=null; const b=document.getElementById('install-btn'); if(b) b.style.display='none'; });
+window.addEventListener('appinstalled', ()=>{
+  _deferredPrompt=null;
+  const b=document.getElementById('install-btn'); if(b) b.style.display='none';
+  try{ if(typeof A!=='undefined' && A.showSettings) renderApp(); }catch(_){}
+});
 async function installApp(){
   if(!_deferredPrompt) return;
   _deferredPrompt.prompt();
   try{ await _deferredPrompt.userChoice; }catch(e){}
   _deferredPrompt=null;
   const b=document.getElementById('install-btn'); if(b) b.style.display='none';
+  try{ if(typeof A!=='undefined' && A.showSettings) renderApp(); }catch(_){}
 }
 (function iosInstallHint(){
   try{

@@ -752,6 +752,10 @@ async function handleRemoteEvent(netId, ev){
   if(payload.t==='leave'){
     // Self-attested departure: a member can only announce their OWN leave.
     if(payload.pk && payload.pk===pk){
+      // Remember who they were BEFORE deleting the record — their posts stay
+      // behind, and without this every one of them renders as "Someone".
+      const gone=net.members.find(m=>m.id===pk);
+      if(gone && gone.name){ if(!net.departed) net.departed={}; net.departed[pk]={ name:gone.name, ts:ev.created_at }; }
       net.members=net.members.filter(m=>m.id!==pk);
       // If the owner left, clear ownership so the network no longer shows an absent
       // owner (this also enables the take-ownership recovery flow for remaining members).
@@ -802,6 +806,18 @@ async function handleRemoteEvent(netId, ev){
   // chosen name in Activity instead of the "Friend" placeholder.
   const carriesIdentity = (payload.t==='profile' || payload.t==='post' || payload.t==='reply'
                            || ((payload.t==='like'||payload.t==='vote') && typeof payload.name==='string' && payload.name));
+  // Our own profile event, arriving on a device that has no profile yet: adopt it.
+  // Without this the backfill downloads the fix and throws it away, because every
+  // identity path below is gated on !mine.
+  if(mine && payload.t==='profile' && profileIsUntouched()){
+    let took=false;
+    if(payload.name && payload.name!=='You'){ A.profile.name=payload.name; took=true; }
+    if(payload.bio){ A.profile.bio=payload.bio; took=true; }
+    if(payload.avatar && /^https?:/.test(payload.avatar)){ A.profile.avatar=payload.avatar; A.profile.avatarExternal=true; took=true; }
+    else if(payload.avatarEnc){ adoptOwnAvatar(net, payload.avatarEnc).then(ok=>{ if(ok){ saveData(); renderApp(); } }); }
+    if(took){ if(A.awaitOwnProfile) delete A.awaitOwnProfile[netId]; saveData(); changed=true; }
+  }
+  if(net.departed && net.departed[pk] && carriesIdentity){ delete net.departed[pk]; changed=true; }   // they're back
   if(!mine && carriesIdentity && !net.members.find(m=>m.id===pk)){
     const m={ id:pk, name:payload.name||'Friend', emoji:memEmoji(pk), color:memColor(pk), avatar:payload.avatar||null, avatarEnc:payload.avatarEnc||null, bio:(payload.bio||'') };
     net.members.push(m);
@@ -2444,6 +2460,12 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.8.7', date:'July 2026', title:'Sharing & control', changes:[
+    ['change','When someone leaves, their old posts now show their name with a small \u201cleft the network\u201d note \u2014 not just \u201cSomeone\u201d. If they rejoin, the note disappears'],
+    ['change','Vibration now follows one consistent pattern \u2014 light for taps, firmer when something happens, strongest for big actions \u2014 and the bottom tabs finally buzz like everything else'],
+    ['change','A character counter appears when a caption gets close to the limit, instead of typing just silently stopping'],
+    ['fix','Your own reaction no longer shows as \u201cSomeone\u201d in the reactions list \u2014 it\u2019s your name, marked (you)'],
+    ['fix','If the owner hides one of your posts, the notice now has a Delete button right on it instead of pointing at one that wasn\u2019t there'],
+    ['fix','Signing in on a new phone no longer renames you to \u201cYou\u201d for everyone \u2014 your name, bio and picture come back from your networks instead of being overwritten'],
     ['new','React with more than a heart \u2014 hold the heart on any post to pick \ud83d\udc4d \ud83d\ude02 \ud83d\ude2e \ud83d\ude22 \ud83c\udf89, and see who reacted with what'],
     ['new','Open your gallery straight from the camera \u2014 post a photo or video you already have, without taking a new one'],
     ['new','Share audio \u2014 pick a track or a recording and it plays right in the feed, for your networks only'],
@@ -3114,7 +3136,7 @@ function closeSettingsStack(){
   A.showWhatsNew=false; A.showRoadmap=false; A.showContact=false;
   A.showEcosystem=false; A.showKeyBackup=false;
 }
-function setTab(i){ A.tab=i; A.showNetPicker=false; closeSettingsStack(); renderApp(); }
+function setTab(i){ if(A.tab!==i) haptic(10); A.tab=i; A.showNetPicker=false; closeSettingsStack(); renderApp(); }
 
 // Is the Network screen actually on screen right now? Being on tab 1 isn't enough
 // — Settings, a profile, an invite sheet or the camera all cover it, and in those
@@ -3130,7 +3152,7 @@ function networkOnScreen(){
 // Header ◉ Network: in and back out again. Returns you to wherever you came from
 // (Feed by default) rather than always dumping you on Feed.
 function toggleNetwork(){
-  haptic(8);
+  // no haptic here — setTab() below buzzes; two in a row feels like a stutter
   if(networkOnScreen()){
     const back=(A.prevTab===1||A.prevTab==null)?0:A.prevTab;
     setTab(back);
@@ -3438,6 +3460,7 @@ function openProfile(id){
 }
 function closeProfile(){ A.profileId=null; renderApp(); }
 function openReplies(pid){
+  haptic(10);
   A.replyPostId=pid; A.replyDraft="";
   // Mount just the sheet on top of the existing DOM — a full renderApp would
   // rebuild every feed photo (visible blank flash while they re-decode).
@@ -3838,7 +3861,11 @@ function currentNet(){ return A.activeNetId ? A.networks[A.activeNetId] : null; 
 function memberIn(net,id){
   const found=net.members.find(m=>m.id===id);
   if(found) return found;
+  // Someone who LEFT (voluntarily) keeps their posts behind; show who they were
+  // rather than "Friend". `left` lets render sites add a "left the network" note.
+  const d=net.departed && net.departed[id];
   const pk=(typeof id==='string' && id.length>8)?id:'';
+  if(d && d.name) return { id:id||'', name:d.name, left:true, emoji:pk?memEmoji(pk):'🙂', color:C.muted };
   return { id:id||'', name:'Friend', emoji:pk?memEmoji(pk):'🙂', color:pk?memColor(pk):C.warm };
 }
 // Render a member avatar: profile picture if present, otherwise the coloured emoji tile
@@ -3945,8 +3972,48 @@ function joinWithCode(rawCode, enteredPassword){
   saveData(); switchNetwork(id); haptic(18); requestNotifPermission();
   // Announce ourselves (name + avatar) to the new network so everyone sees our real
   // display name straight away — not "Friend" until our first post/like/comment.
-  publishProfileTo(id);
+  // EXCEPT when the profile is an untouched default: that's a fresh device, and
+  // publishing it would overwrite the real name/bio we already have on the relays.
+  // Wait for backfill instead; the EOSE hook publishes if nothing turns up.
+  if(profileIsUntouched()){ if(!A.awaitOwnProfile) A.awaitOwnProfile={}; A.awaitOwnProfile[id]=true; }
+  else publishProfileTo(id);
   return true;
+}
+
+/* ── Own-profile recovery ───────────────────────────────────────────────────
+   On a fresh device A.profile is the default ("You", no bio, no avatar) because
+   profiles live only in local IndexedDB. Joining used to publish that default
+   straight away, which renamed you to "You" and wiped your bio for every member
+   — and a later profile edit would send avatarRemoved and delete your picture
+   too, since _avatarBlob is null on a new device.
+   Your real profile is already on the relays, encrypted with the code you just
+   entered. So: don't announce an untouched profile. Wait for backfill, adopt our
+   own published profile if it turns up, and only publish if it doesn't (i.e. we
+   really are new here). */
+function profileIsUntouched(){
+  const p=A&&A.profile; if(!p) return false;
+  const name=(p.name||'').trim();
+  return (name==='' || name==='You') && !(p.bio||'').trim() && !p.avatar;
+}
+function blobToDataUrl(blob){
+  return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(blob); });
+}
+// Rebuild our own avatar from a profile event we published on another device.
+// Stores a data: URL (which saveData persists) and repopulates _avatarBlob so a
+// later edit re-encrypts rather than telling everyone to clear the picture.
+async function adoptOwnAvatar(net, e){
+  if(!e || !e.url || !e.iv || !e.sha256) return false;
+  try{
+    const keys=A.netKeys[net.id]||await deriveNetwork(net.code); A.netKeys[net.id]=keys;
+    const res=await fetch(e.url); if(!res.ok) return false;
+    const ct=new Uint8Array(await res.arrayBuffer());
+    const pt=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:hexToBytes(e.iv)}, keys.groupKey, ct));
+    const blob=new Blob([pt], {type:e.mime||'image/jpeg'});
+    _avatarBlob=blob;
+    A.profile.avatar=await blobToDataUrl(blob);
+    A.profile.avatarExternal=false;
+    return true;
+  }catch(_){ return false; }
 }
 
 // Publish the current user's profile to one specific network (used on join).
@@ -4180,15 +4247,20 @@ function buildLikers(net){
   const picker=REACTIONS.map(r=>`
       <button onclick="setReaction('${post.id}','${r}')" aria-label="React ${r}" aria-pressed="${mine===r?'true':'false'}" style="flex:1;background:${mine===r?C.accentDim:C.surfaceHigh};border:1px solid ${mine===r?C.accentBorder:'var(--c-border)'};border-radius:12px;padding:9px 0;font-size:20px;cursor:pointer;line-height:1">${r}</button>`).join('');
   const likers=Object.entries(lb).filter(([,e])=>e&&e.v).map(([pk,e])=>{
-    const mem=net.members.find(m=>m.id===pk)||{name:'Someone',emoji:'🙂',color:C.warm};
-    return {mem, glyph:normEmo(e.emo)||'♥'};
+    // My own member record is the legacy id 'u1' (isMe), but my reaction is keyed
+    // by pubkey — so a straight id===pk lookup misses me and I render as "Someone"
+    // while everyone else (whose id IS their pubkey) resolves fine.
+    const mem = (pk===mk)
+      ? (net.members.find(m=>m.isMe) || {name:(A.profile&&A.profile.name)||'You', emoji:'🧡', color:C.warm})
+      : (net.members.find(m=>m.id===pk) || {name:'Someone', emoji:'🙂', color:C.warm});
+    return {mem, glyph:normEmo(e.emo)||'♥', isMe:pk===mk};
   });
   const list=likers.length===0
     ? `<div style="color:${C.muted};font-size:13px;text-align:center;padding:16px 0">No reactions yet</div>`
-    : likers.map(({mem:m, glyph})=>`
-      <div ${m.id?`onclick="openProfile('${m.id}')"`:''} style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--c-border);cursor:${m.id?'pointer':'default'}">
+    : likers.map(({mem:m, glyph, isMe})=>`
+      <div ${(m.id&&!isMe)?`onclick="openProfile('${m.id}')"`:''} style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--c-border);cursor:${(m.id&&!isMe)?'pointer':'default'}">
         ${avatarHTML(m,36,12,14,1.5)}
-        <div style="color:${C.text};font-size:14px;font-weight:600">${esc(m.name)}</div>
+        <div style="color:${C.text};font-size:14px;font-weight:600">${esc(m.name)}${isMe?' (you)':''}</div>
         <span style="margin-left:auto;color:${C.warm};font-size:16px">${glyph}</span>
       </div>`).join('');
   return `
@@ -4295,7 +4367,16 @@ function ptrRefresh(el){
     if(netId && A.netKeys && A.netKeys[netId]){
       const tag=A.netKeys[netId].tag;
       try{ Relay.unsubscribe('moments-'+tag); }catch(_){}
-      Relay.subscribe('moments-'+tag, [{kinds:[MOMENTS_KIND,5], '#t':[tag], limit:400}], ev=>handleRemoteEvent(netId, ev), ()=>{ if(!A.live) A.live={}; A.live[netId]=true; reconcileNetwork(netId); });
+      Relay.subscribe('moments-'+tag, [{kinds:[MOMENTS_KIND,5], '#t':[tag], limit:400}], ev=>handleRemoteEvent(netId, ev), ()=>{
+      if(!A.live) A.live={}; A.live[netId]=true;
+      reconcileNetwork(netId);
+      // Backfill is done. If we held our announcement back and still have no
+      // profile, there was nothing to recover — we're genuinely new. Announce now.
+      if(A.awaitOwnProfile && A.awaitOwnProfile[netId]){
+        delete A.awaitOwnProfile[netId];
+        if(!profileIsUntouched()) publishProfileTo(netId);
+      }
+    });
     } else {
       Relay.refetch();
     }
@@ -4347,6 +4428,7 @@ function deletePost(pid){
   const net=currentNet(); if(!net) return;
   const idx=net.posts.findIndex(p=>p.id===pid);
   if(idx<0) return;
+  haptic(30);   // destructive, already confirmed
   const post=net.posts[idx];
   // only the author can delete
   const mk=myPubkey();
@@ -4460,6 +4542,7 @@ function submitReply(){
   const p=net.posts.find(x=>x.id===targetId);
   const text=(A.replyDraft||"").trim();
   if(!p||!text) return;
+  haptic(18);   // after the guard — an empty send must not buzz
   const localId="r"+Date.now();
   p.replies.push({ id:localId, memberId:"u1", text, ts:Math.floor(Date.now()/1000) });
   A.replyDraft=""; saveData();
@@ -4809,6 +4892,7 @@ async function sharePhoto(){
   if(!hasPhoto && !caption){ if(errEl) errEl.textContent='Write something or add a photo.'; return; }
   A.uploading=true; renderApp();          // disable the button + show "Sharing…"
 
+  haptic(18);   // the moment of sharing, after all guards
   const post={ id:"p"+Date.now(), memberId:"u1", authorPk:myPubkey(),
     caption:caption,
     image:hasPhoto?pp.image:null, enc:null, hosted:!!(pp&&pp.remote), isVideo:!!(pp&&pp.isVideo),
@@ -5121,7 +5205,7 @@ function buildFeed(net){
           <div style="padding:12px 14px 8px;display:flex;align-items:center;gap:10px">
             <button onclick="openProfile('${post.memberId}')" style="background:none;border:none;padding:0;cursor:pointer;flex-shrink:0">${avatarHTML(mem,36,12,18)}</button>
             <div>
-              <div style="color:${C.text};font-size:13px;font-weight:600;font-family:'Playfair Display',serif">${esc(mem.name)}</div>
+              <div style="color:${C.text};font-size:13px;font-weight:600;font-family:'Playfair Display',serif">${esc(mem.name)}${mem.left?` <span style="color:${C.muted};font-size:10px;font-weight:500;font-family:'Inter',sans-serif">· left the network</span>`:''}</div>
               <div class="post-time" data-ts="${post.ts||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(post))}</span>${postStatus(net,post)}</div>
             </div>
             <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${post.id}')" style="margin-left:auto;background:none;border:none;color:${C.muted};font-size:20px;cursor:pointer;padding:4px 6px;line-height:1">···</button>
@@ -5131,7 +5215,8 @@ function buildFeed(net){
             ${captionSansLink(post)?`<div style="font-family:'Playfair Display',serif;${(post.image||post.enc)?'font-style:italic;font-size:13px;color:'+C.textDim:'font-size:16px;line-height:1.5;color:'+C.text};margin-bottom:10px;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(post))}</div>`:''}
             ${post.poll?pollHTML(net,post):''}
             ${post.link?linkCardHTML(post):''}
-            ${post.modHidden?`<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:12px;padding:10px 12px;margin:10px 0 4px;font-size:12px;color:${C.red};line-height:1.5">🚫 The network owner hid this from other members. Only you can still see it. You can delete it below to remove it everywhere.</div>`:''}
+            ${post.modHidden?`<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:12px;padding:10px 12px;margin:10px 0 4px;font-size:12px;color:${C.red};line-height:1.5">🚫 The network owner hid this from other members. Only you can still see it.
+              <button onclick="askConfirm('Delete this moment?','Delete',()=>deletePost('${post.id}'))" style="display:block;margin-top:8px;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:10px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer">Delete it everywhere</button></div>`:''}
             <div style="display:flex;align-items:center;gap:14px">
               <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" onpointerdown="likePress('${post.id}')" onpointerup="likeRelease('${post.id}')" onpointercancel="likeCancel()" onpointerleave="likeCancel()" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:13px;font-weight:600;user-select:none;-webkit-user-select:none">
                 <span style="font-size:17px">${reactionGlyphs(post)}</span>
@@ -6336,7 +6421,17 @@ function showToast(msg){
 // Subtle haptic feedback (no-op where unsupported)
 let _hapticsOn = (()=>{ try{ return localStorage.getItem('moments-haptics')!=='0'; }catch(_){ return true; } })();
 function setHaptics(on){ _hapticsOn=!!on; try{ localStorage.setItem('moments-haptics', on?'1':'0'); }catch(_){ } if(on){ try{ navigator.vibrate&&navigator.vibrate(12); }catch(_){ } } renderApp(); }
-function haptic(ms){ if(!_hapticsOn) return; try{ if(navigator.vibrate) navigator.vibrate(ms||12); }catch(_){} }
+// Three felt tiers, enforced here so call sites can't drift: 10ms light (taps,
+// selection), 18ms medium (something happened — sent, copied, voted), 30ms strong
+// (capture, leave, delete). The old code passed seven different raw durations;
+// most motors can't distinguish 6 from 10, so it just read as flaky.
+// Note: navigator.vibrate does not exist on iOS Safari — iPhones never vibrate
+// from a web app, full stop. This function is Android-only by platform decree.
+function haptic(ms){
+  if(!_hapticsOn) return;
+  const q = ms<=10 ? 10 : ms<=19 ? 18 : 30;
+  try{ if(navigator.vibrate) navigator.vibrate(q); }catch(_){}
+}
 
 /* ── Swipe between tabs (Feed ⇄ My Page) ──
    Complements the bottom-nav taps, never replaces them. Only the two bottom

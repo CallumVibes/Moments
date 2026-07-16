@@ -547,7 +547,7 @@ function short(u){ return u.replace(/^https?:\/\//,'').replace(/\/$/,''); }
 /* ════════════════════════════════════════════
    RELAYS + NETWORK ENCRYPTION (cross-device sync)
 ════════════════════════════════════════════ */
-const DEFAULT_RELAYS=['wss://relay.damus.io','wss://nos.lol','wss://relay.primal.net','wss://relay.nostr.band','wss://relay.snort.social'];
+const DEFAULT_RELAYS=['wss://relay.damus.io','wss://nos.lol','wss://relay.primal.net','wss://relay.snort.social'];
 function activeRelays(){ return (A&&A.relays&&A.relays.length)?A.relays:DEFAULT_RELAYS; }
 const MOMENTS_KIND=1818;
 
@@ -938,7 +938,8 @@ async function handleRemoteEvent(netId, ev){
       const prev=parent.likeBy[pk];
       if(!prev || (payload.ts||0)>=prev.ts){
         const wasV=prev&&prev.v;
-        parent.likeBy[pk]={v:!!payload.like, ts:payload.ts||ev.created_at};
+        const _emo=normEmo(payload.emo);
+        parent.likeBy[pk]={v:!!payload.like, ts:payload.ts||ev.created_at, ...(payload.like&&_emo?{emo:_emo}:{})};
         recomputeLikes(parent);
         if(wasV!==!!payload.like) changed=true;
       }
@@ -1197,11 +1198,12 @@ async function publishReply(netId, parentId, text){
     return ev.id;
   }catch(e){ return null; }
 }
-async function publishLike(netId, parentId, liked){
+async function publishLike(netId, parentId, liked, emo){
   try{
     const keys=A.netKeys[netId]||await deriveNetwork(A.networks[netId].code);
     A.netKeys[netId]=keys;
     const payload={ v:1, t:'like', e:parentId, like:!!liked, name:A.profile.name||'You', ts:Math.floor(Date.now()/1000) };
+    if(liked && normEmo(emo)) payload.emo=normEmo(emo);   // additive: old clients see a plain like
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag],['e',parentId]], content);
     markSeen(ev.id);
@@ -2442,6 +2444,7 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.8.7', date:'July 2026', title:'Sharing & control', changes:[
+    ['new','React with more than a heart \u2014 hold the heart on any post to pick \ud83d\udc4d \ud83d\ude02 \ud83d\ude2e \ud83d\ude22 \ud83c\udf89, and see who reacted with what'],
     ['new','Open your gallery straight from the camera \u2014 post a photo or video you already have, without taking a new one'],
     ['new','Share audio \u2014 pick a track or a recording and it plays right in the feed, for your networks only'],
     ['new','Delete account data (Settings \u2192 Advanced) \u2014 leaves every network and asks your relays to erase everything you\u2019ve posted. Type DELETE ACCOUNT DATA to confirm. Your key keeps working; only offered for keys Moment\u2019s created'],
@@ -2735,11 +2738,6 @@ function buildContact(){
     </div>
     <div style="padding:24px 20px 48px">
       <div style="color:${C.muted};font-size:13px;line-height:1.7;margin-bottom:18px">Questions, bug reports, or ideas — reach out any way you like. Feedback shapes where Moments goes next.</div>
-      <a href="mailto:moments@crust3822.anonaddy.com" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
-        <span style="font-size:20px">✉️</span>
-        <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">Email</div><div style="color:${C.accent};font-size:13px;word-break:break-all;margin-top:2px">moments@crust3822.anonaddy.com</div></div>
-        <span style="color:${C.muted};font-size:18px;flex-shrink:0">›</span>
-      </a>
       <div style="display:flex;align-items:center;gap:12px;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
         <span style="font-size:20px">🔒</span>
         <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">Signal</div><div style="color:${C.accent};font-size:13px;margin-top:2px">callum.21</div></div>
@@ -2750,9 +2748,19 @@ function buildContact(){
           </svg>
         </button>
       </div>
-      <a href="https://primal.net/p/npub15qc45zlcpftk8e9865h0g5k2zyl3grddr028fdr9plh7ksu7wdwqqmkr83" target="_blank" rel="noopener noreferrer" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px">
+      <a href="mailto:moments@crust3822.anonaddy.com" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
+        <span style="font-size:20px">✉️</span>
+        <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">Email</div><div style="color:${C.accent};font-size:13px;word-break:break-all;margin-top:2px">moments@crust3822.anonaddy.com</div></div>
+        <span style="color:${C.muted};font-size:18px;flex-shrink:0">›</span>
+      </a>
+      <a href="https://primal.net/p/npub15qc45zlcpftk8e9865h0g5k2zyl3grddr028fdr9plh7ksu7wdwqqmkr83" target="_blank" rel="noopener noreferrer" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
         <span style="font-size:20px">⚡</span>
         <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">Nostr</div><div style="color:${C.accent};font-size:13px;margin-top:2px">callum@nostr.fan</div></div>
+        <span style="color:${C.muted};font-size:18px;flex-shrink:0">›</span>
+      </a>
+      <a href="https://github.com/CallumVibes/Moments" target="_blank" rel="noopener noreferrer" style="display:flex;align-items:center;gap:12px;text-decoration:none;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px">
+        <span style="font-size:20px">🐙</span>
+        <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">GitHub</div><div style="color:${C.accent};font-size:13px;margin-top:2px">CallumVibes/Moments</div></div>
         <span style="color:${C.muted};font-size:18px;flex-shrink:0">›</span>
       </a>
 
@@ -3798,7 +3806,7 @@ function finishRecording(){
   videoPoster(url).then(p=>{ if(A.cameraShot && A.cameraShot.dataUrl===url && p){ A.cameraShot.poster=p.dataUrl; } });
 }
 function flipCamera(){ A.cameraFacing = (A.cameraFacing==='user')?'environment':'user'; renderApp(); startPhotoCamera(); }
-function setCameraCaption(v){ A.cameraCaption=v; }
+function setCameraCaption(v){ A.cameraCaption=v; patchCharCount('cam-caption-count', v.length, 280); }
 async function uploadCameraPhoto(){
   if(!A.cameraShot) return;
   const shot=A.cameraShot;
@@ -4021,6 +4029,43 @@ function recomputeLikes(p){
   const mk=myPubkey();
   p.liked = !!(mk && lb[mk] && lb[mk].v);
 }
+/* ── Reactions ──────────────────────────────────────────────────────────────
+   One reaction per person, riding the existing like event as an additive `emo`
+   field. Absent emo = classic heart, so every existing like is already a valid
+   reaction, and an old client receiving a 😂 just sees a ❤ like — same
+   degradation pattern as blk/enc.dur. The set is a whitelist on BOTH sides:
+   `emo` crosses the wire from other members and lands in HTML, so anything
+   outside the set is coerced to heart rather than rendered. */
+const REACTIONS=['♥','👍','😂','😮','😢','🎉'];
+const _REACTION_SET=new Set(REACTIONS.slice(1));   // ♥ is represented by NO emo
+function normEmo(e){ return (typeof e==='string' && _REACTION_SET.has(e)) ? e : undefined; }
+// The glyph(s) shown on a post's reaction button: up to 3 distinct reactions,
+// most-used first; ♡ when nobody has reacted.
+function reactionGlyphs(p){
+  const lb=p.likeBy||{}; const counts={};
+  Object.values(lb).forEach(e=>{ if(e&&e.v){ const g=normEmo(e.emo)||'♥'; counts[g]=(counts[g]||0)+1; } });
+  const glyphs=Object.keys(counts).sort((a,b)=>counts[b]-counts[a]).slice(0,3).join('');
+  return glyphs||'♡';
+}
+// Pick a reaction from the sheet. Tapping your current one removes it.
+function setReaction(pid, emo){
+  const net=currentNet(); const p=net&&net.posts.find(x=>x.id===pid); if(!p) return;
+  haptic(8);
+  if(!p.likeBy) p.likeBy={};
+  const mk=myPubkey()||'self';
+  const cur=p.likeBy[mk];
+  const curGlyph=(cur&&cur.v) ? (normEmo(cur.emo)||'♥') : null;
+  const now=Math.floor(Date.now()/1000);
+  const newState = curGlyph!==emo;
+  const entry={ v:newState, ts:now };
+  if(newState && emo!=='♥') entry.emo=emo;
+  p.likeBy[mk]=entry;
+  recomputeLikes(p);
+  saveData();
+  A.likersPostId=null;              // picking closes the sheet, like messengers do
+  renderApp();
+  publishLike(net.id, p.id, newState, entry.emo);
+}
 // Hold like button → show likers; tap → toggle like
 let _likeTimer=null;
 function likePress(postId){
@@ -4060,17 +4105,17 @@ function toggleLike(pid){
   // Patch the heart(s) in place instead of rebuilding the whole frame — an
   // innerHTML rebuild destroys every photo element and the re-decode shows as
   // a visible blank flash. Fall back to a full render only if no button exists.
-  if(!patchLikeButtons(pid, p.liked)) renderApp();
+  if(!patchLikeButtons(pid, p)) renderApp();
   publishLike(net.id, p.id, newState);
 }
 // Update every rendered like button for a post (feed card, My Page, post view).
 // Returns true if at least one was patched.
-function patchLikeButtons(pid, liked){
+function patchLikeButtons(pid, p){
   let hit=false;
   document.querySelectorAll('.like-btn[data-like-pid="'+pid+'"]').forEach(btn=>{
-    btn.style.color=liked?C.warm:C.muted;
-    btn.setAttribute('aria-label', liked?'Unlike':'Like');
-    const s=btn.querySelector('span'); if(s) s.textContent=liked?'♥':'♡';
+    btn.style.color=p.liked?C.warm:C.muted;
+    btn.setAttribute('aria-label', p.liked?'Remove reaction':'Like');
+    const s=btn.querySelector('span'); if(s) s.textContent=reactionGlyphs(p);
     hit=true;
   });
   return hit;
@@ -4129,23 +4174,29 @@ function closeLikers(){ A.likersPostId=null; renderApp(); }
 function buildLikers(net){
   const post=net.posts.find(p=>p.id===A.likersPostId); if(!post) return '';
   const lb=post.likeBy||{};
-  const likers=Object.entries(lb).filter(([,e])=>e&&e.v).map(([pk])=>{
-    const mem=net.members.find(m=>m.id===pk||m.id===pk)||{name:'Someone',emoji:'🙂',color:C.warm};
-    return mem;
+  const mk=myPubkey()||'self';
+  const mine=(lb[mk]&&lb[mk].v) ? (normEmo(lb[mk].emo)||'♥') : null;
+  // Picker up top: tap to react, tap your current one to take it back.
+  const picker=REACTIONS.map(r=>`
+      <button onclick="setReaction('${post.id}','${r}')" aria-label="React ${r}" aria-pressed="${mine===r?'true':'false'}" style="flex:1;background:${mine===r?C.accentDim:C.surfaceHigh};border:1px solid ${mine===r?C.accentBorder:'var(--c-border)'};border-radius:12px;padding:9px 0;font-size:20px;cursor:pointer;line-height:1">${r}</button>`).join('');
+  const likers=Object.entries(lb).filter(([,e])=>e&&e.v).map(([pk,e])=>{
+    const mem=net.members.find(m=>m.id===pk)||{name:'Someone',emoji:'🙂',color:C.warm};
+    return {mem, glyph:normEmo(e.emo)||'♥'};
   });
   const list=likers.length===0
-    ? `<div style="color:${C.muted};font-size:13px;text-align:center;padding:16px 0">No likes yet</div>`
-    : likers.map(m=>`
+    ? `<div style="color:${C.muted};font-size:13px;text-align:center;padding:16px 0">No reactions yet</div>`
+    : likers.map(({mem:m, glyph})=>`
       <div ${m.id?`onclick="openProfile('${m.id}')"`:''} style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--c-border);cursor:${m.id?'pointer':'default'}">
         ${avatarHTML(m,36,12,14,1.5)}
         <div style="color:${C.text};font-size:14px;font-weight:600">${esc(m.name)}</div>
-        <span style="margin-left:auto;color:${C.warm};font-size:16px">♥</span>
+        <span style="margin-left:auto;color:${C.warm};font-size:16px">${glyph}</span>
       </div>`).join('');
   return `
   <div onclick="closeLikers()" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,0.5);display:flex;flex-direction:column;justify-content:flex-end">
     <div onclick="event.stopPropagation()" style="background:${C.bg};border-radius:24px 24px 0 0;padding:14px 20px 36px;max-height:60%;display:flex;flex-direction:column">
       <div style="width:36px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;margin:0 auto 16px"></div>
-      <div style="color:${C.text};font-weight:700;font-size:15px;margin-bottom:4px">Liked by</div>
+      <div style="display:flex;gap:6px;margin-bottom:14px">${picker}</div>
+      <div style="color:${C.text};font-weight:700;font-size:15px;margin-bottom:4px">Reactions</div>
       <div class="hide-scroll" style="flex:1;overflow-y:auto">${list}</div>
     </div>
   </div>`;
@@ -4343,7 +4394,7 @@ function startEditCaption(pid){
   A.editCaptionDraft=post.caption||'';
   renderApp();
 }
-function setEditCaptionDraft(v){ A.editCaptionDraft=v; }
+function setEditCaptionDraft(v){ A.editCaptionDraft=v; patchCharCount('edit-caption-count', v.length, 280); }
 function cancelEditCaption(){ A.editCaptionId=null; A.editCaptionDraft=''; renderApp(); }
 function saveEditCaption(){
   const net=currentNet(); if(!net){ cancelEditCaption(); return; }
@@ -4367,6 +4418,7 @@ function buildEditCaption(){
       <div style="width:36px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;margin:0 auto 16px"></div>
       <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:12px">Edit caption</div>
       <textarea id="edit-caption-input" maxlength="280" oninput="setEditCaptionDraft(this.value)" placeholder="Write a caption…" style="width:100%;min-height:84px;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:14px;padding:12px 14px;color:${C.text};font-family:'Inter',sans-serif;font-size:14px;line-height:1.5;resize:none;outline:none">${esc(post.caption||'')}</textarea>
+      <div id="edit-caption-count" aria-live="polite" style="text-align:right;font-size:11px;font-weight:700;color:${C.muted};min-height:14px;margin-top:3px"></div>
       <div style="display:flex;gap:10px;margin-top:14px">
         <button onclick="cancelEditCaption()" style="flex:1;background:${C.surfaceHigh};border:none;border-radius:14px;color:${C.muted};font-size:14px;font-weight:600;padding:13px;cursor:pointer">Cancel</button>
         <button onclick="saveEditCaption()" style="flex:1;background:${C.accent};border:none;border-radius:14px;color:#0F0F14;font-size:14px;font-weight:700;padding:13px;cursor:pointer">Save</button>
@@ -4477,7 +4529,17 @@ function saveProfile(){
   saveData(); renderApp();
   publishProfile();
 }
-function setPhotoCaption(v){ if(A.pendingPhoto){ A.pendingPhoto.caption=v; if(!A.pollMode) detectComposerLink(v); } }
+// Show remaining characters once the writer is close enough to care.
+// Patched straight into the DOM: typing must never call renderApp() — a frame
+// rebuild mid-keystroke drops focus and flashes photos.
+function patchCharCount(id, len, max){
+  const el=document.getElementById(id); if(!el) return;
+  const left=max-len;
+  if(left>40){ el.textContent=''; return; }          // invisible until it matters
+  el.textContent=left;
+  el.style.color = left<=10 ? C.warm : C.muted;
+}
+function setPhotoCaption(v){ if(A.pendingPhoto){ A.pendingPhoto.caption=v; patchCharCount('caption-count', v.length, 280); if(!A.pollMode) detectComposerLink(v); } }
 function onClearPhoto(){
   if(A.pendingPhoto){
     A.pendingPhoto.image=null; A.pendingPhoto.blob=null;
@@ -5072,7 +5134,7 @@ function buildFeed(net){
             ${post.modHidden?`<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:12px;padding:10px 12px;margin:10px 0 4px;font-size:12px;color:${C.red};line-height:1.5">🚫 The network owner hid this from other members. Only you can still see it. You can delete it below to remove it everywhere.</div>`:''}
             <div style="display:flex;align-items:center;gap:14px">
               <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" onpointerdown="likePress('${post.id}')" onpointerup="likeRelease('${post.id}')" onpointercancel="likeCancel()" onpointerleave="likeCancel()" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:13px;font-weight:600;user-select:none;-webkit-user-select:none">
-                <span style="font-size:17px">${post.liked?"♥":"♡"}</span>
+                <span style="font-size:17px">${reactionGlyphs(post)}</span>
               </button>
               <button onclick="openReplies('${post.id}')" aria-label="Comments" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${C.muted};font-size:13px;font-weight:600">
                 <span style="font-size:15px">💬</span><span class="cmt-count" data-cmt-pid="${post.id}" data-fmt="feed">${post.replies.length>0?post.replies.length:""}</span>
@@ -5223,7 +5285,7 @@ function activityItems(net){
         const l=p.likeBy[pk];
         if(l && l.v && pk!==myPk && pk!=='u1'){
           const key='like:'+p.id+':'+pk;
-          if(!dismissed[key]) items.push({ key, kind:'like', pk, ts:l.ts||0, postId:p.id, label });
+          if(!dismissed[key]) items.push({ key, kind:'like', pk, ts:l.ts||0, postId:p.id, label, emo:normEmo(l.emo) });
         }
       });
     }
@@ -5270,7 +5332,8 @@ function buildActivity(net){
     const name=esc(mem.name||'Someone');
     const when=it.ts?esc(relTime(it.ts*1000)):'';
     const verb = it.kind==='like'
-      ? `<span style="color:${C.warm}">♥ liked</span>`
+      ? (it.emo ? `<span style="color:${C.warm}">${it.emo} reacted to</span>`
+                : `<span style="color:${C.warm}">♥ liked</span>`)
       : it.kind==='threadreply'
         ? `<span style="color:${C.accent}">💬 also replied on</span>`
         : `<span style="color:${C.accent}">💬 commented on</span>`;
@@ -5355,6 +5418,7 @@ function buildMyPage(net){
         <button onclick="setPollMode(true)" style="flex:1;background:${pollMode?C.accentDim:'transparent'};border:1px solid ${pollMode?C.accentBorder:'var(--c-border)'};color:${pollMode?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">📊 Poll</button>
       </div>
       ${pollMode ? (pollUI + `<textarea id="caption-input" maxlength="280" oninput="setPhotoCaption(this.value)" placeholder="${pollMode?'Ask a question…':'What\u2019s on your mind?'}" rows="2" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:6px;resize:none;line-height:1.5">${esc(pp.caption)}</textarea>`) : (`<textarea id="caption-input" maxlength="280" oninput="setPhotoCaption(this.value)" placeholder="${pollMode?'Ask a question…':'What\u2019s on your mind?'}" rows="2" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:6px;resize:none;line-height:1.5">${esc(pp.caption)}</textarea>` + pollUI)}
+      <div id="caption-count" aria-live="polite" style="text-align:right;font-size:11px;font-weight:700;color:${C.muted};min-height:14px;margin:-2px 2px 4px 0"></div>
       <div id="composer-link-slot">${(!pollMode && A.pendingPhoto && A.pendingPhoto.link)?composerLinkCard(A.pendingPhoto.link):''}</div>
       <div id="upload-err" style="color:${C.warm};font-size:12px;min-height:16px;margin-bottom:8px"></div>
       <div style="display:flex;gap:10px">
@@ -5368,7 +5432,7 @@ function buildMyPage(net){
   const actionRow=(p)=>`
     <div style="display:flex;align-items:center;gap:14px">
       <button class="like-btn" data-like-pid="${p.id}" onclick="toggleLike('${p.id}')" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:4px;color:${p.liked?C.warm:C.muted};font-size:12px;font-weight:600">
-        <span style="font-size:15px">${p.liked?'♥':'♡'}</span>
+        <span style="font-size:15px">${reactionGlyphs(p)}</span>
       </button>
       <button onclick="openReplies('${p.id}')" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:4px;color:${C.muted};font-size:12px;font-weight:600">
         <span style="font-size:13px">💬</span><span class="cmt-count" data-cmt-pid="${p.id}" data-fmt="num">${(p.replies&&p.replies.length)||0}</span>
@@ -5562,6 +5626,7 @@ function buildCamera(){
         <div>
           <div style="color:${C.muted};font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;margin-bottom:6px">Caption <span style="color:${C.muted};font-weight:400;text-transform:none;letter-spacing:0">(optional)</span></div>
           <input id="cam-caption" maxlength="280" value="${esc(A.cameraCaption||'')}" oninput="setCameraCaption(this.value)" placeholder="What's happening?" autofocus style="width:100%;background:${C.surfaceHigh};border:1.5px solid ${A.cameraCaption?C.accentBorder:'var(--c-border)'};outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;transition:border-color .2s"/>
+          <div id="cam-caption-count" aria-live="polite" style="text-align:right;font-size:11px;font-weight:700;color:${C.muted};min-height:14px;margin-top:3px"></div>
         </div>
         <div style="display:flex;gap:12px">
           <button onclick="retakePhoto()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:14px;padding:14px 0;font-size:14px;font-weight:700;cursor:pointer">↺ Retake</button>
@@ -5928,7 +5993,7 @@ function buildPostView(net){
       ${post.link?linkCardHTML(post):''}
       <div style="display:flex;align-items:center;gap:18px;margin:14px 4px 18px">
         <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" onpointerdown="likePress('${post.id}')" onpointerup="likeRelease('${post.id}')" onpointercancel="likeCancel()" onpointerleave="likeCancel()" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:14px;font-weight:600;user-select:none;-webkit-user-select:none">
-          <span style="font-size:19px">${post.liked?'♥':'♡'}</span>
+          <span style="font-size:19px">${reactionGlyphs(post)}</span>
         </button>
         <div style="color:${C.muted};font-size:14px;font-weight:600;display:flex;align-items:center;gap:5px"><span style="font-size:15px">💬</span>${post.replies.length} ${post.replies.length===1?'comment':'comments'}</div>
       </div>

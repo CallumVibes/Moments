@@ -453,12 +453,6 @@ function concatBytes(...arrs){
   arrs.forEach(a=>{ out.set(a,o); o+=a.length; });
   return out;
 }
-function bigToBytes32(x){
-  const hex=x.toString(16).padStart(64,'0');
-  return hexToBytes(hex);
-}
-function bytesToBig(b){ return BigInt('0x'+bytesToHex(b)); }
-function xorBytes(a,b){ const o=new Uint8Array(a.length); for(let i=0;i<a.length;i++) o[i]=a[i]^b[i]; return o; }
 
 async function sha256(bytes){ return new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)); }
 async function taggedHash(tag, msg){
@@ -777,6 +771,19 @@ async function handleRemoteEvent(netId, ev){
       // behind, and without this every one of them renders as "Someone".
       const gone=net.members.find(m=>m.id===pk);
       if(gone && gone.name){ if(!net.departed) net.departed={}; net.departed[pk]={ name:gone.name, ts:ev.created_at }; }
+      // Mirror the join notice. Same gates, same reasons: after backfill only
+      // (A.live), only events from this session, never our own leave echoed back.
+      // The leave payload carries no name — only {t,pk,ts} — so this has to read
+      // the member record, which is why it must run BEFORE the filter below.
+      if(gone && !mine && A.live && A.live[netId] && ev.created_at>=_sessionStart){
+        const who=gone.name||'Someone';
+        const where=(netId!==A.activeNetId)?' · '+net.name:'';
+        showToast('🚪 '+who+' left'+where);
+        // Toast only, no push. A departure isn't actionable and isn't urgent —
+        // buzzing someone's phone to tell them a relative left a photo album is
+        // exactly the engagement-bait this app exists to avoid. It's visible in
+        // the member list and on their old posts either way.
+      }
       net.members=net.members.filter(m=>m.id!==pk);
       // If the owner left, clear ownership so the network no longer shows an absent
       // owner (this also enables the take-ownership recovery flow for remaining members).
@@ -1046,9 +1053,15 @@ async function handleRemoteEvent(netId, ev){
     if(_pw !== undefined && net.password){
       delete _pendingJoinPasswords[net.id];
       if(_pw !== net.password){
-        const nm=net.name;
+        // Capture BEFORE leaving — leaveNetwork() destroys the record we need.
+        const nm=net.name, code=net.code;
         leaveNetwork(net.id, true);
-        showToast('Wrong password for "'+nm+'"');
+        // Ask for the password instead of dead-ending. Until now a wrong or absent
+        // password just bounced you back to the join screen with a toast, and you
+        // had to retype the whole code. Blank means they didn't know one was
+        // needed, so that isn't an error — just ask.
+        if(_pw!=='') showToast('Wrong password for "'+nm+'"');
+        promptJoinPassword(code);
         return;
       }
     } else if(_pw !== undefined){
@@ -1887,24 +1900,6 @@ const _imgPending={};  // ciphertext sha256 -> in-flight guard
    don't re-download+re-decrypt every open. Clearing is always safe: the
    ciphertext is still on Blossom and re-fetches on next view. Network data,
    keys, and session live under different keys and are never touched here. */
-async function cachedMediaBytes(){
-  try{
-    const keys=await idbKeys();
-    let total=0;
-    for(const k of keys){
-      if(typeof k==='string' && (k.startsWith('img:')||k.startsWith('av:'))){
-        const blob=await idbGet(k);
-        if(blob && typeof blob.size==='number') total+=blob.size;
-      }
-    }
-    return total;
-  }catch(_){ return 0; }
-}
-function fmtBytes(b){
-  if(!b) return '0 KB';
-  if(b<1024*1024) return Math.max(1,Math.round(b/1024))+' KB';
-  return (b/(1024*1024)).toFixed(b<10*1024*1024?1:0)+' MB';
-}
 // silent: used by the account wipe, where its own toast/render would fight the
 // caller's (only the newest toast survives, so the wrong message would win).
 async function clearMediaCache(silent){
@@ -2375,15 +2370,17 @@ async function enterApp(npub){
       if(saved.networks && Object.keys(saved.networks).length){
         A.networks=saved.networks;
         A.activeNetId=saved.activeNetId && saved.networks[saved.activeNetId] ? saved.activeNetId : Object.keys(saved.networks)[0];
-        // A post left mid-upload in a previous session ('sending') can't resume —
-        // its photo bytes lived only in memory (_retryBlobs), which is gone now.
-        // Mark it failed so it shows a Retry button instead of a stuck "Posting…".
+        // A post left mid-upload in a previous session can't still be "sending" —
+        // flip it to failed so it shows Retry rather than a stuck "Posting…".
+        // Unlike before, that Retry can now actually work: outRestore() below hands
+        // the source bytes back from the outbox instead of them dying with the tab.
         Object.values(A.networks).forEach(net=>{
           (net.posts||[]).forEach(p=>{ if(p.status==='sending') p.status='failed'; });
         });
       }
       syncMe();
     }
+    await outRestore();   // hand parked upload bytes back to _retryBlobs before any flush runs
   }catch(e){ /* storage unavailable — stay in-memory */ }
 
   renderApp();
@@ -2502,6 +2499,7 @@ const CHANGELOG=[
   { v:'0.8.7', date:'July 2026', title:'Sharing & control', changes:[
     ['fix','Photos no longer peek out above Posts / Activity on your page when you scroll'],
     ['change','The feed gives a gentle bounce when you reach the end'],
+    ['change','Joining a network that needs a password now asks for it, instead of sending you back to retype the whole code'],
     ['fix','Settings now opens from the join screen \u2014 the gear did nothing there, which also made Log out unreachable when you had no networks'],
     ['change','When someone leaves, their old posts now show their name with a small \u201cleft the network\u201d note \u2014 not just \u201cSomeone\u201d. If they rejoin, the note disappears'],
     ['change','Vibration now follows one consistent pattern \u2014 light for taps, firmer when something happens, strongest for big actions \u2014 and the bottom tabs finally buzz like everything else'],
@@ -2509,6 +2507,7 @@ const CHANGELOG=[
     ['fix','Your own reaction no longer shows as \u201cSomeone\u201d in the reactions list \u2014 it\u2019s your name, marked (you)'],
     ['fix','If the owner hides one of your posts, the notice now has a Delete button right on it instead of pointing at one that wasn\u2019t there'],
     ['fix','Signing in on a new phone no longer renames you to \u201cYou\u201d for everyone \u2014 your name, bio and picture come back from your networks instead of being overwritten'],
+    ['new','You\u2019ll know when someone leaves a network too \u2014 a quiet note, no notification'],
     ['new','You\u2019ll know when someone joins \u2014 a nudge when a new member arrives in one of your networks, and a warmer one when someone who left comes back'],
     ['new','Someone\u2019s page now has This week / Last week / All too \u2014 it opens on All, so you still see everything by default'],
     ['new','Add your Signal username to your profile \u2014 optional, visible only to your networks, and one tap to copy from someone\u2019s profile'],
@@ -4538,7 +4537,7 @@ function deletePost(pid){
     if(_undoTimer){ clearTimeout(_undoTimer); _undoTimer=null; }
     _undoRef=null;
     const t=document.getElementById('app-toast'); if(t && t.parentNode) t.parentNode.removeChild(t);
-    delete _retryBlobs[pid];
+    delete _retryBlobs[pid]; outDrop(pid);
   }
   if(A.replyPostId===pid) A.replyPostId=null;
   if(A.viewPostId===pid) A.viewPostId=null;
@@ -5007,7 +5006,10 @@ async function sharePhoto(){
     time:"just now", likes:0, liked:false, likeBy:{}, replies:[], ts:Math.floor(Date.now()/1000),
     status:'sending' };
   // keep the source bytes so we can (re)encrypt + (re)upload on retry (photo posts only)
-  if(hasPhoto && pp.blob && !pp.remote) _retryBlobs[post.id]={ blob:pp.blob, dataUrl:pp.image, poster:pp.poster||null, audioName:pp.audioName||null, audioDur:pp.audioDur||0 };
+  if(hasPhoto && pp.blob && !pp.remote){
+    _retryBlobs[post.id]={ blob:pp.blob, dataUrl:pp.image, poster:pp.poster||null, audioName:pp.audioName||null, audioDur:pp.audioDur||0 };
+    outSave(post.id, _retryBlobs[post.id]);   // park the bytes before the upload is even attempted
+  }
 
   net.posts.unshift(post);
   A.uploading=false; A.showUpload=false; A.pendingPhoto=null;
@@ -5016,7 +5018,55 @@ async function sharePhoto(){
 }
 
 // Encrypt+upload (if needed) then publish; drives post.status: sending → sent | failed
-const _retryBlobs={};   // postId -> {blob, dataUrl}  (runtime only)
+const _retryBlobs={};   // postId -> {blob, dataUrl, poster, audioName, audioDur}
+/* ── Outbox: the source bytes of a post that hasn't reached Blossom ──────────
+   These used to live ONLY in memory, so posting a photo offline and closing the
+   app lost it forever — and left a Retry button that could never succeed, because
+   there was nothing left to upload. Parking the bytes in IndexedDB under out:<id>
+   means a failed post survives eviction and retries for real.
+   Prerequisite for multi-photo: four photos take ~4x longer to upload, so the
+   window in which eviction eats the bytes stops being an edge case.
+   Capped: a huge video parked forever could eat the user's storage quota and make
+   every other idbSet fail. Above the cap we keep today's behaviour (runtime-only)
+   rather than risk breaking saving altogether. */
+const OUT_MAX_BYTES = 50*1024*1024;
+async function outSave(pid, rb){
+  try{
+    if(!rb || !rb.blob || rb.blob.size > OUT_MAX_BYTES) return;
+    await idbSet('out:'+pid, { blob:rb.blob, poster:rb.poster||null, audioName:rb.audioName||null, audioDur:rb.audioDur||0 });
+  }catch(_){}   // quota/full disk: the post still works this session, just not across a reload
+}
+async function outDrop(pid){ try{ await idbDel('out:'+pid); }catch(_){} }
+// A post's id becomes its Nostr event id on publish — the parked bytes must follow.
+async function outMove(oldPid, newPid){
+  try{
+    const v=await idbGet('out:'+oldPid);
+    if(v){ await idbSet('out:'+newPid, v); }
+    await idbDel('out:'+oldPid);
+  }catch(_){}
+}
+// On boot: hand the parked bytes back to _retryBlobs so Retry can work, and sweep
+// entries whose post is gone (deleted, or delivered in a session that crashed).
+async function outRestore(){
+  try{
+    const live=new Set();
+    Object.values(A.networks||{}).forEach(n=>(n.posts||[]).forEach(p=>{
+      if(!p.enc && (p.status==='failed'||p.status==='sending')) live.add(p.id);
+    }));
+    const keys=await idbKeys();
+    for(const k of keys){
+      if(typeof k!=='string' || !k.startsWith('out:')) continue;
+      const pid=k.slice(4);
+      if(!live.has(pid)){ await idbDel(k); continue; }   // orphan — nothing to deliver
+      const v=await idbGet(k);
+      if(v && v.blob){
+        // Fresh object URL: the original preview URL died with the last session.
+        _retryBlobs[pid]={ blob:v.blob, dataUrl:URL.createObjectURL(v.blob),
+                           poster:v.poster||null, audioName:v.audioName||null, audioDur:v.audioDur||0 };
+      }
+    }
+  }catch(_){}
+}
 // Resolve a promise but give up after ms, returning a fallback instead of hanging.
 function withTimeout(promise, ms, fallback){
   return Promise.race([
@@ -5053,7 +5103,7 @@ function undoSend(){
   const net=A.networks[ref.netId]; if(!net) return;
   const i=net.posts.findIndex(p=>p.id===ref.postId);
   if(i>=0) net.posts.splice(i,1);
-  delete _retryBlobs[ref.postId];
+  delete _retryBlobs[ref.postId]; outDrop(ref.postId);
   haptic(10); saveData(); renderApp();
   showToast('Post undone');
 }
@@ -5117,8 +5167,14 @@ async function attemptPublish(netId, post){
       _imgCache[ctHash]=rb.dataUrl;
       try{ await idbSet('img:'+ctHash, new Blob([cipher], {type:'application/octet-stream'})); }catch(_){}
     }
-    // A photo that never reached Blossom and whose source bytes are gone (e.g. after a reload) can't be delivered
-    if(!post.enc && !_retryBlobs[post.id] && post.image && post.image.startsWith('data:')){
+    // Media that never reached Blossom and whose source bytes are gone can't be
+    // delivered. The old test looked for a data: preview, which only photos keep —
+    // saveData strips the blob: preview off video and audio, so after a reload they
+    // slipped through and published the CAPTION ALONE, silently dropping the media.
+    // Now: if this post was meant to carry media and we have neither an upload
+    // result nor the bytes, it fails honestly. `hosted` posts are exempt — their
+    // image is a public https URL that needs no upload.
+    if(!post.enc && !post.hosted && !_retryBlobs[post.id] && (post.image || post.isVideo || post.isAudio)){
       post.status='failed'; saveData(); renderApp(); return;
     }
     const res=await publishPost(netId, post);
@@ -5126,6 +5182,7 @@ async function attemptPublish(netId, post){
       // The post's id becomes the Nostr event id. Move its retry blob to the new
       // key so a later retry can still find the source bytes to re-upload.
       if(_retryBlobs[post.id]){ _retryBlobs[res.id]=_retryBlobs[post.id]; delete _retryBlobs[post.id]; }
+      outMove(post.id, res.id);
       post.id=res.id; if(A.seen) A.seen[res.id]=true;
     }
     post.status = (res && res.delivered) ? 'sent' : 'failed';
@@ -5140,7 +5197,7 @@ async function attemptPublish(netId, post){
       : 'Couldn’t upload — tap Retry to try again';
     try{ showToast(friendly); }catch(_){}
   }
-  if(post.status==='sent' && _retryBlobs[post.id]) delete _retryBlobs[post.id];
+  if(post.status==='sent'){ delete _retryBlobs[post.id]; outDrop(post.id); }   // delivered — stop hoarding the bytes
   saveData(); renderApp();
 }
 function retryPost(netId, postId){
@@ -6360,7 +6417,8 @@ function renderApp(){
       ${A.showContact?buildContact():""}
       ${A.showEcosystem?buildEcosystem():""}
       ${A.showVanish?buildVanishConfirm():""}
-      ${A.confirmMsg?buildConfirm():""}`;
+      ${A.confirmMsg?buildConfirm():""}
+      ${A.pendingJoinCode?buildJoinPasswordPrompt():""}`;
     const jh = header + `
     <div id="screen-root" style="flex:1;display:flex;flex-direction:column;position:relative;overflow:hidden">
       ${buildJoinScreen()}${jOverlays}

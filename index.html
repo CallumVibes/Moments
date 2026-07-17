@@ -767,10 +767,21 @@ async function handleRemoteEvent(netId, ev){
   if(payload.t==='leave'){
     // Self-attested departure: a member can only announce their OWN leave.
     if(payload.pk && payload.pk===pk){
+      // A leave event lives on the relays forever, and backfill replays it in
+      // arbitrary order. Without this check an ancient leave arrives AFTER the
+      // rejoin that superseded it and removes a member who never went anywhere —
+      // which looked like "they leave whenever they close the app", because while
+      // they're active their own posts keep re-adding them. The owner-remove
+      // handler below has guarded this with rejoinTs all along; self-leave didn't.
+      const _idTs=(net.idTs && net.idTs[pk])||0;
+      if(ev.created_at <= _idTs) return;   // stale: they've been active since
       // Remember who they were BEFORE deleting the record — their posts stay
       // behind, and without this every one of them renders as "Someone".
+      // The timestamp is recorded even with no name, so a replayed older identity
+      // event can't resurrect them.
       const gone=net.members.find(m=>m.id===pk);
-      if(gone && gone.name){ if(!net.departed) net.departed={}; net.departed[pk]={ name:gone.name, ts:ev.created_at }; }
+      if(!net.departed) net.departed={};
+      net.departed[pk]={ name:(gone&&gone.name)||'', ts:ev.created_at };
       // Mirror the join notice. Same gates, same reasons: after backfill only
       // (A.live), only events from this session, never our own leave echoed back.
       // The leave payload carries no name — only {t,pk,ts} — so this has to read
@@ -845,9 +856,21 @@ async function handleRemoteEvent(netId, ev){
     else if(payload.avatarEnc){ adoptOwnAvatar(net, payload.avatarEnc).then(ok=>{ if(ok){ saveData(); renderApp(); } }); }
     if(took){ if(A.awaitOwnProfile) delete A.awaitOwnProfile[netId]; saveData(); changed=true; }
   }
+  // Newest identity event we've seen from this member. A leave older than this is
+  // stale — they've demonstrably been active since — and must not remove them.
+  if(carriesIdentity){
+    if(!net.idTs) net.idTs={};
+    if(ev.created_at > (net.idTs[pk]||0)){ net.idTs[pk]=ev.created_at; }
+  }
   const _wasDeparted = !!(net.departed && net.departed[pk]);   // captured BEFORE the tombstone is cleared below
-  if(net.departed && net.departed[pk] && carriesIdentity){ delete net.departed[pk]; changed=true; }   // they're back
-  if(!mine && carriesIdentity && !net.members.find(m=>m.id===pk)){
+  // Only a NEWER identity event undoes a leave. Backfill replays events in
+  // arbitrary order, so an old profile arriving after a genuine leave must not
+  // resurrect them.
+  if(net.departed && net.departed[pk] && carriesIdentity && ev.created_at > (net.departed[pk].ts||0)){
+    delete net.departed[pk]; changed=true;   // they're back
+  }
+  if(!mine && carriesIdentity && !net.members.find(m=>m.id===pk)
+     && !(net.departed && net.departed[pk] && ev.created_at <= (net.departed[pk].ts||0))){
     const m={ id:pk, name:payload.name||'Friend', emoji:memEmoji(pk), color:memColor(pk), avatar:payload.avatar||null, avatarEnc:payload.avatarEnc||null, bio:(payload.bio||'') };
     net.members.push(m);
     if(m.avatarEnc) ensureAvatar(net, m);
@@ -2496,6 +2519,9 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
+  { v:'0.8.8', date:'July 2026', title:'Under the hood', changes:[
+    ['change','Activity opens quicker in busy networks \u2014 the app was working out your notification count twice over on every screen'],
+  ]},
   { v:'0.8.7', date:'July 2026', title:'Sharing & control', changes:[
     ['fix','Photos no longer peek out above Posts / Activity on your page when you scroll'],
     ['change','The feed gives a gentle bounce when you reach the end'],
@@ -2507,6 +2533,8 @@ const CHANGELOG=[
     ['fix','Your own reaction no longer shows as \u201cSomeone\u201d in the reactions list \u2014 it\u2019s your name, marked (you)'],
     ['fix','If the owner hides one of your posts, the notice now has a Delete button right on it instead of pointing at one that wasn\u2019t there'],
     ['fix','Signing in on a new phone no longer renames you to \u201cYou\u201d for everyone \u2014 your name, bio and picture come back from your networks instead of being overwritten'],
+    ['fix','A video or audio post that failed to upload no longer quietly posts the caption on its own with the media missing \u2014 it says it failed, so you can retry it'],
+    ['fix','Members no longer appear to \u201cleave\u201d when they close the app \u2014 an old departure could come back around and remove someone who never went anywhere'],
     ['new','You\u2019ll know when someone leaves a network too \u2014 a quiet note, no notification'],
     ['new','You\u2019ll know when someone joins \u2014 a nudge when a new member arrives in one of your networks, and a warmer one when someone who left comes back'],
     ['new','Someone\u2019s page now has This week / Last week / All too \u2014 it opens on All, so you still see everything by default'],
@@ -5510,8 +5538,15 @@ function clearAllActivity(){
 }
 // Collect the undismissed activity items for a network, newest first.
 // Single source of truth: buildActivity renders these, the header bell counts them.
+// Per-render memo. renderApp() calls this for the bell badge, then buildActivity()
+// calls it again while building the same frame — walking every post, every like and
+// every reply, and sorting the lot, twice. Both calls happen inside one synchronous
+// render, so caching the result and clearing it at the top of renderApp() is exact:
+// nothing can mutate between them.
+let _actsMemo=null;
 function activityItems(net){
   if(!net) return [];
+  if(_actsMemo && _actsMemo.net===net) return _actsMemo.items;
   const myPk=myPubkey();
   const isMine = p => p.memberId==='u1' || p.authorPk===myPk;
   const dismissed = net.activityDismissed || {};
@@ -5549,6 +5584,7 @@ function activityItems(net){
     });
   });
   items.sort((a,b)=>(b.ts||0)-(a.ts||0));
+  _actsMemo={ net, items };
   return items;
 }
 
@@ -6329,6 +6365,7 @@ function buildNetPicker(){
 function closeNetPicker(){ A.netPickerEdit=false; if(A.showNetPicker){ A.showNetPicker=false; renderApp(); } }
 
 function renderApp(){
+  _actsMemo=null;   // one memo per frame — see activityItems()
   applyTheme();
   const net=currentNet();
   const showJoin = !net || A.showJoin;

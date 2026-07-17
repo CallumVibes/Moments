@@ -555,6 +555,7 @@ const Relay=(()=>{
   const conns={};        // url -> { ws }
   const subs={};         // subId -> { filters, onEvent, onEose }
   const timers={};       // url -> reconnect timer
+  const attempts={};     // url -> consecutive failed opens (drives backoff)
   let queue=[];          // events awaiting an open socket
 
   function send(ws, arr){ try{ if(ws && ws.readyState===1) ws.send(JSON.stringify(arr)); }catch(_){} }
@@ -564,6 +565,7 @@ const Relay=(()=>{
     try{ ws=new WebSocket(url); }catch(e){ scheduleReconnect(url); return; }
     conns[url]={ws};
     ws.onopen=()=>{
+      attempts[url]=0;   // healthy again — the next drop retries fast, not slow
       // (re)send every active subscription and flush any queued events
       Object.entries(subs).forEach(([id,s])=> send(ws,['REQ',id,...s.filters]));
       const q=queue; queue=[]; q.forEach(e=> send(ws,['EVENT',e]));
@@ -577,15 +579,28 @@ const Relay=(()=>{
     ws.onclose=()=>{ scheduleReconnect(url); try{ if(typeof updateConnDot==='function') updateConnDot(); }catch(_){} };
     ws.onerror=()=>{ try{ ws.close(); }catch(_){} };
   }
+  // Backoff: 2s, 4s, 8s, 16s, then 30s max, jittered. This exists to stop a
+  // permanently dead relay retrying every few seconds forever (battery + data),
+  // NOT to make reconnection smarter — a slow retry is the last thing you want
+  // when the user is staring at a stale feed. Which is why every signal that the
+  // network might genuinely be back resets it to zero: see resetBackoff().
   function scheduleReconnect(url){
     if(timers[url]) return;
+    const n=(attempts[url]=(attempts[url]||0)+1);
+    const base=Math.min(30000, 2000*Math.pow(2, Math.min(n-1, 4)));
+    const delay=base + Math.random()*Math.min(base, 3000);   // jitter: never a thundering herd
     // Guard the delayed open like connect() does: if something else (focus
     // handler, Reconnect button) already opened a live socket for this url
     // while the timer was pending, opening again would overwrite conns[url]
     // and orphan that socket — leaving it connected and delivering duplicates.
-    timers[url]=setTimeout(()=>{ timers[url]=null; if(!conns[url] || conns[url].ws.readyState>=2) open(url); }, 2500+Math.random()*2500);
+    timers[url]=setTimeout(()=>{ timers[url]=null; if(!conns[url] || conns[url].ws.readyState>=2) open(url); }, delay);
   }
-  function connect(){ activeRelays().forEach(url=>{ if(!conns[url] || conns[url].ws.readyState>=2) open(url); }); }
+  // Any evidence the network is back: forget the penalty and let connect() try now.
+  function resetBackoff(){
+    Object.keys(attempts).forEach(u=>attempts[u]=0);
+    Object.keys(timers).forEach(u=>{ if(timers[u]){ clearTimeout(timers[u]); timers[u]=null; } });
+  }
+  function connect(){ resetBackoff(); activeRelays().forEach(url=>{ if(!conns[url] || conns[url].ws.readyState>=2) open(url); }); }
   function publish(ev){
     let sent=false;
     Object.values(conns).forEach(c=>{ if(c.ws.readyState===1){ send(c.ws,['EVENT',ev]); sent=true; } });
@@ -621,11 +636,17 @@ const Relay=(()=>{
     if(rs===0) return 'connecting';
     return 'closed';
   }
-  return { pendingCount,connect,publish,publishTo,subscribe,unsubscribe,isConnected,refetch,disconnect,reconnectAll,status};
+  return { pendingCount,connect,publish,publishTo,subscribe,unsubscribe,isConnected,refetch,disconnect,reconnectAll,resetBackoff,status};
 })();
 
 // Recover missed events when the tab regains focus / visibility
 if(typeof window!=='undefined'){
+  // Wi-Fi -> cellular is the case that leaves a socket half-open: TCP never
+  // notices, readyState stays OPEN, isConnected() says yes, and nothing flows.
+  // connect() SKIPS those sockets (it only reopens readyState>=2), so the only
+  // cure is to force them closed. This — not backoff — is what unsticks the app.
+  window.addEventListener('online', ()=>{ try{ Relay.reconnectAll(); Relay.refetch(); setTimeout(flushFailedPosts,1200); }catch(_){} });
+  window.addEventListener('offline', ()=>{ try{ if(typeof updateConnDot==='function') updateConnDot(); }catch(_){} });
   window.addEventListener('focus', ()=>{ try{ Relay.connect(); Relay.refetch(); setTimeout(flushFailedPosts,1500); }catch(_){} });
   document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ try{ Relay.connect(); Relay.refetch(); setTimeout(flushFailedPosts,1500); }catch(_){} } });
 }
@@ -817,12 +838,27 @@ async function handleRemoteEvent(netId, ev){
     else if(payload.avatarEnc){ adoptOwnAvatar(net, payload.avatarEnc).then(ok=>{ if(ok){ saveData(); renderApp(); } }); }
     if(took){ if(A.awaitOwnProfile) delete A.awaitOwnProfile[netId]; saveData(); changed=true; }
   }
+  const _wasDeparted = !!(net.departed && net.departed[pk]);   // captured BEFORE the tombstone is cleared below
   if(net.departed && net.departed[pk] && carriesIdentity){ delete net.departed[pk]; changed=true; }   // they're back
   if(!mine && carriesIdentity && !net.members.find(m=>m.id===pk)){
     const m={ id:pk, name:payload.name||'Friend', emoji:memEmoji(pk), color:memColor(pk), avatar:payload.avatar||null, avatarEnc:payload.avatarEnc||null, bio:(payload.bio||'') };
     net.members.push(m);
     if(m.avatarEnc) ensureAvatar(net, m);
     changed=true;
+    // Announce the arrival — same gates as a new post, for the same reasons:
+    //   A.live[netId]            → after backfill, or every existing member
+    //                              "joins" the moment you open the app
+    //   created_at>=_sessionStart → not a replayed old join
+    //   t==='profile'            → the actual join announcement. Someone whose
+    //                              FIRST event is a post would otherwise fire
+    //                              "X joined" AND "X shared a moment" at once.
+    if(payload.t==='profile' && A.live && A.live[netId] && ev.created_at>=_sessionStart){
+      const who=payload.name||'Someone';
+      const where=(netId!==A.activeNetId)?' · '+net.name:'';
+      const back=_wasDeparted;
+      showToast('👋 '+who+(back?' is back':' joined')+where);
+      pushNotif('👋 '+who+(back?' is back in ':' joined ')+net.name, back?'Welcome them back':'Say hello', 'join-'+pk);
+    }
   } else if(!mine && carriesIdentity){
     const mem=net.members.find(m=>m.id===pk);
     if(mem){
@@ -831,6 +867,8 @@ async function handleRemoteEvent(netId, ev){
       if(payload.avatarEnc && JSON.stringify(mem.avatarEnc)!==JSON.stringify(payload.avatarEnc)){ mem.avatarEnc=payload.avatarEnc; ensureAvatar(net, mem); changed=true; }
       if(payload.avatarRemoved && (mem.avatar || mem.avatarEnc)){ mem.avatar=null; mem.avatarEnc=null; changed=true; }  // they cleared their picture
       if(payload.bio!==undefined && mem.bio!==payload.bio){ mem.bio=payload.bio; changed=true; }
+      if(payload.sig!==undefined){ const v=normSignal(payload.sig); if(mem.signal!==v){ mem.signal=v; changed=true; } }
+      else if(payload.sigRemoved && mem.signal){ mem.signal=''; changed=true; }
     }
   }
   if(payload.t==='post'){
@@ -1323,6 +1361,8 @@ async function publishProfile(){
       const keys=A.netKeys[id]||await deriveNetwork(net.code); A.netKeys[id]=keys;
       const aEnc=await encryptAvatarFor(id);
       const payload={ v:1, t:'profile', name, bio, ts:Math.floor(Date.now()/1000) };
+      const _sig=normSignal(A.profile.signal);
+      if(_sig) payload.sig=_sig; else payload.sigRemoved=true;   // mirror avatarRemoved: clearing it must propagate
       if(aEnc && aEnc.ext) payload.avatar=aEnc.ext;          // external public link
       else if(aEnc) payload.avatarEnc=stripSrc(aEnc);         // encrypted-on-Blossom avatar
       else payload.avatarRemoved=true;                        // no avatar → tell others to clear any old one
@@ -2327,7 +2367,7 @@ async function enterApp(npub){
     if(!_dbReady){ _db=await idbOpen(); _dbReady=true; }
     const saved=await idbGet(dataKey());
     if(saved){
-      if(saved.profile) A.profile={ name:saved.profile.name||"You", bio:saved.profile.bio||"", avatar:saved.profile.avatar||null, avatarExternal:!!saved.profile.avatarExternal, keyBackedUp:!!saved.profile.keyBackedUp, backupHidden:!!saved.profile.backupHidden, keyOrigin:(saved.profile.keyOrigin==='generated'?'generated':'imported'), theme:(saved.profile.theme==='dark'?'dark':'light') };
+      if(saved.profile) A.profile={ name:saved.profile.name||"You", bio:saved.profile.bio||"", avatar:saved.profile.avatar||null, avatarExternal:!!saved.profile.avatarExternal, keyBackedUp:!!saved.profile.keyBackedUp, backupHidden:!!saved.profile.backupHidden, keyOrigin:(saved.profile.keyOrigin==='generated'?'generated':'imported'), signal:normSignal(saved.profile.signal), theme:(saved.profile.theme==='dark'?'dark':'light') };
       if(Array.isArray(saved.relays) && saved.relays.length) A.relays=saved.relays;
       if(saved.joinTs && typeof saved.joinTs==='object') A.joinTs=saved.joinTs;
       if(saved.deletedNets && typeof saved.deletedNets==='object') A.deletedNets=saved.deletedNets;
@@ -2460,12 +2500,18 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.8.7', date:'July 2026', title:'Sharing & control', changes:[
+    ['fix','Photos no longer peek out above Posts / Activity on your page when you scroll'],
+    ['change','The feed gives a gentle bounce when you reach the end'],
+    ['fix','Settings now opens from the join screen \u2014 the gear did nothing there, which also made Log out unreachable when you had no networks'],
     ['change','When someone leaves, their old posts now show their name with a small \u201cleft the network\u201d note \u2014 not just \u201cSomeone\u201d. If they rejoin, the note disappears'],
     ['change','Vibration now follows one consistent pattern \u2014 light for taps, firmer when something happens, strongest for big actions \u2014 and the bottom tabs finally buzz like everything else'],
     ['change','A character counter appears when a caption gets close to the limit, instead of typing just silently stopping'],
     ['fix','Your own reaction no longer shows as \u201cSomeone\u201d in the reactions list \u2014 it\u2019s your name, marked (you)'],
     ['fix','If the owner hides one of your posts, the notice now has a Delete button right on it instead of pointing at one that wasn\u2019t there'],
     ['fix','Signing in on a new phone no longer renames you to \u201cYou\u201d for everyone \u2014 your name, bio and picture come back from your networks instead of being overwritten'],
+    ['new','You\u2019ll know when someone joins \u2014 a nudge when a new member arrives in one of your networks, and a warmer one when someone who left comes back'],
+    ['new','Someone\u2019s page now has This week / Last week / All too \u2014 it opens on All, so you still see everything by default'],
+    ['new','Add your Signal username to your profile \u2014 optional, visible only to your networks, and one tap to copy from someone\u2019s profile'],
     ['new','React with more than a heart \u2014 hold the heart on any post to pick \ud83d\udc4d \ud83d\ude02 \ud83d\ude2e \ud83d\ude22 \ud83c\udf89, and see who reacted with what'],
     ['new','Open your gallery straight from the camera \u2014 post a photo or video you already have, without taking a new one'],
     ['new','Share audio \u2014 pick a track or a recording and it plays right in the feed, for your networks only'],
@@ -2871,15 +2917,10 @@ function buildAdvanced(){
         <button onclick="clearMediaCache()" style="width:100%;background:${C.surfaceHigh};color:${C.text};border:1px solid var(--c-border);border-radius:12px;padding:11px 0;font-size:13px;font-weight:700;cursor:pointer">Clear cached photos</button>
       </div>
 
-      <!-- Relay tips -->
-      <div style="background:${C.surface};border-radius:16px;padding:16px">
-        <div style="color:${C.text};font-size:13px;font-weight:700;margin-bottom:6px">Tips</div>
-        ${[
-          'Use 3–7 relays for the best balance of speed and redundancy.',
-          'Relay URLs always start with wss:// (secure WebSocket).',
-          'If posts stop appearing, try resetting to defaults.',
-          'Free relays may go offline. Self-hosting is the most reliable option.'
-        ].map(t=>`<div style="color:${C.muted};font-size:12px;line-height:1.6;display:flex;gap:8px;margin-bottom:4px"><span style="color:${C.accent}">·</span>${t}</div>`).join('')}
+      <!-- Coming soon -->
+      <div style="background:${C.surface};border:1px solid ${C.accentBorder};border-radius:16px;padding:16px;display:flex;align-items:center;gap:12px">
+        <span style="font-size:20px;flex-shrink:0">🛰️</span>
+        <div style="color:${C.text};font-size:13px;font-weight:600;line-height:1.5">A dedicated hosted Moments relay <span style="color:${C.accent}">coming soon</span></div>
       </div>
 
       ${canVanish() ? `
@@ -3442,6 +3483,32 @@ function copyInviteCode(){
 }
 function closeInvite(){ A.showInvite=false; renderApp(); }
 function setFeedRange(r){ A.feedRange=r; haptic(6); renderApp(); }
+/* ── Date-range filter, shared by the feed and member profiles ──────────────
+   Calendar weeks, Monday 00:00 local. Legacy posts with no timestamp only ever
+   appear under All. Single source of truth: the feed and a profile must never
+   disagree about which week a photo is in. */
+function rangePredicate(range){
+  const now=new Date(); now.setHours(0,0,0,0);
+  const monday=Math.floor((now.getTime()-(((now.getDay()+6)%7)*86400000))/1000);
+  const lastMonday=monday-7*86400;
+  return p=>{
+    if(range==='all') return true;
+    if(!p.ts) return false;
+    if(range==='week') return p.ts>=monday;
+    return p.ts>=lastMonday && p.ts<monday;   // lastweek
+  };
+}
+// Chips markup, reused by both. `active` is the current value; `fn` the setter.
+function rangeChips(active, fn, pad){
+  return `<div style="display:flex;gap:6px;padding:${pad||'0'}">
+    ${[['week','This week'],['lastweek','Last week'],['all','All']].map(([k,label])=>`
+      <button onclick="${fn}('${k}')" style="flex:1;background:${active===k?C.accentDim:C.bg};border:1px solid ${active===k?C.accentBorder:'var(--c-border)'};color:${active===k?C.accent:C.muted};border-radius:20px;padding:7px 0;font-size:12px;font-weight:700;cursor:pointer">${label}</button>`).join('')}
+  </div>`;
+}
+// A profile is an archive you visit deliberately, so it opens on All — defaulting
+// to This week would hide almost everything and silently change what the grid
+// showed before this filter existed.
+function setProfileRange(r){ A.profileRange=r; haptic(6); renderApp(); }
 function openProfile(id){
   if(!id) return;
   const me=myPubkey();
@@ -3458,7 +3525,11 @@ function openProfile(id){
   A.viewPostId=null; A.replyPostId=null; A.likersPostId=null;
   renderApp();
 }
-function closeProfile(){ A.profileId=null; renderApp(); }
+function closeProfile(){
+  A.profileRange='all';   // don't carry one member's filter onto the next
+  A.profileId=null;
+  renderApp();
+}
 function openReplies(pid){
   haptic(10);
   A.replyPostId=pid; A.replyDraft="";
@@ -4027,6 +4098,7 @@ async function publishProfileTo(netId){
       const keys=A.netKeys[netId]||await deriveNetwork(net.code); A.netKeys[netId]=keys;
       const aEnc=await encryptAvatarFor(netId);
       const payload={ v:1, t:'profile', name:A.profile.name||'You', bio:(A.profile.bio||'').slice(0,160), ts:Math.floor(Date.now()/1000) };
+      { const _sig=normSignal(A.profile.signal); if(_sig) payload.sig=_sig; }
       if(aEnc && aEnc.ext) payload.avatar=aEnc.ext; else if(aEnc) payload.avatarEnc=stripSrc(aEnc);
       const content=await encJSON(keys.groupKey, payload);
       const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
@@ -4322,14 +4394,31 @@ function ptrIndicator(el){
   return _ptrEl;
 }
 function ptrRemove(){ if(_ptrEl){ _ptrEl.remove(); _ptrEl=null; } }
+function atBottom(el){ return el.scrollTop + el.clientHeight >= el.scrollHeight - 1; }
 function wirePtr(el){
   if(!el || el.dataset.ptr) return; el.dataset.ptr='1';
-  let startY=0, pulling=false, dist=0;
+  let startY=0, pulling=false, dist=0, bouncing=false;
   el.addEventListener('touchstart',e=>{
-    if(A.showNetPicker){ pulling=false; return; }   // don't intercept taps meant for an open overlay
-    if(el.scrollTop<=0 && e.touches.length===1){ startY=e.touches[0].clientY; pulling=true; dist=0; } else pulling=false;
+    if(A.showNetPicker){ pulling=false; bouncing=false; return; }   // don't intercept taps meant for an open overlay
+    if(e.touches.length!==1){ pulling=false; bouncing=false; return; }
+    startY=e.touches[0].clientY; dist=0;
+    pulling  = el.scrollTop<=0;
+    // Same gesture, other end: dragging up while already at the bottom rubber-bands
+    // the content instead of doing nothing. Deliberately drag-only — momentum
+    // overscroll belongs to the platform (iOS rubber band / Android 12+ stretch);
+    // intercepting a fling would mean fighting the compositor and would jank.
+    bouncing = !pulling && atBottom(el);
   }, {passive:true});
   el.addEventListener('touchmove',e=>{
+    if(bouncing){
+      dist=e.touches[0].clientY-startY;
+      if(dist<0 && atBottom(el)){
+        const d=Math.min(-dist*0.4, 64);          // resistance, capped — a hint, not a drawer
+        el.style.transform='translateY('+(-d)+'px)';
+        if(dist<-8 && e.cancelable) e.preventDefault();
+      } else { bouncing=false; el.style.transform=''; }
+      return;
+    }
     if(!pulling) return;
     dist=e.touches[0].clientY-startY;
     if(dist>0 && el.scrollTop<=0){
@@ -4342,6 +4431,15 @@ function wirePtr(el){
     } else { pulling=false; el.style.transform=''; }
   }, {passive:false});
   const end=()=>{
+    if(bouncing){
+      bouncing=false;
+      // Spring back with a touch of overshoot — the difference between "returns"
+      // and "bounces". Cleared afterwards so it never fights PTR's own transition.
+      el.style.transition='transform .34s cubic-bezier(.22,1.4,.36,1)';
+      el.style.transform='translateY(0)';
+      setTimeout(()=>{ el.style.transition=''; }, 360);
+      return;
+    }
     if(!pulling) return; pulling=false;
     el.style.transition='transform .25s';
     if(dist*0.5>=50) ptrRefresh(el);
@@ -4574,6 +4672,14 @@ function openEditProfile(){ A.editProfile=true; A.profileDraft={...A.profile}; r
 function cancelEditProfile(){ A.editProfile=false; A.profileDraft=null; A.savingPic=false; renderApp(); }
 function setDraftName(v){ if(A.profileDraft) A.profileDraft.name=v; }
 function setDraftBio(v){ if(A.profileDraft) A.profileDraft.bio=v; }
+// Optional Signal handle shown on your profile to network members.
+// Deliberately permissive (Signal's own format may change) but bounded and
+// character-restricted: it crosses the wire from other members and lands in HTML,
+// so it's normalised on the way in AND escaped on the way out.
+function normSignal(v){
+  return String(v||'').trim().replace(/^@+/,'').replace(/[^A-Za-z0-9._-]/g,'').slice(0,48);
+}
+function setDraftSignal(v){ if(A.profileDraft) A.profileDraft.signal=v; }
 function clearDraftAvatar(){
   if(A.profileDraft){
     A.profileDraft.avatar=null;
@@ -4597,7 +4703,7 @@ async function onPickProfilePic(input){
 }
 function saveProfile(){
   if(!A.profileDraft) return;
-  A.profile={ name:(A.profileDraft.name||'').trim()||'You', bio:(A.profileDraft.bio||'').trim(), avatar:A.profileDraft.avatar||null, avatarExternal:!!A.profileDraft.avatarExternal, keyBackedUp:!!(A.profile&&A.profile.keyBackedUp), backupHidden:!!(A.profile&&A.profile.backupHidden), keyOrigin:(A.profile&&A.profile.keyOrigin)||'imported', theme:(A.profile&&A.profile.theme)||'light' };
+  A.profile={ name:(A.profileDraft.name||'').trim()||'You', bio:(A.profileDraft.bio||'').trim(), avatar:A.profileDraft.avatar||null, avatarExternal:!!A.profileDraft.avatarExternal, keyBackedUp:!!(A.profile&&A.profile.keyBackedUp), backupHidden:!!(A.profile&&A.profile.backupHidden), keyOrigin:(A.profile&&A.profile.keyOrigin)||'imported', signal:normSignal(A.profileDraft.signal), theme:(A.profile&&A.profile.theme)||'light' };
   if(A.profileDraft.avatarCleared){
     // User removed their picture — drop the source bytes and any cached encrypted
     // copies so the old avatar isn't re-uploaded to networks.
@@ -5165,15 +5271,7 @@ function buildFeed(net){
   // Feed range filter: This week / Last week / All (calendar weeks, Mon 00:00 local).
   // Session-only preference; legacy posts without a timestamp only show under All.
   const range=A.feedRange||'week';   // opens on This week; All is one tap away
-  const _now=new Date(); _now.setHours(0,0,0,0);
-  const _monday=Math.floor((_now.getTime()-(((_now.getDay()+6)%7)*86400000))/1000);
-  const _lastMonday=_monday-7*86400;
-  const inRange=p=>{
-    if(range==='all') return true;
-    if(!p.ts) return false;
-    if(range==='week') return p.ts>=_monday;
-    return p.ts>=_lastMonday && p.ts<_monday; // lastweek
-  };
+  const inRange=rangePredicate(range);
   const visiblePosts=net.posts.filter(p=>!pending[p.id] && inRange(p));
   const memberStrip = net.members.slice(0,3).map((mem,i)=>`
     <button onclick="openProfile('${mem.id}')" style="margin-left:${i===0?0:-6}px;position:relative;z-index:${3-i};background:none;border:none;padding:0;cursor:pointer" aria-label="View ${esc(mem.name)}">${avatarHTML(mem,24,8,12,1.5)}</button>
@@ -5231,7 +5329,7 @@ function buildFeed(net){
 
   return `
   <div style="flex:1;position:relative;display:flex;flex-direction:column;overflow:hidden">
-    <div id="feed-scroll" class="hide-scroll" style="flex:1;overflow-y:auto;padding-bottom:calc(80px + env(safe-area-inset-bottom, 0px))">
+    <div id="feed-scroll" class="hide-scroll" style="flex:1;overflow-y:auto;overscroll-behavior-y:contain;padding-bottom:calc(80px + env(safe-area-inset-bottom, 0px))">
       <div id="offline-banner" style="display:${Relay.isConnected()?'none':'flex'};align-items:center;gap:8px;margin:6px 16px 0;padding:9px 13px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.28);border-radius:12px;color:#f87171;font-size:12px;line-height:1.4">
         <span style="flex-shrink:0">⚠</span>
         <span id="offline-banner-text">${_offlineBannerText()}</span>
@@ -5240,9 +5338,8 @@ function buildFeed(net){
         <div style="display:flex">${memberStrip}</div>
         <button onclick="setTab(1)" style="background:none;border:none;padding:0;cursor:pointer;color:${C.textDim};font-size:12px;text-align:left" aria-label="See all members">${esc(net.name)} · ${net.members.length} member${net.members.length>1?'s':''}</button>
       </div>
-      <div style="position:sticky;top:0;z-index:5;background:${C.bg};display:flex;gap:6px;padding:6px 16px 10px">
-        ${[['week','This week'],['lastweek','Last week'],['all','All']].map(([k,label])=>`
-          <button onclick="setFeedRange('${k}')" style="flex:1;background:${range===k?C.accentDim:C.bg};border:1px solid ${range===k?C.accentBorder:'var(--c-border)'};color:${range===k?C.accent:C.muted};border-radius:20px;padding:7px 0;font-size:12px;font-weight:700;cursor:pointer">${label}</button>`).join('')}
+      <div style="position:sticky;top:0;z-index:5;background:${C.bg};padding:6px 16px 10px">
+        ${rangeChips(range,'setFeedRange')}
       </div>
       <div style="display:flex;flex-direction:column;gap:14px;padding:0 16px">${postsHtml}</div>
     </div>
@@ -5562,7 +5659,7 @@ function buildMyPage(net){
     ? `background:url('${safeMediaUrl(prof.avatar)}') center/cover no-repeat #000`
     : `background:${C.warm}22;display:flex;align-items:center;justify-content:center;font-size:28px`;
   const header = `
-    <div style="display:flex;align-items:flex-start;gap:14px;margin-bottom:6px">
+    <div style="display:flex;align-items:flex-start;gap:14px;margin-bottom:6px;padding-top:16px">
       <div style="width:60px;height:60px;border-radius:20px;${headerAvatar};border:2.5px solid ${C.warm};box-shadow:0 0 16px ${C.warm}44;overflow:hidden;flex-shrink:0">${prof.avatar?'':'🧡'}</div>
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:center;gap:8px">
@@ -5598,6 +5695,8 @@ function buildMyPage(net){
       <input id="name-input" value="${esc(pd.name||'')}" oninput="setDraftName(this.value)" maxlength="40" placeholder="Your name" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px"/>
       <div style="color:${C.muted};font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Bio</div>
       <textarea id="bio-input" oninput="setDraftBio(this.value)" maxlength="160" placeholder="A short bio…" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;resize:none;height:64px;margin-bottom:14px">${esc(pd.bio||'')}</textarea>
+      <div style="color:${C.muted};font-size:11px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;margin-bottom:6px">Signal username <span style="text-transform:none;letter-spacing:0;font-weight:400">· optional, shown to your networks</span></div>
+      <input id="signal-input" value="${esc(pd.signal||'')}" oninput="setDraftSignal(this.value)" maxlength="48" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="username.01" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px"/>
       <div style="display:flex;gap:10px">
         <button onclick="saveProfile()" ${savingPic?'disabled':''} style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:${savingPic?'wait':'pointer'};opacity:${savingPic?0.6:1}">Save</button>
         <button onclick="cancelEditProfile()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>
@@ -5606,13 +5705,13 @@ function buildMyPage(net){
 
   const myTab = A.myTab==='activity' ? 'activity' : 'posts';
   const subTabs = `
-    <div style="position:sticky;top:0;z-index:5;background:${C.bg};display:flex;gap:8px;padding:8px 0 10px;margin:4px 0 6px">
+    <div style="position:sticky;top:0;z-index:5;background:${C.bg};display:flex;gap:8px;padding:12px 0 10px;margin:0 0 6px">
       <button onclick="setMyTab('posts')" style="flex:1;background:${myTab==='posts'?C.accentDim:C.bg};border:1px solid ${myTab==='posts'?C.accentBorder:'var(--c-border)'};color:${myTab==='posts'?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">Posts</button>
       <button onclick="setMyTab('activity')" style="flex:1;background:${myTab==='activity'?C.accentDim:C.bg};border:1px solid ${myTab==='activity'?C.accentBorder:'var(--c-border)'};color:${myTab==='activity'?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">Activity</button>
     </div>`;
 
   return `
-  <div id="mypage-scroll" class="hide-scroll" style="flex:1;overflow-y:auto;padding:16px 16px calc(80px + env(safe-area-inset-bottom, 0px))">
+  <div id="mypage-scroll" class="hide-scroll" style="flex:1;overflow-y:auto;overscroll-behavior-y:contain;padding:0 16px calc(80px + env(safe-area-inset-bottom, 0px))">
     ${header}
     ${editPanel}
     ${myTab==='posts' ? (canIPost(net) ? `<button onclick="openUpload()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:16px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;margin:14px 0 8px;display:flex;align-items:center;justify-content:center;gap:8px">
@@ -5625,8 +5724,12 @@ function buildMyPage(net){
 
 function buildProfile(net){
   const mem=memberIn(net,A.profileId);
-  const myPosts=net.posts.filter(p=>p.memberId===mem.id);
-  const stats=[["Posts",myPosts.length]];
+  const pRange=A.profileRange||'all';
+  const allTheirPosts=net.posts.filter(p=>p.memberId===mem.id);
+  const myPosts=allTheirPosts.filter(rangePredicate(pRange));
+  // Stat stays the true total — filtering the grid shouldn't make someone's
+  // post count appear to drop.
+  const stats=[["Posts",allTheirPosts.length]];
   const statHtml=stats.map((s,i)=>`
     <div style="flex:1;padding:14px 0;text-align:center;border-right:${i<stats.length-1?'1px solid var(--c-border)':'none'}">
       <div style="color:${C.text};font-size:20px;font-weight:700;font-family:'Playfair Display',serif">${s[1]}</div>
@@ -5650,11 +5753,24 @@ function buildProfile(net){
       ${mem.bio
         ? `<div style="color:${C.textDim};font-size:13px;line-height:1.55;text-align:center;max-width:300px;white-space:pre-wrap;word-break:break-word">${esc(mem.bio)}</div>`
         : `<div style="color:${C.muted};font-size:12px;font-style:italic">No bio yet</div>`}
+      ${mem.signal ? `<div style="display:inline-flex;align-items:center;gap:8px;background:${C.surface};border:1px solid var(--c-border);border-radius:14px;padding:7px 8px 7px 12px;margin-top:4px;max-width:100%">
+        <span style="font-size:14px;flex-shrink:0">🔒</span>
+        <span style="color:${C.accent};font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(mem.signal)}</span>
+        <button onclick="event.stopPropagation();copyContact('${esc(mem.signal)}','Signal username')" aria-label="Copy Signal username" title="Copy" style="flex-shrink:0;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:9px;width:28px;height:28px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="${C.muted}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="11" height="11" rx="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>
+      </div>` : ''}
     </div>
     <div style="display:flex;margin:0 24px 24px;background:${C.surface};border-radius:18px;overflow:hidden">${statHtml}</div>
     <div style="padding:0 16px 40px">
-      <div style="color:${C.textDim};font-size:10px;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:12px;padding-left:4px">Photos</div>
-      ${grid}
+      <div style="color:${C.textDim};font-size:10px;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:10px;padding-left:4px">Photos</div>
+      <div style="margin-bottom:12px">${rangeChips(pRange,'setProfileRange')}</div>
+      ${(myPosts.length===0 && allTheirPosts.length>0)
+        ? `<div style="text-align:center;padding:28px 20px;color:${C.muted};font-size:13px;line-height:1.6">Nothing ${pRange==='week'?'this week':'last week'}.<br><span style="color:${C.textDim}">Switch to All to see every moment.</span></div>`
+        : grid}
     </div>
   </div>`;
 }
@@ -5869,6 +5985,9 @@ function buildSettings(){
         <span style="color:${C.muted};font-size:18px">›</span>
       </button>
 
+      <!-- About -->
+      <button onclick="openAbout()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);color:${C.text};border-radius:16px;padding:14px 0;font-size:14px;font-weight:600;cursor:pointer;margin-bottom:10px">About Moment's</button>
+
       <!-- Nostr ecosystem -->
       <button onclick="openEcosystem()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-bottom:12px">
         <span style="font-size:20px">🌐</span>
@@ -5879,8 +5998,7 @@ function buildSettings(){
         <span style="color:${C.muted};font-size:18px">›</span>
       </button>
 
-      <!-- About + Log out -->
-      <button onclick="openAbout()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);color:${C.text};border-radius:16px;padding:14px 0;font-size:14px;font-weight:600;cursor:pointer;margin-bottom:10px">About Moment's</button>
+      <!-- Log out -->
       <button onclick="logout()" style="width:100%;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:16px;padding:14px 0;font-size:14px;font-weight:700;cursor:pointer">Log out</button>
 
       <div style="text-align:center;color:${C.muted};font-size:10px;letter-spacing:.5px;margin-top:4px">Moments — share together 🧡 Callum</div>
@@ -6224,7 +6342,29 @@ function renderApp(){
   }
 
   if(showJoin){
-    const jh = header + buildJoinScreen();
+    // The join screen used to render header + join and RETURN — so none of the
+    // settings-family overlays were ever mounted here. The gear set showSettings,
+    // re-rendered, and produced markup that didn't contain Settings: the tap
+    // worked, there was just nothing to show. Log out lives in Settings, which is
+    // why it was unreachable from this screen too.
+    // Mount only the overlays that make sense with no network: no invite, profile,
+    // replies, post view, camera or net picker — those all need one.
+    // #screen-root supplies the positioned ancestor these absolute overlays need.
+    const jOverlays = `
+      ${A.showSettings?buildSettings():""}
+      ${A.showAbout?buildAbout():""}
+      ${A.showKeyBackup?buildKeyBackup():""}
+      ${A.showAdvanced?buildAdvanced():""}
+      ${A.showWhatsNew?buildWhatsNew():""}
+      ${A.showRoadmap?buildRoadmap():""}
+      ${A.showContact?buildContact():""}
+      ${A.showEcosystem?buildEcosystem():""}
+      ${A.showVanish?buildVanishConfirm():""}
+      ${A.confirmMsg?buildConfirm():""}`;
+    const jh = header + `
+    <div id="screen-root" style="flex:1;display:flex;flex-direction:column;position:relative;overflow:hidden">
+      ${buildJoinScreen()}${jOverlays}
+    </div>`;
     if(jh!==_lastFrameHTML){ _lastFrameHTML=jh; document.getElementById('app-frame').innerHTML = jh; }
     const ni=document.getElementById('join-name-input'); if(ni && !A.activeNetId) ni.focus();
     return;

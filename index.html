@@ -4839,10 +4839,20 @@ async function saveProfile(){
   A.editProfile=false; A.profileDraft=null; A.savingPic=false;
   saveData(); renderApp();
   const res=await publishProfile();
+  // TEMP DIAGNOSTIC — remove once the pending-avatar reminder is confirmed working.
+  // Surfaces exactly what publishProfile decided so we stop guessing.
+  try{
+    const _n=currentNet();
+    showToast('debug: pickedNew='+_pickedNewPic+' uploadFailed='+(res&&res.avatarUploadFailed)+' hasBlob='+(!!_avatarBlob)+' pending='+(!!(_n&&_n.pendingAvatarUpload)));
+  }catch(_){}
+  // publishProfile may have set/cleared this network's pending-avatar flag while we
+  // awaited it. Persist and re-render AFTER it returns, or the Activity reminder
+  // wouldn't appear until some later unrelated render.
+  saveData(); renderApp();
   // If the user chose a NEW picture and it couldn't be uploaded, it lives only on
   // this device — nobody else will see it. Tell them plainly so it's not silent.
   if(_pickedNewPic && res && res.avatarUploadFailed){
-    showToast('Saved, but your new picture couldn\u2019t upload \u2014 reopen your profile and save again when you\u2019re back online');
+    showToast('Saved, but your new picture couldn\u2019t upload \u2014 it\u2019s in Activity as a reminder to save again when you\u2019re online');
   }
 }
 // Show remaining characters once the writer is close enough to care.

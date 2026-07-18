@@ -905,10 +905,10 @@ async function handleRemoteEvent(netId, ev){
       if(_fresh && payload.name && mem.name!==payload.name){ mem.name=payload.name; changed=true; }
       if(payload.avatar && mem.avatar!==payload.avatar){ mem.avatar=payload.avatar; mem.avatarEnc=null; changed=true; }
       if(payload.avatarEnc && JSON.stringify(mem.avatarEnc)!==JSON.stringify(payload.avatarEnc)){ mem.avatarEnc=payload.avatarEnc; ensureAvatar(net, mem); changed=true; }
-      if(payload.avatarRemoved && (mem.avatar || mem.avatarEnc)){ mem.avatar=null; mem.avatarEnc=null; changed=true; }  // they cleared their picture
+      if(_fresh && payload.avatarRemoved && (mem.avatar || mem.avatarEnc)){ mem.avatar=null; mem.avatarEnc=null; changed=true; }  // they cleared their picture
       if(_fresh && payload.bio!==undefined && mem.bio!==payload.bio){ mem.bio=payload.bio; changed=true; }
       if(_fresh && payload.sig!==undefined){ const v=normSignal(payload.sig); if(mem.signal!==v){ mem.signal=v; changed=true; } }
-      else if(payload.sigRemoved && mem.signal){ mem.signal=''; changed=true; }
+      else if(_fresh && payload.sigRemoved && mem.signal){ mem.signal=''; changed=true; }
       // Advance the identity-field clock only when this event actually carried
       // identity (name is present on every post/reply/profile that does).
       if(payload.name!==undefined && _evTs > (mem.idFieldTs||0)){ mem.idFieldTs=_evTs; }
@@ -2564,6 +2564,7 @@ const CHANGELOG=[
     ['change','Tapping comments now opens the full post with the keyboard ready, instead of a small pop-up sheet'],
     ['fix','Text-only and link posts now open when you tap them in the feed, the same as photos'],
     ['fix','Reacting to a photo no longer jumps you back to the top of the feed'],
+    ['fix','Your Signal username no longer disappears after a refresh \u2014 same cause as the bio fix: an old profile update could arrive late and clear it'],
     ['fix','Your bio no longer disappears after a refresh \u2014 an older post could arrive late and blank it out'],
     ['fix','Your bio now shows for everyone, not just you \u2014 it used to only reach members who saw your profile before your first photo, so new members saw \u201cNo bio yet\u201d until you edited it'],
     ['new','If your profile picture can\u2019t upload, a reminder now sits in Activity until it sends \u2014 tap it to try again'],
@@ -4839,12 +4840,6 @@ async function saveProfile(){
   A.editProfile=false; A.profileDraft=null; A.savingPic=false;
   saveData(); renderApp();
   const res=await publishProfile();
-  // TEMP DIAGNOSTIC — remove once the pending-avatar reminder is confirmed working.
-  // Surfaces exactly what publishProfile decided so we stop guessing.
-  try{
-    const _n=currentNet();
-    showToast('debug: pickedNew='+_pickedNewPic+' uploadFailed='+(res&&res.avatarUploadFailed)+' hasBlob='+(!!_avatarBlob)+' pending='+(!!(_n&&_n.pendingAvatarUpload)));
-  }catch(_){}
   // publishProfile may have set/cleared this network's pending-avatar flag while we
   // awaited it. Persist and re-render AFTER it returns, or the Activity reminder
   // wouldn't appear until some later unrelated render.

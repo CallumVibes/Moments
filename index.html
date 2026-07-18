@@ -873,7 +873,7 @@ async function handleRemoteEvent(netId, ev){
      && !(net.departed && net.departed[pk] && ev.created_at <= (net.departed[pk].ts||0))){
     // signal was missing here: a new member's handle wouldn't appear until their
     // SECOND profile event, since only the update branch below set it.
-    const m={ id:pk, name:payload.name||'Friend', emoji:memEmoji(pk), color:memColor(pk), avatar:payload.avatar||null, avatarEnc:payload.avatarEnc||null, bio:(payload.bio||''), signal:normSignal(payload.sig) };
+    const m={ id:pk, name:payload.name||'Friend', emoji:memEmoji(pk), color:memColor(pk), avatar:payload.avatar||null, avatarEnc:payload.avatarEnc||null, bio:(payload.bio||''), signal:normSignal(payload.sig), idFieldTs:(ev.created_at||0) };
     net.members.push(m);
     if(m.avatarEnc) ensureAvatar(net, m);
     changed=true;
@@ -894,13 +894,24 @@ async function handleRemoteEvent(netId, ev){
   } else if(!mine && carriesIdentity){
     const mem=net.members.find(m=>m.id===pk);
     if(mem){
-      if(payload.name && mem.name!==payload.name){ mem.name=payload.name; changed=true; }
+      // Identity fields (name/bio/signal) now ride on posts and replies, not just
+      // profile events. Backfill replays events in arbitrary order, so an OLD post
+      // carrying an empty/stale bio can arrive AFTER a newer profile and clobber it —
+      // which showed up as "bio appears, then vanishes on refresh". Gate every
+      // identity field on the event's timestamp: only a newer event may change it.
+      // mem.idFieldTs is the created_at of the event that last set these fields.
+      const _evTs = ev.created_at || 0;
+      const _fresh = _evTs >= (mem.idFieldTs||0);
+      if(_fresh && payload.name && mem.name!==payload.name){ mem.name=payload.name; changed=true; }
       if(payload.avatar && mem.avatar!==payload.avatar){ mem.avatar=payload.avatar; mem.avatarEnc=null; changed=true; }
       if(payload.avatarEnc && JSON.stringify(mem.avatarEnc)!==JSON.stringify(payload.avatarEnc)){ mem.avatarEnc=payload.avatarEnc; ensureAvatar(net, mem); changed=true; }
       if(payload.avatarRemoved && (mem.avatar || mem.avatarEnc)){ mem.avatar=null; mem.avatarEnc=null; changed=true; }  // they cleared their picture
-      if(payload.bio!==undefined && mem.bio!==payload.bio){ mem.bio=payload.bio; changed=true; }
-      if(payload.sig!==undefined){ const v=normSignal(payload.sig); if(mem.signal!==v){ mem.signal=v; changed=true; } }
+      if(_fresh && payload.bio!==undefined && mem.bio!==payload.bio){ mem.bio=payload.bio; changed=true; }
+      if(_fresh && payload.sig!==undefined){ const v=normSignal(payload.sig); if(mem.signal!==v){ mem.signal=v; changed=true; } }
       else if(payload.sigRemoved && mem.signal){ mem.signal=''; changed=true; }
+      // Advance the identity-field clock only when this event actually carried
+      // identity (name is present on every post/reply/profile that does).
+      if(payload.name!==undefined && _evTs > (mem.idFieldTs||0)){ mem.idFieldTs=_evTs; }
     }
   }
   if(payload.t==='post'){
@@ -2546,6 +2557,7 @@ const CHANGELOG=[
     ['change','Tapping comments now opens the full post with the keyboard ready, instead of a small pop-up sheet'],
     ['fix','Text-only and link posts now open when you tap them in the feed, the same as photos'],
     ['fix','Reacting to a photo no longer jumps you back to the top of the feed'],
+    ['fix','Your bio no longer disappears after a refresh \u2014 an older post could arrive late and blank it out'],
     ['fix','Your bio now shows for everyone, not just you \u2014 it used to only reach members who saw your profile before your first photo, so new members saw \u201cNo bio yet\u201d until you edited it'],
     ['fix','Saving your profile while the network is flaky no longer wipes your picture for everyone \u2014 a failed upload was being read as \u201cthey removed it\u201d'],
     ['fix','Your own profile now shows your bio \u2014 it said \u201cNo bio yet\u201d however much you\u2019d written. Your Signal username shows there too'],

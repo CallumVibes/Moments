@@ -1406,6 +1406,7 @@ async function publishProfile(){
   if(!_sk || !A) return;
   const name=A.profile.name||'You';
   const bio=(A.profile.bio||'').slice(0,160);
+  let avatarUploadFailed=false;   // set if we hold a picture that wouldn't reach Blossom
   for(const id of Object.keys(A.networks)){
     try{
       const net=A.networks[id];
@@ -1418,18 +1419,20 @@ async function publishProfile(){
       else if(aEnc) payload.avatarEnc=stripSrc(aEnc);         // encrypted-on-Blossom avatar
       else if(!_avatarBlob && !A.profile.avatar){
         payload.avatarRemoved=true;                           // genuinely no picture: clear any old one
+      } else {
+        // We HAVE a picture but encryptAvatarFor() returned null — the Blossom
+        // upload didn't happen (offline, Blossom down, quota). Don't claim removal
+        // (see the avatarRemoved fix), but DO report it so the user can be told the
+        // picture won't reach anyone until they save again on a connection.
+        avatarUploadFailed=true;
       }
-      // else: we HAVE a picture but could not encrypt/upload it (Blossom down,
-      // offline, quota). encryptAvatarFor() returns null for BOTH "no avatar" and
-      // "upload failed", and treating those alike told everyone to DELETE your
-      // profile picture over a transient network error. Say nothing instead:
-      // their copy stays until a save that actually succeeds.
       const content=await encJSON(keys.groupKey, payload);
       const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
       markSeen(ev.id);
       Relay.publish(ev);
     }catch(e){}
   }
+  return { avatarUploadFailed };
 }
 function stripSrc(m){ const {_srcBlob,...rest}=m; return rest; }
 
@@ -2559,6 +2562,7 @@ const CHANGELOG=[
     ['fix','Reacting to a photo no longer jumps you back to the top of the feed'],
     ['fix','Your bio no longer disappears after a refresh \u2014 an older post could arrive late and blank it out'],
     ['fix','Your bio now shows for everyone, not just you \u2014 it used to only reach members who saw your profile before your first photo, so new members saw \u201cNo bio yet\u201d until you edited it'],
+    ['fix','If a new profile picture can\u2019t upload (you\u2019re offline), the app now tells you instead of silently keeping it only on your phone'],
     ['fix','Saving your profile while the network is flaky no longer wipes your picture for everyone \u2014 a failed upload was being read as \u201cthey removed it\u201d'],
     ['fix','Your own profile now shows your bio \u2014 it said \u201cNo bio yet\u201d however much you\u2019d written. Your Signal username shows there too'],
     ['change','The Signal username on a profile now carries the Signal logo instead of a padlock'],
@@ -4813,8 +4817,9 @@ async function onPickProfilePic(input){
   }catch(e){}
   A.savingPic=false; renderApp();
 }
-function saveProfile(){
+async function saveProfile(){
   if(!A.profileDraft) return;
+  const _pickedNewPic = !!A.profileDraft.avatarBlob;   // capture before the draft is cleared
   A.profile={ name:(A.profileDraft.name||'').trim()||'You', bio:(A.profileDraft.bio||'').trim(), avatar:A.profileDraft.avatar||null, avatarExternal:!!A.profileDraft.avatarExternal, keyBackedUp:!!(A.profile&&A.profile.keyBackedUp), backupHidden:!!(A.profile&&A.profile.backupHidden), keyOrigin:(A.profile&&A.profile.keyOrigin)||'imported', signal:normSignal(A.profileDraft.signal), theme:(A.profile&&A.profile.theme)||'light' };
   if(A.profileDraft.avatarCleared){
     // User removed their picture — drop the source bytes and any cached encrypted
@@ -4828,7 +4833,12 @@ function saveProfile(){
   syncMe();
   A.editProfile=false; A.profileDraft=null; A.savingPic=false;
   saveData(); renderApp();
-  publishProfile();
+  const res=await publishProfile();
+  // If the user chose a NEW picture and it couldn't be uploaded, it lives only on
+  // this device — nobody else will see it. Tell them plainly so it's not silent.
+  if(_pickedNewPic && res && res.avatarUploadFailed){
+    showToast('Saved, but your new picture couldn\u2019t upload \u2014 reopen your profile and save again when you\u2019re back online');
+  }
 }
 // Show remaining characters once the writer is close enough to care.
 // Patched straight into the DOM: typing must never call renderApp() — a frame

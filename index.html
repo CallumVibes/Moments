@@ -903,8 +903,8 @@ async function handleRemoteEvent(netId, ev){
       const _evTs = ev.created_at || 0;
       const _fresh = _evTs >= (mem.idFieldTs||0);
       if(_fresh && payload.name && mem.name!==payload.name){ mem.name=payload.name; changed=true; }
-      if(payload.avatar && mem.avatar!==payload.avatar){ mem.avatar=payload.avatar; mem.avatarEnc=null; changed=true; }
-      if(payload.avatarEnc && JSON.stringify(mem.avatarEnc)!==JSON.stringify(payload.avatarEnc)){ mem.avatarEnc=payload.avatarEnc; ensureAvatar(net, mem); changed=true; }
+      if(_fresh && payload.avatar && mem.avatar!==payload.avatar){ mem.avatar=payload.avatar; mem.avatarEnc=null; changed=true; }
+      if(_fresh && payload.avatarEnc && JSON.stringify(mem.avatarEnc)!==JSON.stringify(payload.avatarEnc)){ mem.avatarEnc=payload.avatarEnc; ensureAvatar(net, mem); changed=true; }
       if(_fresh && payload.avatarRemoved && (mem.avatar || mem.avatarEnc)){ mem.avatar=null; mem.avatarEnc=null; changed=true; }  // they cleared their picture
       if(_fresh && payload.bio!==undefined && mem.bio!==payload.bio){ mem.bio=payload.bio; changed=true; }
       if(_fresh && payload.sig!==undefined){ const v=normSignal(payload.sig); if(mem.signal!==v){ mem.signal=v; changed=true; } }
@@ -2564,6 +2564,7 @@ const CHANGELOG=[
     ['change','Tapping comments now opens the full post with the keyboard ready, instead of a small pop-up sheet'],
     ['fix','Text-only and link posts now open when you tap them in the feed, the same as photos'],
     ['fix','Reacting to a photo no longer jumps you back to the top of the feed'],
+    ['fix','Your profile picture no longer reverts to an old one after a refresh \u2014 the last identity fix to land, now every profile field ignores stale updates the same way'],
     ['fix','Your Signal username no longer disappears after a refresh \u2014 same cause as the bio fix: an old profile update could arrive late and clear it'],
     ['fix','Your bio no longer disappears after a refresh \u2014 an older post could arrive late and blank it out'],
     ['fix','Your bio now shows for everyone, not just you \u2014 it used to only reach members who saw your profile before your first photo, so new members saw \u201cNo bio yet\u201d until you edited it'],

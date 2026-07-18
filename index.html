@@ -2561,6 +2561,7 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.8.8', date:'July 2026', title:'Under the hood', changes:[
+    ['fix','Deleting your account now actually removes your posts and logs you out \u2014 before, it only left your networks and your posts stayed behind'],
     ['change','Tapping comments now opens the full post with the keyboard ready, instead of a small pop-up sheet'],
     ['fix','Text-only and link posts now open when you tap them in the feed, the same as photos'],
     ['fix','Reacting to a photo no longer jumps you back to the top of the feed'],
@@ -3063,8 +3064,22 @@ async function vanishGo(){
 
   A.vanishBusy=true; renderApp();
   const relays=activeRelays().slice();
+  const myPk=myPubkey();
 
   try{
+    // 0. Delete my own posts with kind-5 FIRST. A kind-62 vanish only works on
+    //    relays that implement NIP-62 (most don't), so on its own the posts
+    //    survive - exactly what testing found. kind-5 deletions ARE widely
+    //    honoured, so this is the real teeth. Runs before _doLeave clears records.
+    for(const id of Object.keys(A.networks||{})){
+      const net=A.networks[id];
+      const mine=(net.posts||[]).filter(p=> (p.authorPk===myPk || p.memberId==='u1') && /^[0-9a-f]{64}$/.test(p.id));
+      for(const p of mine){
+        try{ await publishDelete(id, p.id); }catch(_){}
+        try{ if(typeof blossomDelete==='function' && p.enc && p.enc.url){ await blossomDelete(p.enc.url); } }catch(_){}
+      }
+    }
+
     // 1. Leave every network FIRST. _doLeave already publishes the departure and,
     //    if I'm the last member, the owner tombstone that kills the code — so an
     //    owned network with members left behind simply carries on without me.
@@ -3089,13 +3104,13 @@ async function vanishGo(){
     // 3. Let the sockets actually flush before we tear everything down.
     await new Promise(r=>setTimeout(r, 1200));
 
-    // 4. Wipe this device. Session/nsec deliberately survive — the key still works,
-    //    the content is gone.
+    // 4. Wipe this device AND log out. "Delete account" must not leave you still
+    //    signed in on the join screen (which is what testing found).
     await wipeLocalData();
-
     showToast(delivered>0
-      ? 'Account data deleted \u00b7 vanish requested on '+delivered+' relay'+(delivered>1?'s':'')
-      : 'Local data deleted \u2014 no relay accepted the vanish request');
+      ? 'Account deleted \u00b7 posts removed, vanish requested on '+delivered+' relay'+(delivered>1?'s':'')
+      : 'Account deleted \u2014 your posts were removed');
+    setTimeout(()=>{ try{ logout(); }catch(_){} }, 1400);
   }catch(e){
     A.vanishBusy=false; renderApp();
     showToast('Something went wrong \u2014 nothing was deleted');

@@ -3071,14 +3071,20 @@ async function vanishGo(){
     //    relays that implement NIP-62 (most don't), so on its own the posts
     //    survive - exactly what testing found. kind-5 deletions ARE widely
     //    honoured, so this is the real teeth. Runs before _doLeave clears records.
+    let _dbgMatched=0, _dbgSent=0, _dbgTemp=0;
     for(const id of Object.keys(A.networks||{})){
       const net=A.networks[id];
-      const mine=(net.posts||[]).filter(p=> (p.authorPk===myPk || p.memberId==='u1') && /^[0-9a-f]{64}$/.test(p.id));
+      const allMine=(net.posts||[]).filter(p=> (p.authorPk===myPk || p.memberId==='u1'));
+      _dbgTemp += allMine.filter(p=> !/^[0-9a-f]{64}$/.test(p.id)).length;
+      const mine=allMine.filter(p=> /^[0-9a-f]{64}$/.test(p.id));
+      _dbgMatched += mine.length;
       for(const p of mine){
-        try{ await publishDelete(id, p.id); }catch(_){}
+        try{ await publishDelete(id, p.id); _dbgSent++; }catch(_){}
         try{ if(typeof blossomDelete==='function' && p.enc && p.enc.url){ await blossomDelete(p.enc.url); } }catch(_){}
       }
     }
+    showToast('debug: mineRealId='+_dbgMatched+' sent='+_dbgSent+' tempId='+_dbgTemp+' myPk='+(myPk?myPk.slice(0,8):'EMPTY'));
+    await new Promise(r=>setTimeout(r, 2500));
 
     // 1. Leave every network FIRST. _doLeave already publishes the departure and,
     //    if I'm the last member, the owner tombstone that kills the code — so an

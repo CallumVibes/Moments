@@ -1426,6 +1426,10 @@ async function publishProfile(){
         // picture won't reach anyone until they save again on a connection.
         avatarUploadFailed=true;
       }
+      // Per-network flag drives a persistent Activity reminder: set when this
+      // network's copy didn't get the picture, cleared the moment one succeeds.
+      if(aEnc && !aEnc.ext){ if(net.pendingAvatarUpload){ delete net.pendingAvatarUpload; } }
+      else if(_avatarBlob && !(aEnc && aEnc.ext) && !aEnc){ net.pendingAvatarUpload=Math.floor(Date.now()/1000); }
       const content=await encJSON(keys.groupKey, payload);
       const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
       markSeen(ev.id);
@@ -2562,6 +2566,7 @@ const CHANGELOG=[
     ['fix','Reacting to a photo no longer jumps you back to the top of the feed'],
     ['fix','Your bio no longer disappears after a refresh \u2014 an older post could arrive late and blank it out'],
     ['fix','Your bio now shows for everyone, not just you \u2014 it used to only reach members who saw your profile before your first photo, so new members saw \u201cNo bio yet\u201d until you edited it'],
+    ['new','If your profile picture can\u2019t upload, a reminder now sits in Activity until it sends \u2014 tap it to try again'],
     ['fix','If a new profile picture can\u2019t upload (you\u2019re offline), the app now tells you instead of silently keeping it only on your phone'],
     ['fix','Saving your profile while the network is flaky no longer wipes your picture for everyone \u2014 a failed upload was being read as \u201cthey removed it\u201d'],
     ['fix','Your own profile now shows your bio \u2014 it said \u201cNo bio yet\u201d however much you\u2019d written. Your Signal username shows there too'],
@@ -5680,6 +5685,13 @@ function activityItems(net){
     });
   });
   items.sort((a,b)=>(b.ts||0)-(a.ts||0));
+  // System reminder: a picture that couldn't upload lives only on this device.
+  // Pinned to the top (not sorted among likes/comments) and NOT dismissable —
+  // it clears itself the moment a save succeeds, so dismissing would just hide a
+  // real unresolved problem.
+  if(net.pendingAvatarUpload){
+    items.unshift({ key:'sys:pendingavatar', kind:'pendingavatar', ts:net.pendingAvatarUpload, system:true });
+  }
   _actsMemo={ net, items };
   return items;
 }
@@ -5699,6 +5711,17 @@ function buildActivity(net){
     <button onclick="clearAllActivity()" style="background:none;border:none;color:${C.muted};font-size:12px;font-weight:600;cursor:pointer;padding:4px 2px">Clear all</button>
   </div>
   <div style="display:flex;flex-direction:column;gap:8px">${items.slice(0,60).map(it=>{
+    // System reminder for a picture that couldn't upload. Tapping it reopens the
+    // profile editor so a re-save can retry. No dismiss button — it self-clears.
+    if(it.kind==='pendingavatar'){
+      return `<div onclick="navMyPageEdit()" style="background:${C.accentDim};border:1px solid ${C.accentBorder};border-radius:14px;padding:12px 14px;display:flex;gap:11px;align-items:flex-start;cursor:pointer">
+        <div style="flex-shrink:0;font-size:18px;line-height:1.2">⚠️</div>
+        <div style="flex:1;min-width:0">
+          <div style="color:${C.text};font-size:13px;line-height:1.5;font-weight:700">Your profile picture hasn’t sent yet</div>
+          <div style="color:${C.textDim};font-size:13px;margin-top:3px;line-height:1.5">It’s saved on this device but couldn’t upload. Tap here to open your profile and save again while you’re online.</div>
+        </div>
+      </div>`;
+    }
     const mem=memberIn(net,it.pk);
     const name=esc(mem.name||'Someone');
     const when=it.ts?esc(relTime(it.ts*1000)):'';

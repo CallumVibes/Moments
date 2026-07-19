@@ -536,6 +536,32 @@ async function blossomUpload(blob){
     throw new Error(errors.length?errors.join(' · '):'all upload servers failed');
   }
 }
+// Ask every Blossom server to erase a blob by its sha256. Companion to the kind-5
+// post delete: deleting a post removes the event, this removes the media ciphertext
+// so it doesn't linger on the CDNs. Best-effort by nature — a server may refuse or
+// have already pruned it, and anyone who downloaded it keeps their copy (same
+// caveat the vanish screen states). Auth mirrors the upload: a kind-24242 event
+// tagged t=delete with the blob hash, signed by this key.
+async function blossomDelete(sha256){
+  if(!/^[0-9a-f]{64}$/.test(sha256||'')) return;
+  try{
+    const now=Math.floor(Date.now()/1000);
+    const auth=await makeNostrEvent(24242, [['t','delete'],['x',sha256],['expiration',String(now+3600)]], 'Delete a moment');
+    const authHeader='Nostr '+_b64(new TextEncoder().encode(JSON.stringify(auth)));
+    // Fire at every server; we don't care which succeed. 8s each so a dead host
+    // can't hang the delete.
+    await Promise.allSettled(BLOSSOM_SERVERS.map(server=>{
+      const ctl=new AbortController();
+      const to=setTimeout(()=>{ try{ ctl.abort(); }catch(_){} }, 8000);
+      return fetch(server.replace(/\/$/,'')+'/'+sha256,{
+        method:'DELETE',
+        headers:{ 'Authorization':authHeader },
+        signal:ctl.signal
+      }).finally(()=>clearTimeout(to));
+    }));
+  }catch(_){}
+}
+
 function short(u){ return u.replace(/^https?:\/\//,'').replace(/\/$/,''); }
 
 /* ════════════════════════════════════════════
@@ -2426,7 +2452,7 @@ async function enterApp(npub){
     if(!_dbReady){ _db=await idbOpen(); _dbReady=true; }
     const saved=await idbGet(dataKey());
     if(saved){
-      if(saved.profile) A.profile={ name:saved.profile.name||"You", bio:saved.profile.bio||"", avatar:saved.profile.avatar||null, avatarExternal:!!saved.profile.avatarExternal, keyBackedUp:!!saved.profile.keyBackedUp, backupHidden:!!saved.profile.backupHidden, keyOrigin:(saved.profile.keyOrigin==='generated'?'generated':'imported'), signal:normSignal(saved.profile.signal), theme:(saved.profile.theme==='dark'?'dark':'light') };
+      if(saved.profile) A.profile=normalizeProfile(saved.profile);
       if(Array.isArray(saved.relays) && saved.relays.length) A.relays=saved.relays;
       if(saved.joinTs && typeof saved.joinTs==='object') A.joinTs=saved.joinTs;
       if(saved.deletedNets && typeof saved.deletedNets==='object') A.deletedNets=saved.deletedNets;
@@ -3091,7 +3117,7 @@ async function vanishGo(){
       const mine=(net.posts||[]).filter(p=> (p.authorPk===myPk || p.memberId==='u1') && /^[0-9a-f]{64}$/.test(p.id));
       for(const p of mine){
         try{ await publishDelete(id, p.id); }catch(_){}
-        try{ if(typeof blossomDelete==='function' && p.enc && p.enc.url){ await blossomDelete(p.enc.url); } }catch(_){}
+        try{ if(p.enc && p.enc.sha256){ await blossomDelete(p.enc.sha256); } }catch(_){}
       }
     }
     await new Promise(r=>setTimeout(r, 1500));
@@ -3139,8 +3165,7 @@ async function wipeLocalData(){
   try{ await clearMediaCache(true); }catch(_){}
   A.networks={}; A.netKeys={}; A.subscribed={}; A.unread={}; A.live={}; A.seen={};
   A.joinTs={}; A.deletedNets={}; A.netOrder=[]; A.pendingFeed={}; A.activeNetId=null;
-  A.profile={ name:'You', bio:'', avatar:null, theme:(A.profile&&A.profile.theme)||'light',
-              keyOrigin:'generated', keyBackedUp:false, backupHidden:false };
+  A.profile=normalizeProfile({ theme:(A.profile&&A.profile.theme), keyOrigin:'generated' });
   A.showVanish=false; A.vanishBusy=false; A.showSettings=false; A.showAdvanced=false;
   A.showJoin=true; A.tab=0;
   saveData(); renderApp();
@@ -3664,21 +3689,6 @@ function openReplies(pid){
   A.viewPostId=pid; A.replyDraft=""; A.showNetPicker=false;
   A._focusReply=true;
   renderApp();
-}
-function _openRepliesSheetLegacy(pid){
-  A.replyPostId=pid; A.replyDraft="";
-  const root=document.getElementById('screen-root');
-  const net=currentNet();
-  if(root && net && !document.getElementById('replies-sheet')){
-    root.insertAdjacentHTML('beforeend', buildReplies(net));
-    const ri=document.getElementById('reply-input');
-    if(ri){ ri.focus(); ri.setSelectionRange(ri.value.length, ri.value.length); }
-  } else renderApp();
-}
-function closeReplies(){
-  A.replyPostId=null;
-  const sheet=document.getElementById('replies-sheet');
-  if(sheet) sheet.remove(); else renderApp();
 }
 function openPostView(pid){ A.viewPostId=pid; A.replyDraft=""; A.showNetPicker=false; renderApp(); }
 function closePostView(){ A.viewPostId=null; renderApp(); }
@@ -4699,6 +4709,9 @@ function deletePost(pid){
   if(A.viewPostId===pid) A.viewPostId=null;
   saveData(); renderApp();
   publishDelete(net.id, pid);
+  // Also erase the encrypted media from Blossom, so deleting a post doesn't leave
+  // its ciphertext on the CDNs. Best-effort; the post is already gone locally.
+  if(post.enc && post.enc.sha256) blossomDelete(post.enc.sha256);
 }
 
 // Owner moderation: remove ANY member's post from the network I own.
@@ -4834,6 +4847,32 @@ function setDraftBio(v){ if(A.profileDraft) A.profileDraft.bio=v; }
 function normSignal(v){
   return String(v||'').trim().replace(/^@+/,'').replace(/[^A-Za-z0-9._-]/g,'').slice(0,48);
 }
+
+// The single source of truth for the profile's shape and defaults. Every place
+// that builds A.profile (loader, saveProfile, the post-vanish reset) goes through
+// here, so the field set and its normalisation live in ONE spot. This exists
+// because the field list used to be hand-copied in several places, and each copy
+// drifted: bio/signal/avatar each shipped a bug where one site set a field the
+// others didn't. Add a new profile field HERE and everywhere inherits it.
+//
+// `src` is any object with some/all profile fields (saved data, a draft, or the
+// current profile). `opts.trim` trims name/bio (used when saving user input).
+function normalizeProfile(src, opts){
+  src = src || {};
+  opts = opts || {};
+  const t = v => opts.trim ? String(v||'').trim() : (v||'');
+  return {
+    name: (t(src.name) || 'You'),
+    bio: (t(src.bio) || ''),
+    avatar: src.avatar || null,
+    avatarExternal: !!src.avatarExternal,
+    signal: normSignal(src.signal),
+    theme: (src.theme==='dark' ? 'dark' : 'light'),
+    keyOrigin: (src.keyOrigin==='generated' ? 'generated' : 'imported'),
+    keyBackedUp: !!src.keyBackedUp,
+    backupHidden: !!src.backupHidden
+  };
+}
 function setDraftSignal(v){ if(A.profileDraft) A.profileDraft.signal=v; }
 function clearDraftAvatar(){
   if(A.profileDraft){
@@ -4859,7 +4898,9 @@ async function onPickProfilePic(input){
 async function saveProfile(){
   if(!A.profileDraft) return;
   const _pickedNewPic = !!A.profileDraft.avatarBlob;   // capture before the draft is cleared
-  A.profile={ name:(A.profileDraft.name||'').trim()||'You', bio:(A.profileDraft.bio||'').trim(), avatar:A.profileDraft.avatar||null, avatarExternal:!!A.profileDraft.avatarExternal, keyBackedUp:!!(A.profile&&A.profile.keyBackedUp), backupHidden:!!(A.profile&&A.profile.backupHidden), keyOrigin:(A.profile&&A.profile.keyOrigin)||'imported', signal:normSignal(A.profileDraft.signal), theme:(A.profile&&A.profile.theme)||'light' };
+  // The draft was seeded from {...A.profile}, so it already carries every field
+  // (including keyOrigin/keyBackedUp/theme). normalizeProfile re-applies defaults.
+  A.profile=normalizeProfile(A.profileDraft, { trim:true });
   if(A.profileDraft.avatarCleared){
     // User removed their picture — drop the source bytes and any cached encrypted
     // copies so the old avatar isn't re-uploaded to networks.
@@ -6380,26 +6421,6 @@ function buildCommentBubbles(net, replies, postId){
   }).join('');
 }
 
-function buildReplies(net){
-  const post=net.posts.find(p=>p.id===A.replyPostId);
-  if(!post) return "";
-  return `
-  <div id="replies-sheet" onclick="closeReplies()" style="position:absolute;inset:0;z-index:70;background:rgba(0,0,0,0.55);display:flex;flex-direction:column;justify-content:flex-end">
-    <div onclick="event.stopPropagation()" style="background:${C.bg};border-radius:24px 24px 0 0;max-height:80%;display:flex;flex-direction:column">
-      <div style="padding:14px 20px 10px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;border-bottom:1px solid var(--c-border)">
-        <div style="width:36px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;position:absolute;left:50%;transform:translateX(-50%);top:10px"></div>
-        <div style="color:${C.text};font-weight:700;font-size:15px;margin-top:6px">Comments</div>
-        <button aria-label="Close" onclick="closeReplies()" style="background:none;border:none;color:${C.muted};font-size:20px;cursor:pointer;line-height:1;padding:0">✕</button>
-      </div>
-      <div id="replies-list" class="hide-scroll" style="flex:1;overflow-y:auto;padding:12px 16px 8px;display:flex;flex-direction:column">${buildCommentBubbles(net, post.replies, post.id)}</div>
-      <div style="padding:10px 14px 18px;border-top:1px solid var(--c-border);display:flex;gap:10px;align-items:center;flex-shrink:0">
-        <input id="reply-input" value="${esc(A.replyDraft)}" oninput="setReplyDraft(this.value)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submitReply()}" placeholder="Add a comment…" style="flex:1;background:${C.surfaceHigh};border:none;outline:none;border-radius:22px;padding:11px 16px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif"/>
-        <button aria-label="Send comment" onclick="submitReply()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:50%;width:38px;height:38px;font-size:16px;cursor:pointer;font-weight:700;flex-shrink:0;display:flex;align-items:center;justify-content:center">↑</button>
-      </div>
-    </div>
-  </div>`;
-}
-
 function buildPostView(net){
   const post=net.posts.find(p=>p.id===A.viewPostId);
   if(!post) return "";
@@ -6651,7 +6672,6 @@ function renderApp(){
       ${screen}
       ${A.showInvite?buildInvite(net):""}
       ${A.profileId?buildProfile(net):""}
-      ${A.replyPostId?buildReplies(net):""}
       ${A.viewPostId?buildPostView(net):""}
       ${A.showCamera?buildCamera():""}
       ${A.showSettings?buildSettings():""}

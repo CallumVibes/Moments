@@ -759,6 +759,14 @@ async function handleRemoteEvent(netId, ev){
   let ok=false;
   try{ ok=await verifyEvent(ev); }finally{ delete _verifying[ev.id]; }
   if(!ok) return;
+  // Receipt-time sanity clamp. created_at is a trust signal all over this app —
+  // the identity-field freshness guards, leave/rejoin ordering, and dedup all
+  // treat "newer" as "wins". A validly-signed event stamped far in the future
+  // would win every one of those comparisons permanently, pinning a post or
+  // profile above everyone else's forever. Reject anything more than ~5 min ahead
+  // of this device's clock. We only clamp the FUTURE: past-dating is
+  // indistinguishable from a legitimate backfill of old events, so it's allowed.
+  if(ev.created_at && ev.created_at > Math.floor(Date.now()/1000) + 300) return;
   if(!markSeen(ev.id)) return;
   const net=A.networks[netId]; if(!net) return;
 
@@ -876,8 +884,8 @@ async function handleRemoteEvent(netId, ev){
   // identity path below is gated on !mine.
   if(mine && payload.t==='profile' && profileIsUntouched()){
     let took=false;
-    if(payload.name && payload.name!=='You'){ A.profile.name=payload.name; took=true; }
-    if(payload.bio){ A.profile.bio=payload.bio; took=true; }
+    if(payload.name && payload.name!=='You'){ A.profile.name=normName(payload.name); took=true; }
+    if(payload.bio){ A.profile.bio=normBio(payload.bio); took=true; }
     if(payload.avatar && /^https?:/.test(payload.avatar)){ A.profile.avatar=payload.avatar; A.profile.avatarExternal=true; took=true; }
     else if(payload.avatarEnc){ adoptOwnAvatar(net, payload.avatarEnc).then(ok=>{ if(ok){ saveData(); renderApp(); } }); }
     if(took){ if(A.awaitOwnProfile) delete A.awaitOwnProfile[netId]; saveData(); changed=true; }
@@ -899,7 +907,7 @@ async function handleRemoteEvent(netId, ev){
      && !(net.departed && net.departed[pk] && ev.created_at <= (net.departed[pk].ts||0))){
     // signal was missing here: a new member's handle wouldn't appear until their
     // SECOND profile event, since only the update branch below set it.
-    const m={ id:pk, name:payload.name||'Friend', emoji:memEmoji(pk), color:memColor(pk), avatar:payload.avatar||null, avatarEnc:payload.avatarEnc||null, bio:(payload.bio||''), signal:normSignal(payload.sig), idFieldTs:(ev.created_at||0) };
+    const m={ id:pk, name:normName(payload.name)||'Friend', emoji:memEmoji(pk), color:memColor(pk), avatar:payload.avatar||null, avatarEnc:payload.avatarEnc||null, bio:normBio(payload.bio), signal:normSignal(payload.sig), idFieldTs:(ev.created_at||0) };
     net.members.push(m);
     if(m.avatarEnc) ensureAvatar(net, m);
     changed=true;
@@ -928,11 +936,11 @@ async function handleRemoteEvent(netId, ev){
       // mem.idFieldTs is the created_at of the event that last set these fields.
       const _evTs = ev.created_at || 0;
       const _fresh = _evTs >= (mem.idFieldTs||0);
-      if(_fresh && payload.name && mem.name!==payload.name){ mem.name=payload.name; changed=true; }
+      if(_fresh && payload.name && mem.name!==normName(payload.name)){ mem.name=normName(payload.name); changed=true; }
       if(_fresh && payload.avatar && mem.avatar!==payload.avatar){ mem.avatar=payload.avatar; mem.avatarEnc=null; changed=true; }
       if(_fresh && payload.avatarEnc && JSON.stringify(mem.avatarEnc)!==JSON.stringify(payload.avatarEnc)){ mem.avatarEnc=payload.avatarEnc; ensureAvatar(net, mem); changed=true; }
       if(_fresh && payload.avatarRemoved && (mem.avatar || mem.avatarEnc)){ mem.avatar=null; mem.avatarEnc=null; changed=true; }  // they cleared their picture
-      if(_fresh && payload.bio!==undefined && mem.bio!==payload.bio){ mem.bio=payload.bio; changed=true; }
+      if(_fresh && payload.bio!==undefined && mem.bio!==normBio(payload.bio)){ mem.bio=normBio(payload.bio); changed=true; }
       if(_fresh && payload.sig!==undefined){ const v=normSignal(payload.sig); if(mem.signal!==v){ mem.signal=v; changed=true; } }
       else if(_fresh && payload.sigRemoved && mem.signal){ mem.signal=''; changed=true; }
       // Advance the identity-field clock only when this event actually carried
@@ -4847,6 +4855,14 @@ function setDraftBio(v){ if(A.profileDraft) A.profileDraft.bio=v; }
 function normSignal(v){
   return String(v||'').trim().replace(/^@+/,'').replace(/[^A-Za-z0-9._-]/g,'').slice(0,48);
 }
+// Receive-side length clamps. The compose inputs have maxlength, but that only
+// limits what YOU type — a modified or malicious client can publish a name or bio
+// of any length, and every receiver would store and render it unbounded, breaking
+// layouts across the whole feed. Clamp on the way IN, generously above the input
+// limits (40 name / 160 bio) so honest values are never truncated. Same
+// defense-in-depth as normSignal's cap and the 280-char caption clamp.
+function normName(v){ return String(v||'').slice(0, 80); }
+function normBio(v){ return String(v||'').slice(0, 400); }
 
 // The single source of truth for the profile's shape and defaults. Every place
 // that builds A.profile (loader, saveProfile, the post-vanish reset) goes through

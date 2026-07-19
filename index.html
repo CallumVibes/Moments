@@ -2573,6 +2573,8 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.8.8', date:'July 2026', title:'Under the hood', changes:[
+    ['change','Simpler join screen: the \u201cPassword (if required)\u201d box is gone \u2014 if a network needs a password you\u2019re now asked for it in a clear pop-up only when it\u2019s actually needed'],
+    ['change','The join password box now says the network IS password-protected, instead of the confusing \u201center a password if required\u201d (it only ever appears when one is required)'],
     ['fix','Your browser\u2019s password manager no longer pops up asking to \u201csave password\u201d when you post \u2014 the login field is now cleared once you\u2019re in'],
     ['fix','Deleting your account now actually removes your posts and logs you out \u2014 before, it only left your networks and your posts stayed behind'],
     ['change','Tapping comments now opens the full post with the keyboard ready, instead of a small pop-up sheet'],
@@ -4148,10 +4150,11 @@ function createNetwork(){
 
 function joinNetworkByCode(){
   const input=document.getElementById('join-code-input');
-  const pwInput=document.getElementById('join-pw-input');
   const code=parseScannedCode((input&&input.value)||'')||'';
   if(code.length<6) return;
-  const pw=(pwInput&&pwInput.value.trim())||'';
+  // No inline password box any more — a password-protected network is handled by
+  // the pop-up (promptJoinPassword) after the first join attempt fails.
+  const pw='';
   joinWithCode(code, pw);
 }
 // Tracks passwords entered when joining, validated on first meta event
@@ -4288,8 +4291,8 @@ function buildJoinPasswordPrompt(){
     <div onclick="event.stopPropagation()" style="background:${C.bg};border-radius:20px;padding:22px 20px;width:100%;max-width:340px">
       <div style="color:${C.text};font-size:16px;font-weight:700;margin-bottom:4px">Join network</div>
       <div style="color:${C.muted};font-size:12px;margin-bottom:4px;font-family:monospace">${esc(A.pendingJoinCode||'')}</div>
-      <div style="color:${C.muted};font-size:12px;margin-bottom:14px">Enter a password if this network requires one.</div>
-      <input id="join-pw-prompt" type="text" placeholder="Password (leave blank if none)" autocomplete="off" style="width:100%;background:${C.surfaceHigh};border:1.5px solid ${C.accentBorder};outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px" onkeydown="if(event.key==='Enter')confirmJoinWithPassword()"/>
+      <div style="color:${C.muted};font-size:12px;margin-bottom:14px">This network is password-protected. Enter its password to join.</div>
+      <input id="join-pw-prompt" type="text" placeholder="Network password" autocomplete="off" style="width:100%;background:${C.surfaceHigh};border:1.5px solid ${C.accentBorder};outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px" onkeydown="if(event.key==='Enter')confirmJoinWithPassword()"/>
       <div style="display:flex;gap:10px">
         <button onclick="confirmJoinWithPassword()" style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer">Join →</button>
         <button onclick="cancelJoinPrompt()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer">Cancel</button>
@@ -5478,7 +5481,6 @@ function buildJoinScreen(){
         <input id="join-code-input" placeholder="XXXX-XXXX-XXXX" maxlength="14" oninput="formatCodeInput(this)" style="flex:1;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.accent};font-size:15px;font-family:monospace;letter-spacing:2px;font-weight:700"/>
         <button onclick="joinNetworkByCode()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:0 16px;font-size:14px;font-weight:700;cursor:pointer">Join</button>
       </div>
-      <input id="join-pw-input" placeholder="Password (if required)" type="text" autocomplete="off" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:10px 14px;color:${C.text};font-size:13px;font-family:'Inter',sans-serif"/>
     </div>
   </div>`;
 }

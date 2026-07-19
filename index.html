@@ -2606,6 +2606,11 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
+  { v:'0.8.9', date:'July 2026', title:'Foundations', changes:[
+    ['fix','Your profile is more reliable everywhere \u2014 the app now handles your name, bio, picture and Signal in one consistent place, closing a class of bugs where a field could go missing'],
+    ['change','Deleting a post now also erases its photo from storage, not just the post itself'],
+    ['change','Stronger against bad data: posts with impossible timestamps, or absurdly long names and bios from a misbehaving app, are now ignored'],
+  ]},
   { v:'0.8.8', date:'July 2026', title:'Under the hood', changes:[
     ['change','Simpler join screen: the \u201cPassword (if required)\u201d box is gone \u2014 if a network needs a password you\u2019re now asked for it in a clear pop-up only when it\u2019s actually needed'],
     ['change','The join password box now says the network IS password-protected, instead of the confusing \u201center a password if required\u201d (it only ever appears when one is required)'],

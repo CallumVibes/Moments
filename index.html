@@ -2337,9 +2337,13 @@ function syncFeedVideos(){
   try{
     const vids=Array.from(document.querySelectorAll('video[data-video]'));
     if(!vids.length) return;
+    // The Wi-Fi-only setting has to gate PLAYBACK as well as downloading. A clip
+    // that's already decrypted (just posted, or watched before) has its src set at
+    // render time, so gating the download alone let it autoplay on mobile data.
+    const allowed=autoplayAllowed();
     // Pick the most-visible clip that actually has something to play.
     let best=null, bestRatio=0;
-    vids.forEach(v=>{
+    if(allowed) vids.forEach(v=>{
       const r=_vidVisible.get(v)||0;
       if(r>0.6 && r>bestRatio && v.getAttribute('src')){ best=v; bestRatio=r; }
     });
@@ -6618,6 +6622,7 @@ function buildSettings(){
         <div style="min-width:0">
           <div style="color:${C.text};font-size:14px;font-weight:700">Autoplay on Wi-Fi only</div>
           <div style="color:${C.muted};font-size:11px">${_autoplayWifiOnly?'On · videos wait for a tap on mobile data':'Off · videos play on any connection'}</div>
+          ${(_autoplayWifiOnly && !connectionType())?`<div style="color:${C.warn||'#d98324'};font-size:11px;margin-top:4px;line-height:1.45">This browser won’t say whether you’re on Wi-Fi, so videos won’t autoplay at all while this is on.</div>`:''}
         </div>
         <button onclick="setAutoplayWifi(${_autoplayWifiOnly?'false':'true'})" title="Autoplay on Wi-Fi only" aria-label="Autoplay on Wi-Fi only" style="position:relative;flex-shrink:0;width:54px;height:30px;border-radius:30px;border:none;cursor:pointer;background:${_autoplayWifiOnly?C.accent:C.surfaceHigh}">
           <span style="position:absolute;top:3px;left:${_autoplayWifiOnly?'27px':'3px'};width:24px;height:24px;border-radius:50%;background:#fff;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,0.3)"></span>
@@ -7275,13 +7280,19 @@ function setAutoplayWifi(on){ _autoplayWifiOnly=!!on; try{ localStorage.setItem(
 // can see we're NOT on Wi-Fi. If the browser won't tell us the connection type
 // (Safari/iOS has no NetworkInformation), we err on the side of NOT autoplaying —
 // silently burning someone's mobile data is worse than a video that waits for a tap.
-function autoplayAllowed(){
-  if(!_autoplayWifiOnly) return true;
+function connectionType(){
   try{
     const c=navigator.connection||navigator.mozConnection||navigator.webkitConnection;
-    if(c && typeof c.type==='string') return c.type==='wifi' || c.type==='ethernet';
-    if(c && c.saveData) return false;
+    if(c && typeof c.type==='string' && c.type && c.type!=='unknown') return c.type;
   }catch(_){}
+  return '';   // browser won't say (iOS Safari, or blocked as a fingerprinting vector)
+}
+function autoplayAllowed(){
+  if(!_autoplayWifiOnly) return true;
+  const t=connectionType();
+  if(t) return t==='wifi' || t==='ethernet';
+  // Can't tell what we're on. Withhold autoplay rather than risk spending someone's
+  // mobile data — the Settings row explains this so it isn't a silent mystery.
   return false;
 }
 function setHaptics(on){ _hapticsOn=!!on; try{ localStorage.setItem('moments-haptics', on?'1':'0'); }catch(_){ } if(on){ try{ navigator.vibrate&&navigator.vibrate(12); }catch(_){ } } renderApp(); }

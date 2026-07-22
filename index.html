@@ -2756,6 +2756,7 @@ const CHANGELOG=[
     ['new','New setting: autoplay on Wi-Fi only, so videos never use your mobile data unless you ask'],
     ['new','Share up to 4 photos in one moment \u2014 they stay a single post, shown together as a grid'],
     ['new','Pick several photos at once, or add them one at a time with the + button before you share'],
+    ['new','The camera can do it too \u2014 take a shot, tap + Add, and keep going up to 4 before sharing them as one moment'],
     ['new','Open a moment to see every photo full-width, and tap any one of them to fill the screen'],
     ['fix','Photos now load properly when Moment\u2019s is opened from a saved copy of the page instead of the website'],
   ]},
@@ -4134,12 +4135,13 @@ let _photoStream=null;
 function openCamera(){
   if(!currentNet()) return;
   A.showCamera=true; A.cameraShot=null; A.cameraError=''; A.cameraCaption=''; A.showNetPicker=false;
+  A.camShots=[];   // photos already captured in this session, waiting to post together
   if(!A.cameraFacing) A.cameraFacing='environment';
   renderApp();
   startPhotoCamera();
 }
 function closeCamera(){
-  A.showCamera=false; A.cameraShot=null;
+  A.showCamera=false; A.cameraShot=null; A.camShots=[];
   if(_photoStream){ _photoStream.getTracks().forEach(t=>t.stop()); _photoStream=null; }
   renderApp();
 }
@@ -4155,7 +4157,7 @@ async function startPhotoCamera(){
     }catch(_){
       _photoStream=await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ ideal:A.cameraFacing } }, audio:false });
     }
-    A.camZoom=1; A.camZoomMax=1; A._camPinchStart=null;
+    A.camZoom=1; A.camZoomMax=1;
     // If the device supports optical/driver zoom, note its range so we can use it.
     try{
       const track=_photoStream.getVideoTracks()[0];
@@ -4199,6 +4201,24 @@ async function capturePhoto(){
   }catch(e){}
 }
 function retakePhoto(){ A.cameraShot=null; A.cameraMode=null; A.recSeconds=0; renderApp(); }
+// Keep this shot and go back to the viewfinder for another. Photos only — video
+// and audio stay one-per-moment. Capped at MAX_PHOTOS including the current shot.
+function addAnotherShot(){
+  const shot=A.cameraShot;
+  if(!shot || shot.isVideo) return;
+  if(!Array.isArray(A.camShots)) A.camShots=[];
+  if(A.camShots.length >= MAX_PHOTOS-1){ showToast('Up to '+MAX_PHOTOS+' photos in one moment'); return; }
+  A.camShots.push({ dataUrl:shot.dataUrl, blob:shot.blob });
+  A.cameraShot=null; A.cameraMode=null; A.recSeconds=0;
+  haptic(12);
+  renderApp();
+}
+// Drop one of the already-captured shots (the x on its thumbnail).
+function removeCamShot(idx){
+  if(!Array.isArray(A.camShots)) return;
+  A.camShots.splice(idx,1);
+  renderApp();
+}
 
 // Apply a zoom level (1 = none). Uses the camera's real zoom when the device
 // supports it; otherwise falls back to a CSS scale on the live preview (digital),
@@ -4270,7 +4290,18 @@ async function uploadCameraPhoto(){
   let poster=shot.poster||null;
   if(shot.isVideo && !poster){ try{ const p=await videoPoster(shot.dataUrl); if(p) poster=p.dataUrl; }catch(_){} }
   A.pendingPhoto={ image:shot.dataUrl, blob:shot.blob, caption:(A.cameraCaption||'').trim().slice(0,280), isVideo:!!(shot.isVideo), mime:shot.mime||null, poster };
-  A.showCamera=false; A.cameraShot=null; A.cameraMode=null; A.recSeconds=0;
+  // Multi-shot: anything banked via "Add another" rides along as extras, with the
+  // FIRST captured photo as the primary so the order matches the order they were
+  // taken (the shot on screen is the last one).
+  if(Array.isArray(A.camShots) && A.camShots.length && !shot.isVideo){
+    const all=[...A.camShots, { dataUrl:shot.dataUrl, blob:shot.blob }].slice(0, MAX_PHOTOS);
+    A.pendingPhoto.image=all[0].dataUrl;
+    A.pendingPhoto.blob=all[0].blob;
+    A.pendingExtras=all.slice(1).map(x=>({ image:x.dataUrl, blob:x.blob }));
+  } else {
+    A.pendingExtras=null;
+  }
+  A.showCamera=false; A.cameraShot=null; A.camShots=[]; A.cameraMode=null; A.recSeconds=0;
   if(_photoStream){ _photoStream.getTracks().forEach(t=>t.stop()); _photoStream=null; }
   A.tab=0;
   showToast('Posting your moment…');
@@ -5715,7 +5746,6 @@ async function attemptPublish(netId, post){
   }catch(e){
     post.status='failed';
     const msg=String(e && (e.message||e));
-    A._lastPostError=msg;
     try{ console.error('[moments] post failed:', msg); }catch(_){}
     const allTimedOut = /timed out/.test(msg) && !/\d{3}/.test(msg);
     const friendly = allTimedOut
@@ -6450,7 +6480,19 @@ function buildCamera(){
           <input id="cam-caption" maxlength="280" value="${esc(A.cameraCaption||'')}" oninput="setCameraCaption(this.value)" placeholder="What's happening?" autofocus style="width:100%;background:${C.surfaceHigh};border:1.5px solid ${A.cameraCaption?C.accentBorder:'var(--c-border)'};outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;transition:border-color .2s"/>
           <div id="cam-caption-count" aria-live="polite" style="text-align:right;font-size:11px;font-weight:700;color:${C.muted};min-height:14px;margin-top:3px"></div>
         </div>
+        ${(()=>{
+          // Multi-shot strip: photos already banked in this session, each removable,
+          // plus a count. Photos only — a video is always a moment on its own.
+          const cs=Array.isArray(A.camShots)?A.camShots:[];
+          const isVid=!!(A.cameraShot&&A.cameraShot.isVideo);
+          if(isVid || !cs.length) return "";
+          return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px">` +
+            cs.map((x,idx)=>`<div style="position:relative;width:48px;height:48px;border-radius:8px;background:url('${safeMediaUrl(x.dataUrl)}') center/cover no-repeat #000">` +
+              `<button aria-label="Remove photo" onclick="removeCamShot(${idx})" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;background:#000;border:1px solid rgba(255,255,255,.35);color:#fff;border-radius:50%;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center">\u00d7</button></div>`).join('') +
+            `<div style="color:rgba(255,255,255,.55);font-size:11px;font-weight:700;margin-left:2px">${cs.length+1} of ${MAX_PHOTOS}</div></div>`;
+        })()}
         <div style="display:flex;gap:12px">
+        ${(A.cameraShot && !A.cameraShot.isVideo && (Array.isArray(A.camShots)?A.camShots.length:0) < MAX_PHOTOS-1) ? `<button onclick="addAnotherShot()" title="Add another photo" aria-label="Add another photo" style="flex:0 0 auto;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:14px;padding:14px 16px;font-size:15px;font-weight:700;cursor:pointer">+ Add</button>` : ''}
           <button onclick="retakePhoto()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:14px;padding:14px 0;font-size:14px;font-weight:700;cursor:pointer">↺ Retake</button>
           <button onclick="uploadCameraPhoto()" style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:14px 0;font-size:14px;font-weight:700;cursor:pointer">Share →</button>
         </div>

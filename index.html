@@ -2280,7 +2280,7 @@ function photoBox(net, post){
     const vsrc=(post.enc&&post.enc.sha256&&_imgCache[post.enc.sha256])?safeMediaUrl(_imgCache[post.enc.sha256]):'';
     return { attr:'', style:`${bg};display:flex;align-items:center;justify-content:center;position:relative`, inner:`
       <video ${vsha?`data-video="${vsha}"`:''} ${vsrc?`src="${vsrc}"`:''} muted playsinline preload="none" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:${vsrc?1:0};transition:opacity .2s;pointer-events:none"></video>
-      <div style="width:54px;height:54px;border-radius:50%;background:rgba(0,0,0,.45);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,.85)">
+      <div ${vsha?`data-playbadge="${vsha}"`:''} style="width:54px;height:54px;border-radius:50%;background:rgba(0,0,0,.45);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,.85)">
         <div style="width:0;height:0;border-left:18px solid #fff;border-top:11px solid transparent;border-bottom:11px solid transparent;margin-left:4px"></div>
       </div>
       <div style="position:absolute;bottom:8px;right:10px;background:rgba(0,0,0,.55);border-radius:8px;padding:2px 8px;color:#fff;font-size:11px;font-weight:700">▶ Video</div>${spinner}` };
@@ -2318,6 +2318,21 @@ function photoBox(net, post){
 let _vidObserver=null;
 const _vidVisible=new Map();   // element -> visible ratio
 
+// The big play triangle is a "tap to watch" affordance — it makes no sense sitting
+// on top of a clip that's already playing. Driven off the element's real state
+// rather than "should be playing", so it can't get out of step with the browser
+// refusing or delaying playback.
+function setPlayBadge(v){
+  try{
+    const sha=v.getAttribute('data-video'); if(!sha) return;
+    const badge=document.querySelector('[data-playbadge="'+sha+'"]');
+    if(!badge) return;
+    const playing = !v.paused && !v.ended && v.currentTime>0;
+    badge.style.opacity = playing ? '0' : '1';
+    badge.style.transition = 'opacity .18s';
+  }catch(_){}
+}
+
 function syncFeedVideos(){
   try{
     const vids=Array.from(document.querySelectorAll('video[data-video]'));
@@ -2335,6 +2350,7 @@ function syncFeedVideos(){
       } else if(!v.paused){
         v.pause();   // keep position — scrolling back doesn't restart it
       }
+      setPlayBadge(v);
     });
   }catch(_){}
 }
@@ -2353,6 +2369,10 @@ function observeFeedVideos(){
       if(v._vObserved) return;
       v._vObserved=true;
       _vidObserver.observe(v);
+      ['play','playing','pause','ended','timeupdate'].forEach(ev=>{
+        v.addEventListener(ev, ()=>setPlayBadge(v));
+      });
+      setPlayBadge(v);
       // Kick the decrypt for this clip so it can actually play. Respects the
       // Wi-Fi-only setting: on cellular (or an unknown connection) we leave the
       // poster + play button alone rather than pulling down a whole video.

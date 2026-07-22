@@ -963,6 +963,17 @@ async function handleRemoteEvent(netId, ev){
       // (posts made before the lock, and the owner's own posts, are always kept).
       if(net.membersCanPost===false && net.ownerPk && pk!==net.ownerPk && ev.created_at >= (net.postLockTs||0)) return;
       const enc=payload.enc||null;
+      // Multi-photo extras: accept only well-formed encrypted-photo metas, capped.
+      // A malicious payload can't inject arbitrary objects — each must have the
+      // url/iv/sha256 the decrypt pipeline requires, or it's dropped.
+      let _encs;
+      if(enc && Array.isArray(payload.encs)){
+        _encs = payload.encs
+          .filter(e=> e && typeof e.url==='string' && /^https?:\/\//.test(e.url) && typeof e.iv==='string' && /^[0-9a-f]{24}$/.test(e.iv) && typeof e.sha256==='string' && /^[0-9a-f]{64}$/.test(e.sha256))
+          .slice(0, MAX_PHOTOS-1)
+          .map(e=>({ url:e.url.slice(0,600), iv:e.iv, sha256:e.sha256, mime:(typeof e.mime==='string'?e.mime.slice(0,40):'image/jpeg'), w:+e.w||0, h:+e.h||0, blurhash:(typeof e.blurhash==='string'?e.blurhash.slice(0,64):'') }));
+        if(!_encs.length) _encs=undefined;
+      }
       // Link preview: accept only sane shapes — https URL, bounded strings, and
       // an image ONLY as an embedded data URL (never a remote URL a malicious
       // payload could use to make every viewer's device ping an attacker host).
@@ -976,7 +987,7 @@ async function handleRemoteEvent(netId, ev){
       }
       const _modHidden = !!(net.modDel && net.modDel[ev.id] && net.ownerPk && net.modDel[ev.id]===net.ownerPk);
       net.posts.push({ id:ev.id, memberId:memId, authorPk:pk, caption:payload.caption||'', modHidden:_modHidden,
-        image:(!enc && payload.image)?payload.image:null, enc,
+        image:(!enc && payload.image)?payload.image:null, enc, encs:_encs,
         poll:payload.poll||null, link:_lk, voteBy:{},
         time:relTime(ev.created_at*1000), likes:0, liked:false, likeBy:{}, replies:[], ts:ev.created_at });
       net.posts.sort((a,b)=>(b.ts||0)-(a.ts||0));
@@ -1309,6 +1320,7 @@ async function publishPost(netId, post){
     const _av=await encryptAvatarFor(netId);
     const payload={ v:1, t:'post', caption:post.caption,
       enc: post.enc||null,
+      encs: (Array.isArray(post.encs) && post.encs.length) ? post.encs.slice(0, MAX_PHOTOS-1) : undefined,
       image: (!post.enc && post.image && /^https?:/.test(post.image))?post.image:null,
       poll: post.poll||null,
       link: post.link||null,
@@ -2062,8 +2074,8 @@ function renderSoon(){
   if(_renderSoonTimer) return;
   _renderSoonTimer=setTimeout(()=>{ _renderSoonTimer=null; if(!syncRenderBlocked()) renderApp(); }, 180);
 }
-async function ensurePhoto(net, post){
-  const e=post.enc; if(!net || !e || !e.url || !e.iv || !e.sha256) return;
+async function ensurePhoto(net, post, encOverride){
+  const e=encOverride||post.enc; if(!net || !e || !e.url || !e.iv || !e.sha256) return;
   if(_imgCache[e.sha256] || _imgPending[e.sha256]) return;
   // Give up (and show a placeholder) after a few failed attempts, so a photo that
   // a Blossom server has pruned doesn't blank-card forever or re-fetch on every render.
@@ -2163,6 +2175,65 @@ function audioSolo(el){
     document.querySelectorAll('audio').forEach(a=>{ if(a!==el && !a.paused){ try{ a.pause(); }catch(_){} } });
   }catch(_){}
 }
+// ---- Multi-photo (additive) --------------------------------------------------
+// A post's photos are: post.enc (the first, always present on any photo post so
+// OLD clients still show something) followed by post.encs (photos 2..N). Everything
+// that reads post.enc keeps working untouched — multi-photo is purely additive.
+// Cap 4 so the grid stays a clean 2x2.
+const MAX_PHOTOS=4;
+function postEncs(post){
+  if(!post || !post.enc) return [];
+  const all=[post.enc];
+  if(Array.isArray(post.encs)){
+    for(const e of post.encs){ if(e && e.url && e.iv && e.sha256 && all.length<MAX_PHOTOS) all.push(e); }
+  }
+  return all;
+}
+function hasMultiPhoto(post){ return postEncs(post).length>1; }
+// Tapping any grid tile opens the post's detail view (where photos show larger).
+// A dedicated per-photo swipe viewer can come later; for now this matches how a
+// single photo behaves (photoTap -> openPostView) so the interaction is consistent.
+function openPhotoAt(netId, postId, idx){ openPostView(postId); }
+
+
+
+
+// Render photos 1..N as a grid of data-photo tiles. Each tile reuses the EXACT
+// same decrypt pipeline as a single photo: applyPhotoToDom fills every element
+// whose data-photo matches the sha, so no new decrypt code is needed. We just
+// kick ensurePhoto for each enc and let it patch the tiles in place.
+function photoGrid(net, post){
+  const encs=postEncs(post);
+  const n=encs.length;
+  // Fire decryption for every photo; the pipeline paints each tile when ready.
+  encs.forEach(e=>{ if(!_imgCache[e.sha256]) ensurePhoto(net, post, e); });
+  // Layout: 2 -> side by side, 3 -> one big + two stacked, 4 -> 2x2. Tap opens
+  // the post's photo viewer at that index.
+  const tile=(e, idx, extra)=>{
+    const sha=esc(e.sha256);
+    const cached=_imgCache[e.sha256];
+    // safeMediaUrl, NOT safeCssUrl: decrypted photos live in _imgCache as blob:
+    // URLs, and safeCssUrl rejects anything that isn't https:/data:, which would
+    // silently blank the tile after a refresh. Blurhash previews ARE data: URLs.
+    const bg = cached ? `background:url('${safeMediaUrl(cached)}') center/cover no-repeat;`
+             : (e.blurhash ? `background:url('${safeCssUrl(blurhashToDataURL(e.blurhash))}') center/cover no-repeat;`
+             : `background:${C.surfaceHigh};`);
+    return `<div data-photo="${sha}" onclick="event.stopPropagation();openPhotoAt('${net.id}','${post.id}',${idx})" style="${bg}cursor:pointer;position:relative;overflow:hidden;${extra||''}"></div>`;
+  };
+  const gap='4px';
+  if(n===2){
+    return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:${gap};aspect-ratio:2/1;border-radius:16px;overflow:hidden">
+      ${tile(encs[0],0)}${tile(encs[1],1)}</div>`;
+  }
+  if(n===3){
+    return `<div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:${gap};aspect-ratio:1/1;border-radius:16px;overflow:hidden">
+      ${tile(encs[0],0,'grid-row:1 / span 2')}${tile(encs[1],1)}${tile(encs[2],2)}</div>`;
+  }
+  // 4
+  return `<div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:${gap};aspect-ratio:1/1;border-radius:16px;overflow:hidden">
+    ${tile(encs[0],0)}${tile(encs[1],1)}${tile(encs[2],2)}${tile(encs[3],3)}</div>`;
+}
+
 // Returns {style, inner, attr} for a photo/video container.
 // `attr` carries data-photo=<sha256> so a decrypted image can be swapped in place.
 function photoBox(net, post){
@@ -2202,7 +2273,13 @@ function photoBox(net, post){
     const bg = poster ? `background:url('${poster}') center/cover no-repeat #000`
              : (post.enc&&post.enc.blurhash ? (()=>{ const b=blurhashToDataURL(post.enc.blurhash); return b?`background:url('${b}') center/cover no-repeat #000`:'background:#000'; })()
              : 'background:#000');
+    // A muted, inline <video> sits over the poster. It has NO src until the clip is
+    // decrypted (applyPhotoToDom fills it), so nothing downloads just by rendering.
+    // The IntersectionObserver plays whichever one is in focus.
+    const vsha=(post.enc&&post.enc.sha256)?esc(post.enc.sha256):'';
+    const vsrc=(post.enc&&post.enc.sha256&&_imgCache[post.enc.sha256])?safeMediaUrl(_imgCache[post.enc.sha256]):'';
     return { attr:'', style:`${bg};display:flex;align-items:center;justify-content:center;position:relative`, inner:`
+      <video ${vsha?`data-video="${vsha}"`:''} ${vsrc?`src="${vsrc}"`:''} muted playsinline preload="none" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:${vsrc?1:0};transition:opacity .2s;pointer-events:none"></video>
       <div style="width:54px;height:54px;border-radius:50%;background:rgba(0,0,0,.45);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,.85)">
         <div style="width:0;height:0;border-left:18px solid #fff;border-top:11px solid transparent;border-bottom:11px solid transparent;margin-left:4px"></div>
       </div>
@@ -2233,6 +2310,64 @@ function photoBox(net, post){
 // If no tagged element is on screen, do nothing: the URL is cached and the next
 // real render will use it. (Never force a full re-render here — that rebuilds the
 // whole feed and re-decodes every image, which is what caused the load-time flicker.)
+// ---- Feed video autoplay -----------------------------------------------------
+// Only the clip most in view plays; everything else pauses. Muted + playsinline,
+// because browsers refuse to autoplay audible video without a user gesture (tap
+// through to the viewer for sound). Plays ONCE and holds its last frame — it isn't
+// a loop, so a moment doesn't turn into a hypnotic feed.
+let _vidObserver=null;
+const _vidVisible=new Map();   // element -> visible ratio
+
+function syncFeedVideos(){
+  try{
+    const vids=Array.from(document.querySelectorAll('video[data-video]'));
+    if(!vids.length) return;
+    // Pick the most-visible clip that actually has something to play.
+    let best=null, bestRatio=0;
+    vids.forEach(v=>{
+      const r=_vidVisible.get(v)||0;
+      if(r>0.6 && r>bestRatio && v.getAttribute('src')){ best=v; bestRatio=r; }
+    });
+    vids.forEach(v=>{
+      if(v===best){
+        // "Play once": if it already finished, leave the last frame up.
+        if(!v.ended && v.paused){ const pr=v.play(); if(pr&&pr.catch) pr.catch(()=>{}); }
+      } else if(!v.paused){
+        v.pause();   // keep position — scrolling back doesn't restart it
+      }
+    });
+  }catch(_){}
+}
+
+// Attach/refresh the observer after each render (elements are rebuilt every frame).
+function observeFeedVideos(){
+  try{
+    if(!('IntersectionObserver' in window)) return;
+    if(!_vidObserver){
+      _vidObserver=new IntersectionObserver(entries=>{
+        entries.forEach(e=>{ _vidVisible.set(e.target, e.intersectionRatio); });
+        syncFeedVideos();
+      }, { threshold:[0, 0.25, 0.6, 0.9] });
+    }
+    document.querySelectorAll('video[data-video]').forEach(v=>{
+      if(v._vObserved) return;
+      v._vObserved=true;
+      _vidObserver.observe(v);
+      // Kick the decrypt for this clip so it can actually play. Respects the
+      // Wi-Fi-only setting: on cellular (or an unknown connection) we leave the
+      // poster + play button alone rather than pulling down a whole video.
+      if(autoplayAllowed() && !v.getAttribute('src')){
+        const sha=v.getAttribute('data-video');
+        const net=currentNet();
+        if(sha && net){
+          const post=(net.posts||[]).find(p=>p.enc && p.enc.sha256===sha);
+          if(post) ensurePhoto(net, post);
+        }
+      }
+    });
+  }catch(_){}
+}
+
 function applyPhotoToDom(sha, url){
   const safe=safeMediaUrl(url);
   if(!sha || !safe) return;
@@ -2242,6 +2377,12 @@ function applyPhotoToDom(sha, url){
     // Audio players want a src, not a background. Don't clobber a src that's
     // already set — reassigning it mid-playback restarts the clip.
     document.querySelectorAll('audio[data-audio="'+key+'"]').forEach(el=>{ if(!el.getAttribute('src')) el.setAttribute('src', safe); });
+    // Same for feed videos: fill the src once the clip is decrypted, fade it in over
+    // the poster, then let the observer decide whether it should be playing.
+    document.querySelectorAll('video[data-video="'+key+'"]').forEach(el=>{
+      if(!el.getAttribute('src')){ el.setAttribute('src', safe); el.style.opacity='1'; }
+    });
+    syncFeedVideos();
   }catch(_){}
 }
 
@@ -2370,6 +2511,9 @@ async function enterApp(npub){
   // key file, or auto-login). A lingering value is what makes Chrome's password
   // manager pop "save password?" during unrelated actions like posting a photo.
   try{ const ln=document.getElementById('login-nsec'); if(ln) ln.value=''; }catch(_){}
+  // Arm the Back handler: one spare history entry so Android's back button backs
+  // out of overlays instead of closing Moment's outright.
+  pushBackTrap();
   document.querySelector('nav').style.display='none';
   document.querySelector('.hero').style.display='none';
   document.querySelector('.footer-tag').style.display='none';
@@ -2606,6 +2750,15 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
+  { v:'0.9.0', date:'July 2026', title:'A few frames', changes:[
+    ['fix','Your phone\u2019s back button now closes whatever you have open \u2014 a photo, settings, the camera \u2014 instead of closing Moment\u2019s'],
+    ['new','Videos now start playing on their own as you scroll to them, and stop when you scroll away \u2014 silently, tap to open with sound'],
+    ['new','New setting: autoplay on Wi-Fi only, so videos never use your mobile data unless you ask'],
+    ['new','Share up to 4 photos in one moment \u2014 they stay a single post, shown together as a grid'],
+    ['new','Pick several photos at once, or add them one at a time with the + button before you share'],
+    ['new','Open a moment to see every photo full-width, and tap any one of them to fill the screen'],
+    ['fix','Photos now load properly when Moment\u2019s is opened from a saved copy of the page instead of the website'],
+  ]},
   { v:'0.8.9', date:'July 2026', title:'Foundations', changes:[
     ['fix','Your profile is more reliable everywhere \u2014 the app now handles your name, bio, picture and Signal in one consistent place, closing a class of bugs where a field could go missing'],
     ['change','Deleting a post now also erases its photo from storage, not just the post itself'],
@@ -2844,12 +2997,10 @@ const ROADMAP=[
   { status:'planned', title:'Multiple photos per post', text:'Share a few shots in one moment, shown as a neat grid.' },
   { status:'planned', title:'Stronger member controls', text:'Leave and rejoin a network any time — unless an owner has blocked you. Blocking means blocked: no way back in, and no access to what\u2019s shared next.' },
   { status:'exploring', title:'Password-protected key backup', text:'Optionally lock your saved key behind a passphrase, safe to keep anywhere.' },
-  { status:'exploring', title:'Edit photos before sharing', text:'Rotate and crop a photo right in the app before it goes to your network.' },
   { status:'exploring', title:'A dedicated Moments relay', text:'A reliable relay run for Moments, so things just work by default — and because Moments is open, you can always choose your own or run one yourself.' },
   { status:'exploring', title:'Push notifications', text:'Get notified when someone posts, likes, or replies — even when the app is closed.' },
   { status:'exploring', title:'Photos that always load', text:'Reliable delivery so nothing in your feed is ever stuck or missing, wherever it was shared from.' },
   { status:'exploring', title:'Disappearing photos', text:'Share a moment that fades after a day.' },
-  { status:'exploring', title:'Discoverable public networks', text:'Find and join networks that choose to be open to anyone — clearly marked as public, and kept well away from your private ones.' },
 ];
 function buildRoadmap(){
   const tag={
@@ -3130,7 +3281,7 @@ async function vanishGo(){
       const mine=(net.posts||[]).filter(p=> (p.authorPk===myPk || p.memberId==='u1') && /^[0-9a-f]{64}$/.test(p.id));
       for(const p of mine){
         try{ await publishDelete(id, p.id); }catch(_){}
-        try{ if(p.enc && p.enc.sha256){ await blossomDelete(p.enc.sha256); } }catch(_){}
+        try{ for(const e of postEncs(p)){ if(e && e.sha256){ await blossomDelete(e.sha256); } } }catch(_){}
       }
     }
     await new Promise(r=>setTimeout(r, 1500));
@@ -3342,6 +3493,52 @@ function closeSettingsStack(){
   A.showEcosystem=false; A.showKeyBackup=false;
 }
 function setTab(i){ if(A.tab!==i) haptic(10); A.tab=i; A.showNetPicker=false; closeSettingsStack(); renderApp(); }
+
+// ---- Hardware / browser Back -------------------------------------------------
+// Without this, Android's back button leaves the page entirely — closing the app
+// mid-scroll instead of backing out of whatever is open. We keep one spare history
+// entry while anything is open; Back pops it, we close the topmost layer, and push
+// a fresh spare. When nothing is left to close we don't re-push, so the next Back
+// genuinely leaves, which is what someone expects at the top of the app.
+function closeTopOverlay(){
+  if(!A) return false;
+  // Order matters: unwind from the most-recently-opened / visually-topmost layer.
+  try{ if(typeof _zoomOpen!=='undefined' && _zoomOpen){ closeZoom(); return true; } }catch(_){}
+  if(A.showScanner){ A.showScanner=false; renderApp(); return true; }
+  if(A.showCamera){ try{ closeCamera(); }catch(_){ A.showCamera=false; renderApp(); } return true; }
+  if(A.pendingJoinCode){ A.pendingJoinCode=null; renderApp(); return true; }
+  if(A.likersPostId){ A.likersPostId=null; renderApp(); return true; }
+  if(A.showVanish){ A.showVanish=false; renderApp(); return true; }
+  if(A.showInvite){ A.showInvite=false; renderApp(); return true; }
+  if(A.profileId){ A.profileId=null; renderApp(); return true; }
+  if(A.viewPostId){ A.viewPostId=null; A.replyPostId=null; renderApp(); return true; }
+  if(A.replyPostId){ A.replyPostId=null; renderApp(); return true; }
+  if(A.editProfile){ A.editProfile=false; A.profileDraft=null; renderApp(); return true; }
+  if(A.showUpload){ A.showUpload=false; A.pendingPhoto=null; A.pendingExtras=null; renderApp(); return true; }
+  // Settings sub-screens close back to Settings, not straight out.
+  if(A.showKeyBackup){ A.showKeyBackup=false; renderApp(); return true; }
+  if(A.showWhatsNew){ A.showWhatsNew=false; renderApp(); return true; }
+  if(A.showRoadmap){ A.showRoadmap=false; renderApp(); return true; }
+  if(A.showContact){ A.showContact=false; renderApp(); return true; }
+  if(A.showEcosystem){ A.showEcosystem=false; renderApp(); return true; }
+  if(A.showAbout){ A.showAbout=false; renderApp(); return true; }
+  if(A.showAdvanced){ A.showAdvanced=false; renderApp(); return true; }
+  if(A.showSettings){ A.showSettings=false; renderApp(); return true; }
+  if(A.showNetPicker){ A.showNetPicker=false; renderApp(); return true; }
+  if(A.showJoin){ try{ backFromJoin(); }catch(_){ A.showJoin=false; renderApp(); } return true; }
+  // Not on the Feed tab? Back returns there before it considers leaving.
+  if(A.tab && A.tab!==0){ setTab(0); return true; }
+  return false;
+}
+function pushBackTrap(){
+  try{ history.pushState({moments:1}, ''); }catch(_){}
+}
+window.addEventListener('popstate', function(){
+  // Only meaningful once we're inside the app; on the landing page let Back leave.
+  if(!A || !document.getElementById('app-frame')) return;
+  if(closeTopOverlay()) pushBackTrap();
+});
+
 
 // Is the Network screen actually on screen right now? Being on tab 1 isn't enough
 // — Settings, a profile, an invite sheet or the camera all cover it, and in those
@@ -3713,6 +3910,17 @@ function openZoomCurrent(){
   const post=net.posts.find(p=>p.id===A.viewPostId); if(!post) return;
   const src=photoSrc(net, post); if(!src) return;   // not decrypted yet
   openZoom(src);
+}
+// Zoom a specific photo of a multi-photo post by index. Falls back to kicking the
+// decrypt if that photo isn't ready yet (tap again once it paints).
+function openZoomAt(netId, postId, idx){
+  const net=A.networks[netId]; if(!net) return;
+  const post=net.posts.find(p=>p.id===postId); if(!post) return;
+  const encs=postEncs(post);
+  const e=encs[idx]; if(!e) return;
+  const url=_imgCache[e.sha256];
+  if(url){ openZoom(url); }
+  else { ensurePhoto(net, post, e); }   // not decrypted yet — fetch, tap again
 }
 function openZoom(src){
   if(_zoomOpen) return; _zoomOpen=true;
@@ -4110,7 +4318,13 @@ function safeMediaUrl(u){
   if(typeof u!=='string') return '';
   const s=u.trim();
   if(/["'()<>\\]/.test(s) || /\s/.test(s)) return '';
-  if(/^blob:https?:\/\//i.test(s)) return s;
+  // Any blob: URL, not just blob:https://. Object URLs inherit the page's origin,
+  // so a copy of this file opened from disk (file:// or Android's content://)
+  // produces blob:null/... — pinning to https meant decrypted photos were silently
+  // rejected and never painted, leaving only blurhash placeholders after a reload.
+  // Safe to allow: blob: URLs can only be minted by this page via createObjectURL,
+  // and the character guard above already prevents breaking out of url('...').
+  if(/^blob:/i.test(s)) return s;
   return safeCssUrl(s);
 }
 function avatarHTML(mem, size, radius, fontSize, borderWidth){
@@ -4724,7 +4938,8 @@ function deletePost(pid){
   publishDelete(net.id, pid);
   // Also erase the encrypted media from Blossom, so deleting a post doesn't leave
   // its ciphertext on the CDNs. Best-effort; the post is already gone locally.
-  if(post.enc && post.enc.sha256) blossomDelete(post.enc.sha256);
+  // Covers every photo of a multi-photo post, not just the first.
+  postEncs(post).forEach(e=>{ if(e && e.sha256) blossomDelete(e.sha256); });
 }
 
 // Owner moderation: remove ANY member's post from the network I own.
@@ -4956,6 +5171,33 @@ function patchCharCount(id, len, max){
   el.style.color = left<=10 ? C.warm : C.muted;
 }
 function setPhotoCaption(v){ if(A.pendingPhoto){ A.pendingPhoto.caption=v; patchCharCount('caption-count', v.length, 280); if(!A.pollMode) detectComposerLink(v); } }
+// Remove one staged extra photo (the x on its thumbnail). If none remain, the
+// post reverts to a single-photo post automatically (pendingExtras becomes []).
+function removePendingExtra(idx){
+  if(!Array.isArray(A.pendingExtras)) return;
+  A.pendingExtras.splice(idx,1);
+  if(!A.pendingExtras.length) A.pendingExtras=null;
+  renderApp();
+}
+// "+ Add photo" — appends more photos to the staged set (primary stays, these
+// become extras), up to MAX_PHOTOS total. Works after either a gallery pick OR a
+// camera shot, so multi-photo is reachable from both paths.
+async function appendPhotos(input){
+  const files=Array.from(input.files||[]).filter(f=>f.type.startsWith('image/'));
+  if(!files.length) return;
+  if(!A.pendingExtras) A.pendingExtras=[];
+  const room = MAX_PHOTOS - 1 - A.pendingExtras.length;   // -1 for the primary
+  if(room<=0){ showToast('Up to '+MAX_PHOTOS+' photos'); return; }
+  try{
+    for(const f of files.slice(0, room)){
+      const r=await resizeImage(f);
+      A.pendingExtras.push({ image:r.dataUrl, blob:r.blob });
+    }
+    renderApp();
+  }catch(err){
+    const e=document.getElementById('upload-err'); if(e) e.textContent='Could not add one of those images.';
+  }
+}
 function onClearPhoto(){
   if(A.pendingPhoto){
     A.pendingPhoto.image=null; A.pendingPhoto.blob=null;
@@ -4971,6 +5213,33 @@ async function onPickPhoto(input){
   const file=input.files && input.files[0];
   if(!file) return;
   if(!A.pendingPhoto) A.pendingPhoto={image:null,caption:'',blob:null};
+  // Multi-photo: if several IMAGES were picked, the first becomes the primary and
+  // the rest (up to 3 more) become extras. Only images multi-select — a video or
+  // audio in the selection means we fall through to the normal single-file path.
+  const files=Array.from(input.files||[]);
+  const allImages = files.length>1 && files.every(f=>f.type.startsWith('image/'));
+  if(allImages){
+    try{
+      const chosen=files.slice(0, MAX_PHOTOS);   // primary + up to 3 extras
+      const primary=await resizeImage(chosen[0]);
+      A.pendingPhoto.image=primary.dataUrl;
+      A.pendingPhoto.blob=primary.blob;
+      A.pendingPhoto.isVideo=false; A.pendingPhoto.isAudio=false;
+      const extras=[];
+      for(const f of chosen.slice(1)){
+        const r=await resizeImage(f);
+        extras.push({ image:r.dataUrl, blob:r.blob });
+      }
+      A.pendingExtras=extras;
+      renderApp();
+    }catch(err){
+      const errEl=document.getElementById('upload-err');
+      if(errEl) errEl.textContent='Could not read one of those images. Try different files.';
+    }
+    return;
+  }
+  // Single selection replaces any staged multi-photo set.
+  A.pendingExtras=null;
 
   if(file.type.startsWith('audio/')){
     // No compression path for audio, so the file goes up at full size. Cap it:
@@ -5236,11 +5505,17 @@ async function sharePhoto(){
   // keep the source bytes so we can (re)encrypt + (re)upload on retry (photo posts only)
   if(hasPhoto && pp.blob && !pp.remote){
     _retryBlobs[post.id]={ blob:pp.blob, dataUrl:pp.image, poster:pp.poster||null, audioName:pp.audioName||null, audioDur:pp.audioDur||0 };
+    // Multi-photo: extra photos (2..4) ride alongside as an additive array. Only
+    // photos are staged (video/audio never populate pendingExtras). Each keeps its
+    // own source bytes so the all-or-nothing upload can (re)encrypt every one.
+    if(Array.isArray(A.pendingExtras) && A.pendingExtras.length && !pp.isVideo && !pp.isAudio){
+      _retryBlobs[post.id].extras = A.pendingExtras.filter(x=>x && x.blob).slice(0, MAX_PHOTOS-1).map(x=>({ blob:x.blob, dataUrl:x.image }));
+    }
     outSave(post.id, _retryBlobs[post.id]);   // park the bytes before the upload is even attempted
   }
 
   net.posts.unshift(post);
-  A.uploading=false; A.showUpload=false; A.pendingPhoto=null;
+  A.uploading=false; A.showUpload=false; A.pendingPhoto=null; A.pendingExtras=null;
   saveData(); renderApp();
   holdForUndo(net.id, post);
 }
@@ -5394,6 +5669,29 @@ async function attemptPublish(netId, post){
       }
       _imgCache[ctHash]=rb.dataUrl;
       try{ await idbSet('img:'+ctHash, new Blob([cipher], {type:'application/octet-stream'})); }catch(_){}
+    }
+    // Multi-photo: encrypt + upload the extra photos (2..4) into post.encs. Runs
+    // after the primary enc is set. ALL-OR-NOTHING: any failure throws, so the
+    // whole post goes to 'failed' and retries as a unit — a half-uploaded moment
+    // is never published. Skipped entirely for single-photo/video/audio posts.
+    if(!post.encs && _retryBlobs[post.id] && Array.isArray(_retryBlobs[post.id].extras) && _retryBlobs[post.id].extras.length && _sk){
+      const keys=A.netKeys[netId] || await deriveNetwork(net.code); A.netKeys[netId]=keys;
+      const built=[];
+      for(const ex of _retryBlobs[post.id].extras){
+        if(!ex || !ex.blob) throw new Error('multi-photo-missing-bytes');
+        const exInfo = await withTimeout(analyzeImage(ex.dataUrl), 8000, {w:0,h:0,blurhash:''});
+        const exPlain = new Uint8Array(await ex.blob.arrayBuffer());
+        const exIv = crypto.getRandomValues(new Uint8Array(12));   // fresh IV per photo — required
+        const exCipher = new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv:exIv}, keys.groupKey, exPlain));
+        const exHash = bytesToHex(await sha256(exCipher));
+        const exUrl = await blossomUpload(new Blob([exCipher], {type:'application/octet-stream'}));
+        if(!exUrl) throw new Error('multi-photo-upload-failed');   // all-or-nothing
+        const meta = { url:exUrl, mime:ex.blob.type||'image/jpeg', sha256:exHash, iv:bytesToHex(exIv), w:exInfo.w, h:exInfo.h, blurhash:exInfo.blurhash };
+        _imgCache[exHash]=ex.dataUrl;
+        try{ await idbSet('img:'+exHash, new Blob([exCipher], {type:'application/octet-stream'})); }catch(_){}
+        built.push(meta);
+      }
+      post.encs = built;   // only set once ALL extras succeeded
     }
     // Media that never reached Blossom and whose source bytes are gone can't be
     // delivered. The old test looked for a data: preview, which only photos keep —
@@ -5592,7 +5890,7 @@ function buildFeed(net){
             </div>
             <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${post.id}')" style="margin-left:auto;background:none;border:none;color:${C.muted};font-size:20px;cursor:pointer;padding:4px 6px;line-height:1">···</button>
           </div>
-          ${(post.image||post.enc)?(()=>{const pb=photoBox(net,post);return `<div onclick="photoTap('${net.id}','${post.id}',event)" ${pb.attr} style="margin:0 12px;border-radius:14px;height:192px;cursor:pointer;font-size:58px;${pb.style}">${pb.inner}</div>`;})():''}
+          ${hasMultiPhoto(post)?`<div style="margin:0 12px">${photoGrid(net,post)}</div>`:(post.image||post.enc)?(()=>{const pb=photoBox(net,post);return `<div onclick="photoTap('${net.id}','${post.id}',event)" ${pb.attr} style="margin:0 12px;border-radius:14px;height:192px;cursor:pointer;font-size:58px;${pb.style}">${pb.inner}</div>`;})():''}
           <div style="padding:${(post.image||post.enc)?'10px 14px 14px':'2px 14px 14px'}">
             ${captionSansLink(post)?`<div ${(post.image||post.enc)?'':`onclick="openPostView('${post.id}')"`} style="${(post.image||post.enc)?'':'cursor:pointer;'}font-family:'Playfair Display',serif;${(post.image||post.enc)?'font-style:italic;font-size:13px;color:'+C.textDim:'font-size:16px;line-height:1.5;color:'+C.text};margin-bottom:10px;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(post))}</div>`:''}
             ${post.poll?pollHTML(net,post):''}
@@ -5863,6 +6161,18 @@ function buildMyPage(net){
   const uploading=!!A.uploading;
   // Audio has nothing to look at — previewing it as a CSS background would just
   // paint a black rectangle. Show the file instead, with a real player.
+  // Multi-photo: thumbnails of the extra photos (2..4) with a remove (x) each,
+  // shown under the primary preview. Only present when extras are staged.
+  const _ex = Array.isArray(A.pendingExtras) ? A.pendingExtras : [];
+  // Show the multi-photo strip whenever a PHOTO is staged (not video/audio):
+  // the extra thumbnails (each removable) plus an '+ Add' tile while under the cap.
+  const _canMulti = !!(pp && pp.image && pp.blob && !pp.isVideo && !pp.isAudio && !pp.remote);
+  const _room = MAX_PHOTOS - 1 - _ex.length;
+  const extrasStrip = _canMulti ? `<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center">` +
+    _ex.map((x,idx)=>`<div style="position:relative;width:56px;height:56px;border-radius:10px;background:url('${safeMediaUrl(x.image)}') center/cover no-repeat ${C.surfaceHigh}">` +
+      `<button aria-label="Remove photo" onclick="removePendingExtra(${idx})" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;background:${C.bg};border:1px solid var(--c-border);color:${C.text};border-radius:50%;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center">\u00d7</button></div>`).join('') +
+    (_room>0 ? `<label style="width:56px;height:56px;border-radius:10px;border:2px dashed ${C.accentBorder};color:${C.accent};display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer;position:relative">+<input type="file" accept="image/*" multiple onchange="appendPhotos(this)" style="position:absolute;inset:0;opacity:0;cursor:pointer"/></label>` : '') +
+    `<div style="color:${C.muted};font-size:11px;font-weight:700;margin-left:2px">${_ex.length+1} of ${MAX_PHOTOS}</div></div>` : '';
   const picker = (pp.image && pp.isAudio)
     ? `<div style="position:relative;border-radius:14px;background:${C.surfaceHigh};border:1px solid var(--c-border);padding:14px;margin-bottom:12px">
          <button aria-label="Remove audio" onclick="onClearPhoto()" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);border:none;color:#fff;border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:14px">✕</button>
@@ -5878,11 +6188,11 @@ function buildMyPage(net){
     : pp.image
     ? `<div style="position:relative;border-radius:14px;height:150px;background:url('${safeMediaUrl(pp.image)}') center/cover no-repeat #000;margin-bottom:12px">
          <button aria-label="Remove photo" onclick="onClearPhoto()" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);border:none;color:#fff;border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:14px">✕</button>
-       </div>`
+       </div>` + extrasStrip
     : `<div ondragover="event.preventDefault()" ondrop="onDropPhoto(event)" style="position:relative;border:2px dashed ${C.accentBorder};border-radius:14px;height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:${C.accent};font-size:12px;font-weight:600;margin-bottom:12px;text-align:center;padding:0 12px">
          <span style="font-size:26px">📷</span>Tap to choose
          <span style="color:${C.muted};font-size:11px;font-weight:500">Photo, video or audio</span>
-         <input type="file" accept="image/*,video/*,audio/*" onchange="onPickPhoto(this)" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer"/>
+         <input type="file" accept="image/*,video/*,audio/*" multiple onchange="onPickPhoto(this)" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer"/>
        </div>`;
 
   const pollMode=!!A.pollMode;
@@ -6242,6 +6552,16 @@ function buildSettings(){
         </button>
       </div>
 
+<div style="background:${C.surface};border-radius:18px;padding:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px">
+        <div style="min-width:0">
+          <div style="color:${C.text};font-size:14px;font-weight:700">Autoplay on Wi-Fi only</div>
+          <div style="color:${C.muted};font-size:11px">${_autoplayWifiOnly?'On · videos wait for a tap on mobile data':'Off · videos play on any connection'}</div>
+        </div>
+        <button onclick="setAutoplayWifi(${_autoplayWifiOnly?'false':'true'})" title="Autoplay on Wi-Fi only" aria-label="Autoplay on Wi-Fi only" style="position:relative;flex-shrink:0;width:54px;height:30px;border-radius:30px;border:none;cursor:pointer;background:${_autoplayWifiOnly?C.accent:C.surfaceHigh}">
+          <span style="position:absolute;top:3px;left:${_autoplayWifiOnly?'27px':'3px'};width:24px;height:24px;border-radius:50%;background:#fff;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,0.3)"></span>
+        </button>
+      </div>
+
       <!-- Key backup row -->
       ${A.profile&&A.profile.backupHidden ? '' : `<button onclick="openKeyBackup()" style="width:100%;background:${C.surface};border:1px solid ${backed?'var(--c-border)':'rgba(245,200,66,0.35)'};border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
         <span style="font-size:20px">🔑</span>
@@ -6479,6 +6799,23 @@ function buildPostView(net){
           // still decrypting — show poster with a spinner overlay
           const pbg=psafe?`background:url('${psafe}') center/cover no-repeat #000`:'background:#000';
           return `<div style="border-radius:18px;width:100%;aspect-ratio:1;${pbg};display:flex;align-items:center;justify-content:center"><div style="color:rgba(255,255,255,.85);font-size:13px;background:rgba(0,0,0,.45);padding:8px 14px;border-radius:20px">Loading video…</div></div>`;
+        }
+        // Multi-photo: show every photo stacked full-width, each zoomable. This is
+        // the "scroll through the frames" viewer — no swipe carousel (which would
+        // fight the tab-swipe + pinch-zoom gestures, the reason the feed uses a grid).
+        if(hasMultiPhoto(post)){
+          const encs=postEncs(post);
+          encs.forEach(e=>{ if(!_imgCache[e.sha256]) ensurePhoto(net, post, e); });
+          return `<div style="display:flex;flex-direction:column;gap:8px">` + encs.map((e,idx)=>{
+            const sha=esc(e.sha256);
+            const cached=_imgCache[e.sha256];
+            // safeMediaUrl for the same reason as the feed grid: cached photos are
+            // blob: URLs and safeCssUrl would strip them, blanking the view.
+            const bg = cached ? `background:url('${safeMediaUrl(cached)}') center/cover no-repeat #000;`
+                     : (e.blurhash ? `background:url('${safeCssUrl(blurhashToDataURL(e.blurhash))}') center/cover no-repeat #000;`
+                     : `background:${C.surfaceHigh};`);
+            return `<div data-photo="${sha}" onclick="openZoomAt('${net.id}','${post.id}',${idx})" style="${bg}border-radius:18px;width:100%;aspect-ratio:1;cursor:zoom-in;overflow:hidden"></div>`;
+          }).join('') + `</div>`;
         }
         return `<div onclick="openZoomCurrent()" ${pb.attr} style="border-radius:18px;width:100%;aspect-ratio:1;cursor:zoom-in;${pb.style}">${pb.inner}</div>`;
       })()}
@@ -6736,6 +7073,10 @@ function renderApp(){
     const el=document.getElementById(id);
     if(el) el.scrollTop=_scrollKeep[id];
   });
+  // innerHTML rebuilt every <video>, so re-attach the autoplay observer to the new
+  // elements and re-evaluate which clip should be playing.
+  observeFeedVideos();
+  syncFeedVideos();
 
   if(A.replyPostId){
     const ri=document.getElementById('reply-input');
@@ -6863,6 +7204,24 @@ function showToast(msg){
 }
 // Subtle haptic feedback (no-op where unsupported)
 let _hapticsOn = (()=>{ try{ return localStorage.getItem('moments-haptics')!=='0'; }catch(_){ return true; } })();
+// Autoplay videos in the feed. Device-local (like haptics), default ON everywhere;
+// turning this on restricts autoplay to Wi-Fi. Videos are encrypted as one blob and
+// must download in full before a frame can play, so on mobile data this is a real cost.
+let _autoplayWifiOnly = (()=>{ try{ return localStorage.getItem('moments-autoplay-wifi')==='1'; }catch(_){ return false; } })();
+function setAutoplayWifi(on){ _autoplayWifiOnly=!!on; try{ localStorage.setItem('moments-autoplay-wifi', on?'1':'0'); }catch(_){ } renderApp(); }
+// Is autoplay allowed right now? Only false when the Wi-Fi-only setting is on and we
+// can see we're NOT on Wi-Fi. If the browser won't tell us the connection type
+// (Safari/iOS has no NetworkInformation), we err on the side of NOT autoplaying —
+// silently burning someone's mobile data is worse than a video that waits for a tap.
+function autoplayAllowed(){
+  if(!_autoplayWifiOnly) return true;
+  try{
+    const c=navigator.connection||navigator.mozConnection||navigator.webkitConnection;
+    if(c && typeof c.type==='string') return c.type==='wifi' || c.type==='ethernet';
+    if(c && c.saveData) return false;
+  }catch(_){}
+  return false;
+}
 function setHaptics(on){ _hapticsOn=!!on; try{ localStorage.setItem('moments-haptics', on?'1':'0'); }catch(_){ } if(on){ try{ navigator.vibrate&&navigator.vibrate(12); }catch(_){ } } renderApp(); }
 // Three felt tiers, enforced here so call sites can't drift: 10ms light (taps,
 // selection), 18ms medium (something happened — sent, copied, voted), 30ms strong

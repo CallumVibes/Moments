@@ -568,7 +568,58 @@ function short(u){ return u.replace(/^https?:\/\//,'').replace(/\/$/,''); }
    RELAYS + NETWORK ENCRYPTION (cross-device sync)
 ════════════════════════════════════════════ */
 const DEFAULT_RELAYS=['wss://relay.damus.io','wss://nos.lol','wss://relay.primal.net','wss://relay.snort.social'];
-function activeRelays(){ return (A&&A.relays&&A.relays.length)?A.relays:DEFAULT_RELAYS; }
+function activeRelays(){
+  // The connection pool is the UNION of: the global relay list (or defaults), plus
+  // every network's own chosen relays. This is how per-network relay choice works
+  // without per-network sockets — a network's events only appear where they were
+  // published (every event carries the network tag), and we just hold open the
+  // superset of sockets. De-duplicated, order-stable.
+  const base=(A&&A.relays&&A.relays.length)?A.relays:DEFAULT_RELAYS;
+  const set=new Set(base);
+  try{
+    if(A&&A.networks){ Object.values(A.networks).forEach(n=>{ if(Array.isArray(n.relays)) n.relays.forEach(u=>set.add(u)); }); }
+  }catch(_){}
+  return Array.from(set);
+}
+// Relay presets offered when creating a network. The choice is stored on the
+// network (net.relays); the app connects to the UNION of every network's relays,
+// and each network's events only land where they were published because every
+// event carries the network tag. Nothing selected => the public defaults.
+const RELAY_PRESETS={
+  'public': DEFAULT_RELAYS.slice(),
+  // The Moments relay isn't live yet — chosen networks fall back to public until it is.
+  'moments': DEFAULT_RELAYS.slice()
+};
+// Draft relay choice on the create screen: 'public' | 'moments' | 'custom'.
+let _createRelayChoice='public';
+let _createCustomRelays='';
+function setCreateRelay(choice){ _createRelayChoice=choice; renderApp(); }
+function setCustomRelays(v){ _createCustomRelays=v; }
+// Parse the custom textarea into a clean wss:// list. Rejects anything that isn't
+// a plausible secure relay URL — a bad relay silently breaks a network's sync.
+function parseCustomRelays(raw){
+  return String(raw||'').split(/[\s,]+/).map(x=>x.trim()).filter(Boolean)
+    .map(x=>{
+      // Reject insecure ws:// outright rather than silently "fixing" it — a relay
+      // that isn't wss is a downgrade the user should notice, not something we hide.
+      if(/^ws:\/\//i.test(x)) return null;
+      if(!/^wss:\/\//i.test(x)) x='wss://'+x;   // bare host -> wss://host
+      return x;
+    })
+    .filter(Boolean)
+    // Require a real host: at least one dot, valid label chars, optional port/path.
+    .filter(x=> /^wss:\/\/([a-z0-9-]+\.)+[a-z0-9-]+(:[0-9]{1,5})?(\/[^\s]*)?$/i.test(x))
+    .slice(0, 8);
+}
+// The relay list a newly-created network should use, from the current draft choice.
+function chosenCreateRelays(){
+  if(_createRelayChoice==='custom'){
+    const list=parseCustomRelays(_createCustomRelays);
+    return list.length ? list : null;   // no valid custom entries => fall back to public
+  }
+  if(_createRelayChoice==='moments') return RELAY_PRESETS.moments.slice();
+  return null;   // 'public' => null means "use defaults", keeping old networks identical
+}
 const MOMENTS_KIND=1818;
 
 const Relay=(()=>{
@@ -2775,6 +2826,8 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
   { v:'0.9.0', date:'July 2026', title:'A few frames', changes:[
+    ['fix','Feed filters are now \u201c7d\u201d and \u201c14d\u201d (a rolling window) instead of calendar weeks \u2014 a recent post no longer disappears from view just because a new week started'],
+    ['new','When creating a network you can now choose where it posts \u2014 the standard public relays (default), or your own \u2014 with a Moment\u2019s relay option coming soon'],
     ['fix','Your phone\u2019s back button now closes whatever you have open \u2014 a photo, settings, the camera \u2014 instead of closing Moment\u2019s'],
     ['new','Videos now start playing on their own as you scroll to them, and stop when you scroll away \u2014 silently, tap to open with sound'],
     ['new','New setting: autoplay on Wi-Fi only, so videos never use your mobile data unless you ask'],
@@ -3202,6 +3255,12 @@ function buildAdvanced(){
 
     <div style="padding:16px 16px 48px;display:flex;flex-direction:column;gap:16px">
 
+      <!-- Coming soon -->
+      <div style="background:${C.surface};border:1px solid ${C.accentBorder};border-radius:16px;padding:16px;display:flex;align-items:center;gap:12px">
+        <span style="font-size:20px;flex-shrink:0">🛰️</span>
+        <div style="color:${C.text};font-size:13px;font-weight:600;line-height:1.5">A dedicated hosted Moments relay <span style="color:${C.accent}">coming soon</span></div>
+      </div>
+
       <!-- Relay management -->
       <div style="background:${C.surface};border-radius:18px;padding:18px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -3241,12 +3300,6 @@ function buildAdvanced(){
         <div style="color:${C.text};font-size:13px;font-weight:700;margin-bottom:6px">Cached photos</div>
         <div style="color:${C.muted};font-size:12px;line-height:1.6;margin-bottom:12px">Moments keeps decrypted photos on your device so they load instantly next time. Clearing is safe — they re-download from your network when you view them again. Your posts, networks, and key are never affected.</div>
         <button onclick="clearMediaCache()" style="width:100%;background:${C.surfaceHigh};color:${C.text};border:1px solid var(--c-border);border-radius:12px;padding:11px 0;font-size:13px;font-weight:700;cursor:pointer">Clear cached photos</button>
-      </div>
-
-      <!-- Coming soon -->
-      <div style="background:${C.surface};border:1px solid ${C.accentBorder};border-radius:16px;padding:16px;display:flex;align-items:center;gap:12px">
-        <span style="font-size:20px;flex-shrink:0">🛰️</span>
-        <div style="color:${C.text};font-size:13px;font-weight:600;line-height:1.5">A dedicated hosted Moments relay <span style="color:${C.accent}">coming soon</span></div>
       </div>
 
       ${canVanish() ? `
@@ -3874,20 +3927,25 @@ function setFeedRange(r){ A.feedRange=r; haptic(6); renderApp(); }
    appear under All. Single source of truth: the feed and a profile must never
    disagree about which week a photo is in. */
 function rangePredicate(range){
-  const now=new Date(); now.setHours(0,0,0,0);
-  const monday=Math.floor((now.getTime()-(((now.getDay()+6)%7)*86400000))/1000);
-  const lastMonday=monday-7*86400;
+  // Rolling windows, not calendar weeks. Calendar weeks meant a Sunday post could
+  // drop out of "this week" at Monday 00:00 and be missed by anyone who only checks
+  // the recent tab. A rolling window keeps a post visible for a fixed span from when
+  // it was made, regardless of what day you look. "7d" = last 7 days; "14d" = the
+  // 7 days before that (8–14 days ago).
+  const nowSec=Math.floor(Date.now()/1000);
+  const d7=nowSec-7*86400;
+  const d14=nowSec-14*86400;
   return p=>{
     if(range==='all') return true;
     if(!p.ts) return false;
-    if(range==='week') return p.ts>=monday;
-    return p.ts>=lastMonday && p.ts<monday;   // lastweek
+    if(range==='week') return p.ts>=d7;          // last 7 days
+    return p.ts>=d14 && p.ts<d7;                  // 8–14 days ago
   };
 }
 // Chips markup, reused by both. `active` is the current value; `fn` the setter.
 function rangeChips(active, fn, pad){
   return `<div style="display:flex;gap:6px;padding:${pad||'0'}">
-    ${[['week','This week'],['lastweek','Last week'],['all','All']].map(([k,label])=>`
+    ${[['week','7d'],['lastweek','14d'],['all','All']].map(([k,label])=>`
       <button onclick="${fn}('${k}')" style="flex:1;background:${active===k?C.accentDim:C.bg};border:1px solid ${active===k?C.accentBorder:'var(--c-border)'};color:${active===k?C.accent:C.muted};border-radius:20px;padding:7px 0;font-size:12px;font-weight:700;cursor:pointer">${label}</button>`).join('')}
   </div>`;
 }
@@ -4433,6 +4491,11 @@ function createNetwork(){
     membersCanPost:true,   // everyone can post by default until the owner changes it
     members:[{id:"u1",name:A.profile.name||"You",emoji:"🧡",color:C.warm,isMe:true,npub:A.npub,avatar:A.profile.avatar||null,bio:A.profile.bio||"",signal:normSignal(A.profile.signal)}],
     posts:[] };
+  // Per-network relay choice from the create screen. null = public defaults, so
+  // networks made before this feature (and 'Public' picks) behave identically.
+  const _cr=chosenCreateRelays();
+  if(_cr && _cr.length) A.networks[id].relays=_cr;
+  _createRelayChoice='public'; _createCustomRelays='';   // reset the draft
   saveData(); switchNetwork(id);
   haptic(18); showToast('Network created');
   requestNotifPermission();
@@ -5880,6 +5943,27 @@ function buildJoinScreen(){
     <div style="width:100%;background:${C.surface};border-radius:18px;padding:16px;margin-top:4px">
       <div style="color:${C.textDim};font-size:11px;margin-bottom:10px">Name your network</div>
       <input id="join-name-input" placeholder="e.g. Family" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:15px;font-family:'Inter',sans-serif;margin-bottom:10px"/>
+      <div style="margin-top:14px">
+        <div style="color:${C.textDim};font-size:11px;margin-bottom:8px">Where this network posts</div>
+        <div style="display:flex;gap:6px">
+          ${[['public','Public'],['moments','Moment\u2019s'],['custom','Choose']].map(([k,label])=>{
+            const on=_createRelayChoice===k;
+            const soon=(k==='moments');
+            return `<button onclick="${soon?'':`setCreateRelay('${k}')`}" ${soon?'disabled':''} style="flex:1;background:${on?C.accentDim:C.surfaceHigh};border:1px solid ${on?C.accentBorder:'transparent'};color:${soon?C.muted:(on?C.accent:C.text)};border-radius:12px;padding:9px 4px;font-size:12px;font-weight:700;cursor:${soon?'default':'pointer'};opacity:${soon?0.6:1};position:relative">${label}</button>`;
+          }).join('')}
+        </div>
+        ${_createRelayChoice==='moments'?`<div style="color:${C.muted};font-size:11px;margin-top:8px">Moment\u2019s relay coming soon.</div>`:''}
+        ${_createRelayChoice==='custom'?`
+          <div style="margin-top:10px">
+            <textarea oninput="setCustomRelays(this.value)" placeholder="wss://relay.example.com (one per line)" rows="3" style="width:100%;background:${C.surfaceHigh};border:1px solid var(--c-border);outline:none;border-radius:12px;padding:10px 12px;color:${C.text};font-size:13px;resize:none;font-family:inherit">${esc(_createCustomRelays)}</textarea>
+            <div style="color:${C.warn||'#d98324'};font-size:11px;margin-top:6px;line-height:1.5">Advanced: your network only works if these relays are online and accept your posts. If unsure, use Public.</div>
+          </div>`:''}
+        <div style="display:flex;gap:7px;align-items:flex-start;margin-top:10px;background:${C.surfaceHigh};border-radius:10px;padding:9px 11px">
+          <span style="flex-shrink:0;font-size:13px;line-height:1.5">🔒</span>
+          <div style="color:${C.textDim};font-size:11px;line-height:1.55">Everything is encrypted for this network before it leaves your phone. Whichever relay you pick \u2014 including the public ones \u2014 only ever stores scrambled data it can\u2019t read. Only people with your network\u2019s code can see your photos.</div>
+        </div>
+        <div style="color:${C.muted};font-size:11px;margin-top:8px">Optional \u2014 leave on Public and your network uses the standard relays.</div>
+      </div>
       <button onclick="createNetwork()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer">Create network</button>
     </div>
 
@@ -5923,7 +6007,7 @@ function buildFeed(net){
       : range!=='all' && net.posts.length
       ? `<div style="text-align:center;padding:44px 28px;line-height:1.7">
          <div style="font-size:34px;margin-bottom:10px">🗓️</div>
-         <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:4px">Nothing ${range==='week'?'this week':'last week'}</div>
+         <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:4px">Nothing ${range==='week'?'in the last 7 days':'from 8–14 days ago'}</div>
          <div style="color:${C.muted};font-size:13px">Switch to All to see every moment.</div>
        </div>`
       : `<div style="text-align:center;padding:44px 28px;line-height:1.7">

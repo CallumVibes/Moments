@@ -2879,6 +2879,16 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 
 // ── Release notes (newest first). Bump the top entry's version on each build. ──
 const CHANGELOG=[
+  { v:'0.9.1', date:'July 2026', title:'In focus', changes:[
+    ['fix','Invite QR codes now scan \u2014 they were being drawn slightly wrong, so phone cameras couldn\u2019t read them. Point a camera at one and it opens the join link'],
+    ['change','Invite QR codes are larger and sharper, so they\u2019re easier to scan from another phone\u2019s screen'],
+    ['fix','When you join a network, other members\u2019 profile pictures, bios and Signal usernames now show right away \u2014 before, someone\u2019s details could stay blank if you\u2019d only received a like or a post from them first. Anyone already showing blank fills in on the next sync'],
+    ['fix','Delete account data is back in Advanced for identities created by joining via an invite link \u2014 the option is offered for any key Moment\u2019s made, however you started. Keys you brought from another app still don\u2019t show it, on purpose'],
+    ['fix','Text posts now read cleanly on a member\u2019s profile \u2014 they were being squeezed into little photo tiles with the words crammed at the bottom. They now show as proper text cards, the same as in the feed'],
+    ['change','A profile now shows photos and text posts together in date order, instead of all photos first and text posts below \u2014 so a recent text post no longer hides beneath older pictures'],
+    ['fix','The create-or-join screen now scrolls, so the \u201center a code\u201d box at the bottom is always reachable \u2014 on shorter screens it could sit off the bottom with no way to scroll to it'],
+    ['fix','Photos now load properly when Moment\u2019s is opened from a saved copy of the page instead of the website'],
+  ]},
   { v:'0.9.0', date:'July 2026', title:'A few frames', changes:[
     ['fix','Feed filters are now \u201c7d\u201d and \u201c14d\u201d (a rolling window) instead of calendar weeks \u2014 a recent post no longer disappears from view just because a new week started'],
     ['new','When creating a network you can now choose where it posts \u2014 the standard public relays (default), or your own \u2014 with a Moment\u2019s relay option coming soon'],
@@ -2889,12 +2899,6 @@ const CHANGELOG=[
     ['new','Pick several photos at once, or add them one at a time with the + button before you share'],
     ['new','The camera can do it too \u2014 take a shot, tap + Add, and keep going up to 4 before sharing them as one moment'],
     ['new','Open a moment to see every photo full-width, and tap any one of them to fill the screen'],
-    ['fix','Photos now load properly when Moment\u2019s is opened from a saved copy of the page instead of the website'],
-    ['fix','Invite QR codes now scan \u2014 they were being drawn slightly wrong, so phone cameras couldn\u2019t read them. Point a camera at one and it opens the join link'],
-    ['change','Invite QR codes are larger and sharper, so they\u2019re easier to scan from another phone\u2019s screen'],
-    ['fix','When you join a network, other members\u2019 profile pictures, bios and Signal usernames now show right away \u2014 before, someone\u2019s details could stay blank if you\u2019d only received a like or a post from them first. Anyone already showing blank fills in on the next sync'],
-    ['fix','Delete account data is back in Advanced for identities created by joining via an invite link \u2014 the option is offered for any key Moment\u2019s made, however you started. Keys you brought from another app still don\u2019t show it, on purpose'],
-    ['fix','Text posts now read cleanly on a member\u2019s profile \u2014 they were being squeezed into little photo tiles with the words crammed at the bottom. They now show as proper text cards, the same as in the feed'],
   ]},
   { v:'0.8.9', date:'July 2026', title:'Foundations', changes:[
     ['fix','Your profile is more reliable everywhere \u2014 the app now handles your name, bio, picture and Signal in one consistent place, closing a class of bugs where a field could go missing'],
@@ -6000,7 +6004,7 @@ function qrSVG(text, size){
 function buildJoinScreen(){
   const hasNets=Object.keys(A.networks).length>0;
   return `
-  <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 28px 40px;gap:16px">
+  <div style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;align-items:center;padding:24px 28px 48px;gap:16px">
     <div style="font-size:46px">📸</div>
     <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:25px;font-weight:600;text-align:center;line-height:1.2">Your photos,<br/>your people</div>
     <div style="color:${C.textDim};font-size:13px;text-align:center;line-height:1.65;max-width:280px">Create a private network or enter a code to join one. Only the people you invite can see anything.</div>
@@ -6433,8 +6437,6 @@ function buildMyPage(net){
       </div>
     </div>` : "";
 
-  const photoPosts=myPosts.filter(p=>p.image||p.enc);
-  const textPosts=myPosts.filter(p=>!p.image&&!p.enc);
   const actionRow=(p)=>`
     <div style="display:flex;align-items:center;gap:14px">
       <button class="like-btn" data-like-pid="${p.id}" onclick="toggleLike('${p.id}')" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:4px;color:${p.liked?C.warm:C.muted};font-size:12px;font-weight:600">
@@ -6445,7 +6447,7 @@ function buildMyPage(net){
       </button>
     </div>`;
 
-  const photoGrid = photoPosts.length? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:${textPosts.length?'12px':'0'}">${photoPosts.map(p=>`
+  const photoCard=(p)=>`
         <div style="background:${C.surface};border-radius:16px;overflow:hidden;display:flex;flex-direction:column">
           <div onclick="openPostView('${p.id}')" ${(()=>{const pb=photoBox(net,p);return pb.attr;})()} style="position:relative;height:140px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()}">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
             <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${p.id}')" style="position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.55);border:none;color:#fff;border-radius:8px;padding:2px 7px;cursor:pointer;font-size:14px;font-weight:700;line-height:1.4">···</button>
@@ -6454,9 +6456,9 @@ function buildMyPage(net){
             <div style="color:${C.textDim};font-size:11px;font-family:'Playfair Display',serif;font-style:italic;margin-bottom:8px;min-height:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(captionSansLink(p))}</div>
             ${actionRow(p)}
           </div>
-        </div>`).join('')}</div>` : '';
+        </div>`;
 
-  const textList = textPosts.length? `<div style="display:flex;flex-direction:column;gap:12px">${textPosts.map(p=>`
+  const textCard=(p)=>`
         <div style="background:${C.surface};border-radius:16px;padding:14px 16px">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
             <div onclick="openPostView('${p.id}')" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word;flex:1">${esc(captionSansLink(p))}</div>
@@ -6466,7 +6468,18 @@ function buildMyPage(net){
           ${p.poll?`<div style="margin-top:10px">${pollHTML(net,p)}</div>`:''}
           ${p.link?linkCardHTML(p):''}
           <div style="margin-top:12px">${actionRow(p)}</div>
-        </div>`).join('')}</div>` : '';
+        </div>`;
+
+  // Same date-order interleave as a member's profile: consecutive photo posts pack
+  // into a 2-up grid, text posts break the run as full-width cards, so nothing sinks
+  // below everything else just because of its type.
+  const interleaved = (()=>{
+    const out=[]; let run=[];
+    const flush=()=>{ if(run.length){ out.push(`<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">${run.map(photoCard).join('')}</div>`); run=[]; } };
+    myPosts.forEach(p=>{ if(p.image||p.enc) run.push(p); else { flush(); out.push(textCard(p)); } });
+    flush();
+    return out.join('');
+  })();
 
   const grid = myPosts.length===0
     ? `<div style="text-align:center;padding:44px 24px;line-height:1.7">
@@ -6475,7 +6488,7 @@ function buildMyPage(net){
          <div style="color:${C.muted};font-size:13px;margin-bottom:18px">Your photos and posts will show up here.</div>
          <button onclick="addPhotoQuick()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:12px 22px;font-size:14px;font-weight:700;cursor:pointer">Share your first moment</button>
        </div>`
-    : photoGrid + textList;
+    : `<div style="display:flex;flex-direction:column;gap:12px">${interleaved}</div>`;
 
   // Profile header (avatar, name, bio) + Edit
   const prof=A.profile||{name:'You',bio:'',avatar:null};
@@ -6559,26 +6572,29 @@ function buildProfile(net){
       <div style="color:${C.text};font-size:20px;font-weight:700;font-family:'Playfair Display',serif">${s[1]}</div>
       <div style="color:${C.muted};font-size:11px;margin-top:2px">${s[0]}</div>
     </div>`).join('');
-  // Text-only posts have no image, so forcing them into square photo tiles with a
-  // caption-overlay gradient looked broken on a member's profile. Split them out and
-  // render them as readable cards — the same treatment My Page gives your own text
-  // posts (minus the edit menu, since a member's profile is read-only).
-  const photoPosts=myPosts.filter(p=>p.image||p.enc);
-  const textPosts=myPosts.filter(p=>!p.image&&!p.enc);
-  const photoGrid = photoPosts.length? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:${textPosts.length?'12px':'0'}">${photoPosts.map(p=>`
-        <div onclick="openPostView('${p.id}')" ${(()=>{const pb=photoBox(net,p);return pb.attr;})()} style="border-radius:16px;height:155px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()};position:relative;overflow:hidden">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
-          ${captionSansLink(p)?`<div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.5));padding:8px 10px;color:#FAF8F5;font-size:11px;font-family:'Playfair Display',serif">${esc(captionSansLink(p))}</div>`:''}
-        </div>`).join('')}</div>` : '';
-  const textList = textPosts.length? `<div style="display:flex;flex-direction:column;gap:12px">${textPosts.map(p=>`
-        <div style="background:${C.surface};border-radius:16px;padding:14px 16px">
-          <div onclick="openPostView('${p.id}')" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(p))}</div>
-          <div class="post-time" data-ts="${p.ts||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span></div>
-          ${p.poll?`<div style="margin-top:10px">${pollHTML(net,p)}</div>`:''}
-          ${p.link?linkCardHTML(p):''}
-        </div>`).join('')}</div>` : '';
+  // Show posts in date order (newest first — net.posts is kept sorted). Consecutive
+  // photo posts pack into a 2-up gallery row; a text post breaks the run and shows
+  // as a full-width card at its place in the timeline, so text and photos interleave
+  // by date instead of every text post sinking below the photos.
+  const photoTile = (p)=>`<div onclick="openPostView('${p.id}')" ${(()=>{const pb=photoBox(net,p);return pb.attr;})()} style="border-radius:16px;height:155px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()};position:relative;overflow:hidden">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
+        ${captionSansLink(p)?`<div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.5));padding:8px 10px;color:#FAF8F5;font-size:11px;font-family:'Playfair Display',serif">${esc(captionSansLink(p))}</div>`:''}
+      </div>`;
+  const textCard = (p)=>`<div style="background:${C.surface};border-radius:16px;padding:14px 16px">
+        <div onclick="openPostView('${p.id}')" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(p))}</div>
+        <div class="post-time" data-ts="${p.ts||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span></div>
+        ${p.poll?`<div style="margin-top:10px">${pollHTML(net,p)}</div>`:''}
+        ${p.link?linkCardHTML(p):''}
+      </div>`;
+  const interleaved = (()=>{
+    const out=[]; let run=[];
+    const flush=()=>{ if(run.length){ out.push(`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${run.map(photoTile).join('')}</div>`); run=[]; } };
+    myPosts.forEach(p=>{ if(p.image||p.enc) run.push(p); else { flush(); out.push(textCard(p)); } });
+    flush();
+    return out.join('');
+  })();
   const grid = myPosts.length===0
     ? `<div style="text-align:center;color:${C.muted};font-size:13px;padding:40px 0">No posts yet</div>`
-    : (photoGrid + textList);
+    : `<div style="display:flex;flex-direction:column;gap:12px">${interleaved}</div>`;
 
   return `
   <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:60;display:flex;flex-direction:column;overflow-y:auto">

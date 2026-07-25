@@ -958,7 +958,19 @@ async function handleRemoteEvent(netId, ev){
      && !(net.departed && net.departed[pk] && ev.created_at <= (net.departed[pk].ts||0))){
     // signal was missing here: a new member's handle wouldn't appear until their
     // SECOND profile event, since only the update branch below set it.
-    const m={ id:pk, name:normName(payload.name)||'Friend', emoji:memEmoji(pk), color:memColor(pk), avatar:payload.avatar||null, avatarEnc:payload.avatarEnc||null, bio:normBio(payload.bio), signal:normSignal(payload.sig), idFieldTs:(ev.created_at||0) };
+    // Per-field identity clocks. Different event types carry different identity
+    // fields (likes: name only; posts/replies: name+bio+signal, NO avatar; only a
+    // profile event carries the avatar). A single shared clock let a recent
+    // name-only like — replayed first during backfill — set the clock high enough
+    // to reject the member's OWN older profile event, so their picture (and, when
+    // created from a like, their bio and signal) never showed for new joiners.
+    // Seed each field's clock only for the fields THIS event actually carried.
+    const _cts=ev.created_at||0;
+    const _hasAv=(payload.avatar!==undefined||payload.avatarEnc!==undefined||!!payload.avatarRemoved);
+    const _hasSig=(payload.sig!==undefined||!!payload.sigRemoved);
+    const m={ id:pk, name:normName(payload.name)||'Friend', emoji:memEmoji(pk), color:memColor(pk), avatar:payload.avatar||null, avatarEnc:payload.avatarEnc||null, bio:normBio(payload.bio), signal:normSignal(payload.sig),
+      fieldTs:{ name:(payload.name!==undefined?_cts:0), avatar:(_hasAv?_cts:0), bio:(payload.bio!==undefined?_cts:0), signal:(_hasSig?_cts:0) },
+      idFieldTs:_cts };
     net.members.push(m);
     if(m.avatarEnc) ensureAvatar(net, m);
     changed=true;
@@ -979,23 +991,50 @@ async function handleRemoteEvent(netId, ev){
   } else if(!mine && carriesIdentity){
     const mem=net.members.find(m=>m.id===pk);
     if(mem){
-      // Identity fields (name/bio/signal) now ride on posts and replies, not just
-      // profile events. Backfill replays events in arbitrary order, so an OLD post
-      // carrying an empty/stale bio can arrive AFTER a newer profile and clobber it —
-      // which showed up as "bio appears, then vanishes on refresh". Gate every
-      // identity field on the event's timestamp: only a newer event may change it.
-      // mem.idFieldTs is the created_at of the event that last set these fields.
+      // Identity fields ride on different event types, so each carries its own
+      // freshness clock (see member-creation note). A newer event may only change a
+      // field it actually carries — a name-only like can't block an older profile's
+      // avatar, and a bio-carrying post can't block a newer profile's picture.
+      // Backfill still replays in arbitrary order; per-field clocks make the outcome
+      // order-independent. Migrate legacy members (single idFieldTs) on first touch.
       const _evTs = ev.created_at || 0;
-      const _fresh = _evTs >= (mem.idFieldTs||0);
-      if(_fresh && payload.name && mem.name!==normName(payload.name)){ mem.name=normName(payload.name); changed=true; }
-      if(_fresh && payload.avatar && mem.avatar!==payload.avatar){ mem.avatar=payload.avatar; mem.avatarEnc=null; changed=true; }
-      if(_fresh && payload.avatarEnc && JSON.stringify(mem.avatarEnc)!==JSON.stringify(payload.avatarEnc)){ mem.avatarEnc=payload.avatarEnc; ensureAvatar(net, mem); changed=true; }
-      if(_fresh && payload.avatarRemoved && (mem.avatar || mem.avatarEnc)){ mem.avatar=null; mem.avatarEnc=null; changed=true; }  // they cleared their picture
-      if(_fresh && payload.bio!==undefined && mem.bio!==normBio(payload.bio)){ mem.bio=normBio(payload.bio); changed=true; }
-      if(_fresh && payload.sig!==undefined){ const v=normSignal(payload.sig); if(mem.signal!==v){ mem.signal=v; changed=true; } }
-      else if(_fresh && payload.sigRemoved && mem.signal){ mem.signal=''; changed=true; }
-      // Advance the identity-field clock only when this event actually carried
-      // identity (name is present on every post/reply/profile that does).
+      if(!mem.fieldTs){
+        // Migrate legacy members (single idFieldTs). A field that already holds a
+        // value keeps the old clock so a stale event can't clobber it; an EMPTY
+        // field opens to 0 so the member's own (older) profile event can finally
+        // fill it — this is what lets already-broken installs self-heal on sync
+        // rather than waiting for the member to republish.
+        const _o=mem.idFieldTs||0;
+        mem.fieldTs={
+          name:(mem.name && mem.name!=='Friend')?_o:0,
+          avatar:(mem.avatar||mem.avatarEnc)?_o:0,
+          bio:mem.bio?_o:0,
+          signal:mem.signal?_o:0 };
+      }
+      if(payload.name!==undefined && _evTs >= (mem.fieldTs.name||0)){
+        const _nn=normName(payload.name);
+        if(_nn && mem.name!==_nn){ mem.name=_nn; changed=true; }
+        if(_evTs > (mem.fieldTs.name||0)) mem.fieldTs.name=_evTs;
+      }
+      const _hasAv=(payload.avatar!==undefined||payload.avatarEnc!==undefined||!!payload.avatarRemoved);
+      if(_hasAv && _evTs >= (mem.fieldTs.avatar||0)){
+        if(payload.avatar && mem.avatar!==payload.avatar){ mem.avatar=payload.avatar; mem.avatarEnc=null; changed=true; }
+        else if(payload.avatarEnc && JSON.stringify(mem.avatarEnc)!==JSON.stringify(payload.avatarEnc)){ mem.avatarEnc=payload.avatarEnc; ensureAvatar(net, mem); changed=true; }
+        else if(payload.avatarRemoved && (mem.avatar || mem.avatarEnc)){ mem.avatar=null; mem.avatarEnc=null; changed=true; }
+        if(_evTs > (mem.fieldTs.avatar||0)) mem.fieldTs.avatar=_evTs;
+      }
+      if(payload.bio!==undefined && _evTs >= (mem.fieldTs.bio||0)){
+        const _nb=normBio(payload.bio);
+        if(mem.bio!==_nb){ mem.bio=_nb; changed=true; }
+        if(_evTs > (mem.fieldTs.bio||0)) mem.fieldTs.bio=_evTs;
+      }
+      const _hasSig=(payload.sig!==undefined||!!payload.sigRemoved);
+      if(_hasSig && _evTs >= (mem.fieldTs.signal||0)){
+        if(payload.sig!==undefined){ const v=normSignal(payload.sig); if(mem.signal!==v){ mem.signal=v; changed=true; } }
+        else if(payload.sigRemoved && mem.signal){ mem.signal=''; changed=true; }
+        if(_evTs > (mem.fieldTs.signal||0)) mem.fieldTs.signal=_evTs;
+      }
+      // Keep the legacy single clock advancing for any other reader of idFieldTs.
       if(payload.name!==undefined && _evTs > (mem.idFieldTs||0)){ mem.idFieldTs=_evTs; }
     }
   }
@@ -1618,6 +1657,9 @@ function startInviteSignup(){
   openModal('signup');
   try{
     const keys=nostrGenerate();
+    _keyGeneratedHere=true;   // born in Moments, same as the main signup path — without
+                              // this, invite-flow identities were wrongly marked imported
+                              // and never saw the Delete-account-data option
     _nsec=keys.nsec; _npub=keys.npub;
     const dec=bech32Decode(_nsec); _sk=dec?dec.bytes:null;
     // Populate the key screen anyway so it's correct if the user ever navigates back
@@ -2850,6 +2892,9 @@ const CHANGELOG=[
     ['fix','Photos now load properly when Moment\u2019s is opened from a saved copy of the page instead of the website'],
     ['fix','Invite QR codes now scan \u2014 they were being drawn slightly wrong, so phone cameras couldn\u2019t read them. Point a camera at one and it opens the join link'],
     ['change','Invite QR codes are larger and sharper, so they\u2019re easier to scan from another phone\u2019s screen'],
+    ['fix','When you join a network, other members\u2019 profile pictures, bios and Signal usernames now show right away \u2014 before, someone\u2019s details could stay blank if you\u2019d only received a like or a post from them first. Anyone already showing blank fills in on the next sync'],
+    ['fix','Delete account data is back in Advanced for identities created by joining via an invite link \u2014 the option is offered for any key Moment\u2019s made, however you started. Keys you brought from another app still don\u2019t show it, on purpose'],
+    ['fix','Text posts now read cleanly on a member\u2019s profile \u2014 they were being squeezed into little photo tiles with the words crammed at the bottom. They now show as proper text cards, the same as in the feed'],
   ]},
   { v:'0.8.9', date:'July 2026', title:'Foundations', changes:[
     ['fix','Your profile is more reliable everywhere \u2014 the app now handles your name, bio, picture and Signal in one consistent place, closing a class of bugs where a field could go missing'],
@@ -6514,12 +6559,26 @@ function buildProfile(net){
       <div style="color:${C.text};font-size:20px;font-weight:700;font-family:'Playfair Display',serif">${s[1]}</div>
       <div style="color:${C.muted};font-size:11px;margin-top:2px">${s[0]}</div>
     </div>`).join('');
-  const grid = myPosts.length===0
-    ? `<div style="text-align:center;color:${C.muted};font-size:13px;padding:40px 0">No photos yet</div>`
-    : `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${myPosts.map(p=>`
+  // Text-only posts have no image, so forcing them into square photo tiles with a
+  // caption-overlay gradient looked broken on a member's profile. Split them out and
+  // render them as readable cards — the same treatment My Page gives your own text
+  // posts (minus the edit menu, since a member's profile is read-only).
+  const photoPosts=myPosts.filter(p=>p.image||p.enc);
+  const textPosts=myPosts.filter(p=>!p.image&&!p.enc);
+  const photoGrid = photoPosts.length? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:${textPosts.length?'12px':'0'}">${photoPosts.map(p=>`
         <div onclick="openPostView('${p.id}')" ${(()=>{const pb=photoBox(net,p);return pb.attr;})()} style="border-radius:16px;height:155px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()};position:relative;overflow:hidden">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
-          <div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.5));padding:8px 10px;color:#FAF8F5;font-size:11px;font-family:'Playfair Display',serif">${esc(captionSansLink(p))}</div>
-        </div>`).join('')}</div>`;
+          ${captionSansLink(p)?`<div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.5));padding:8px 10px;color:#FAF8F5;font-size:11px;font-family:'Playfair Display',serif">${esc(captionSansLink(p))}</div>`:''}
+        </div>`).join('')}</div>` : '';
+  const textList = textPosts.length? `<div style="display:flex;flex-direction:column;gap:12px">${textPosts.map(p=>`
+        <div style="background:${C.surface};border-radius:16px;padding:14px 16px">
+          <div onclick="openPostView('${p.id}')" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(p))}</div>
+          <div class="post-time" data-ts="${p.ts||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span></div>
+          ${p.poll?`<div style="margin-top:10px">${pollHTML(net,p)}</div>`:''}
+          ${p.link?linkCardHTML(p):''}
+        </div>`).join('')}</div>` : '';
+  const grid = myPosts.length===0
+    ? `<div style="text-align:center;color:${C.muted};font-size:13px;padding:40px 0">No posts yet</div>`
+    : (photoGrid + textList);
 
   return `
   <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:60;display:flex;flex-direction:column;overflow-y:auto">
@@ -6545,7 +6604,7 @@ function buildProfile(net){
     </div>
     <div style="display:flex;margin:0 24px 24px;background:${C.surface};border-radius:18px;overflow:hidden">${statHtml}</div>
     <div style="padding:0 16px 40px">
-      <div style="color:${C.textDim};font-size:10px;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:10px;padding-left:4px">Photos</div>
+      <div style="color:${C.textDim};font-size:10px;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:10px;padding-left:4px">Posts</div>
       <div style="margin-bottom:12px">${rangeChips(pRange,'setProfileRange')}</div>
       ${(myPosts.length===0 && allTheirPosts.length>0)
         ? `<div style="text-align:center;padding:28px 20px;color:${C.muted};font-size:13px;line-height:1.6">Nothing ${pRange==='week'?'this week':'last week'}.<br><span style="color:${C.textDim}">Switch to All to see every moment.</span></div>`

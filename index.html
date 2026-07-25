@@ -814,10 +814,15 @@ async function handleRemoteEvent(netId, ev){
   // the identity-field freshness guards, leave/rejoin ordering, and dedup all
   // treat "newer" as "wins". A validly-signed event stamped far in the future
   // would win every one of those comparisons permanently, pinning a post or
-  // profile above everyone else's forever. Reject anything more than ~5 min ahead
-  // of this device's clock. We only clamp the FUTURE: past-dating is
-  // indistinguishable from a legitimate backfill of old events, so it's allowed.
-  if(ev.created_at && ev.created_at > Math.floor(Date.now()/1000) + 300) return;
+  // profile above everyone else's forever. Reject anything more than 15 min ahead
+  // of this device's clock. That window matches the future-drift most relays already
+  // tolerate (e.g. strfry's default), so we don't re-drop honest posts from a peer
+  // whose clock runs a little fast, or blank the feed when THIS device's clock is a
+  // few minutes slow — while still blocking gross future-dating. We only clamp the
+  // FUTURE: past-dating is indistinguishable from a legitimate backfill of old
+  // events, so it's allowed. A near-future event dropped here self-heals — relays
+  // re-deliver it on the next backfill, by which point it has aged into the past.
+  if(ev.created_at && ev.created_at > Math.floor(Date.now()/1000) + 900) return;
   if(!markSeen(ev.id)) return;
   const net=A.networks[netId]; if(!net) return;
 
@@ -1079,7 +1084,9 @@ async function handleRemoteEvent(netId, ev){
       net.posts.push({ id:ev.id, memberId:memId, authorPk:pk, caption:payload.caption||'', modHidden:_modHidden,
         image:(!enc && payload.image)?payload.image:null, enc, encs:_encs,
         poll:payload.poll||null, link:_lk, voteBy:{},
-        time:relTime(ev.created_at*1000), likes:0, liked:false, likeBy:{}, replies:[], ts:ev.created_at });
+        likes:0, liked:false, likeBy:{}, replies:[], ts:ev.created_at });
+      // No stored `time` string: fmtTime() derives the label from the numeric `ts`
+      // (its post.time fallback stays only for any legacy ts-less post already saved).
       net.posts.sort((a,b)=>(b.ts||0)-(a.ts||0));
       changed=true;
       // notify only for genuinely new posts (after the initial backfill), and not our own
@@ -6489,16 +6496,16 @@ function buildMyPage(net){
       </button>
     </div>`;
 
-  const photoCard=(p,h)=>`
+  const photoCard=(p,h)=>{ const pb=photoBox(net,p); return `
         <div style="background:${C.surface};border-radius:16px;overflow:hidden;display:flex;flex-direction:column">
-          <div onclick="openPostView('${p.id}')" ${(()=>{const pb=photoBox(net,p);return pb.attr;})()} style="position:relative;height:${h||140}px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()}">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
+          <div onclick="openPostView('${p.id}')" ${pb.attr} style="position:relative;height:${h||140}px;cursor:pointer;font-size:42px;${pb.style}">${pb.inner}
             <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${p.id}')" style="position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.55);border:none;color:#fff;border-radius:8px;padding:2px 7px;cursor:pointer;font-size:14px;font-weight:700;line-height:1.4">···</button>
           </div>
           <div style="padding:8px 10px 10px">
             <div style="color:${C.textDim};font-size:11px;font-family:'Playfair Display',serif;font-style:italic;margin-bottom:8px;min-height:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(captionSansLink(p))}</div>
             ${actionRow(p)}
           </div>
-        </div>`;
+        </div>`; };
 
   const textCard=(p)=>`
         <div style="background:${C.surface};border-radius:16px;padding:14px 16px">
@@ -6519,7 +6526,7 @@ function buildMyPage(net){
   const interleaved = (()=>{
     const out=[]; let run=[];
     const flush=()=>{ if(!run.length) return;
-      if(run.length===1) out.push(photoCard(run[0],200));
+      if(run.length===1) out.push(photoCard(run[0],192));
       else out.push(`<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">${run.map(p=>photoCard(p)).join('')}</div>`);
       run=[]; };
     myPosts.forEach(p=>{ if(p.image||p.enc) run.push(p); else { flush(); out.push(textCard(p)); } });
@@ -6622,9 +6629,9 @@ function buildProfile(net){
   // photo posts pack into a 2-up gallery row; a text post breaks the run and shows
   // as a full-width card at its place in the timeline, so text and photos interleave
   // by date instead of every text post sinking below the photos.
-  const photoTile = (p,h)=>`<div onclick="openPostView('${p.id}')" ${(()=>{const pb=photoBox(net,p);return pb.attr;})()} style="border-radius:16px;height:${h||155}px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()};position:relative;overflow:hidden">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
+  const photoTile = (p,h)=>{ const pb=photoBox(net,p); return `<div onclick="openPostView('${p.id}')" ${pb.attr} style="border-radius:16px;height:${h||155}px;cursor:pointer;font-size:42px;${pb.style};position:relative;overflow:hidden">${pb.inner}
         ${captionSansLink(p)?`<div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.5));padding:8px 10px;color:#FAF8F5;font-size:11px;font-family:'Playfair Display',serif">${esc(captionSansLink(p))}</div>`:''}
-      </div>`;
+      </div>`; };
   const textCard = (p)=>`<div style="background:${C.surface};border-radius:16px;padding:14px 16px">
         <div onclick="openPostView('${p.id}')" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(p))}</div>
         <div class="post-time" data-ts="${p.ts||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span></div>
@@ -6636,7 +6643,7 @@ function buildProfile(net){
     // A run of one photo spans the full width (taller, like the feed) rather than
     // sitting in a lone half-width grid cell with an empty gap beside it.
     const flush=()=>{ if(!run.length) return;
-      if(run.length===1) out.push(photoTile(run[0],200));
+      if(run.length===1) out.push(photoTile(run[0],192));
       else out.push(`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${run.map(p=>photoTile(p)).join('')}</div>`);
       run=[]; };
     myPosts.forEach(p=>{ if(p.image||p.enc) run.push(p); else { flush(); out.push(textCard(p)); } });

@@ -2163,10 +2163,12 @@ async function ensurePhoto(net, post, encOverride){
 
 // Decrypt a member's per-network encrypted avatar into a displayable object URL
 const _avatarPending={};
+const _avatarDead={};   // 'av:<sha>' -> true for blobs that returned 404/410 (genuinely gone)
 async function ensureAvatar(net, mem){
   const e=mem && mem.avatarEnc;
   if(!net || !e || !e.url || !e.iv || !e.sha256) return;
   const key='av:'+e.sha256;
+  if(_avatarDead[key]) return;   // blob is gone — don't retry a permanent miss every sweep
   if(_imgCache[key]){ mem.avatar=_imgCache[key]; return; }
   if(_avatarPending[key]) return;
   _avatarPending[key]=true;
@@ -2175,7 +2177,17 @@ async function ensureAvatar(net, mem){
     let ct=null;
     try{ const cached=await idbGet('av:'+e.sha256); if(cached) ct=new Uint8Array(await cached.arrayBuffer()); }catch(_){}
     if(!ct){
-      const res=await fetch(e.url); if(!res.ok) throw new Error('fetch '+res.status);
+      const res=await fetch(e.url);
+      if(!res.ok){
+        // 404/410 = the blob is genuinely gone (uploader was offline when they set
+        // it, or it was pruned). Remember that so the backfill sweep stops hammering
+        // it every pass. Any OTHER failure (network blip, timeout, CORS hiccup) is
+        // transient — we do NOT mark it, so the next sweep retries. This is the fix
+        // for "some members show, some don't": a single transient miss used to drop
+        // a member to initials permanently.
+        if(res.status===404 || res.status===410){ _avatarDead[key]=true; }
+        throw new Error('fetch '+res.status);
+      }
       const buf=await res.arrayBuffer(); ct=new Uint8Array(buf);
       try{ await idbSet('av:'+e.sha256, new Blob([buf],{type:'application/octet-stream'})); }catch(_){}
     }
@@ -2836,6 +2848,8 @@ const CHANGELOG=[
     ['new','The camera can do it too \u2014 take a shot, tap + Add, and keep going up to 4 before sharing them as one moment'],
     ['new','Open a moment to see every photo full-width, and tap any one of them to fill the screen'],
     ['fix','Photos now load properly when Moment\u2019s is opened from a saved copy of the page instead of the website'],
+    ['fix','Invite QR codes now scan \u2014 they were being drawn slightly wrong, so phone cameras couldn\u2019t read them. Point a camera at one and it opens the join link'],
+    ['change','Invite QR codes are larger and sharper, so they\u2019re easier to scan from another phone\u2019s screen'],
   ]},
   { v:'0.8.9', date:'July 2026', title:'Foundations', changes:[
     ['fix','Your profile is more reliable everywhere \u2014 the app now handles your name, bio, picture and Signal in one consistent place, closing a class of bugs where a field could go missing'],
@@ -5911,7 +5925,10 @@ function qrModules(text){
   let idx=0,bit=0; const getBit=()=>{ if(idx>=all.length) return 0; const b=(all[idx]>>(7-bit))&1; bit++; if(bit===8){bit=0;idx++;} return b; };
   let up=true;
   for(let col=n-1; col>0; col-=2){ if(col===6) col=5; for(let i=0;i<n;i++){ const row=up?n-1-i:i; for(let c2=0;c2<2;c2++){ const cc=col-c2; if(m[row][cc]===null && !fn[row][cc]){ let v=getBit(); if(((row+cc)%2)===0) v^=1; m[row][cc]=v; } } } up=!up; }
-  const fmt=0x77C4; const a=[]; for(let i=14;i>=0;i--) a.push((fmt>>i)&1);
+  // Format info (EC-L, mask 0). Placement order below runs from the LAST bit of the
+  // 15-bit string to the first, so build the array LSB-first — writing it MSB-first
+  // mirrors the format bits and makes every scanner reject the symbol.
+  const fmt=0x77C4; const a=[]; for(let i=0;i<15;i++) a.push((fmt>>i)&1);
   let k=0; for(let r=0;r<=8;r++){ if(r===6) continue; m[r][8]=a[k++]; } for(let c=7;c>=0;c--){ if(c===6) continue; m[8][c]=a[k++]; }
   k=0; for(let c=n-1;c>=n-8;c--){ m[8][c]=a[k++]; } for(let r=n-7;r<n;r++){ m[r][8]=a[k++]; }
   return {n,m};
@@ -5920,15 +5937,18 @@ function qrSVG(text, size){
   const res=qrModules(text);
   if(!res){
     // Invite link too long for a scannable code — show a friendly fallback.
-    return `<div style="width:${size}px;height:${size}px;border-radius:10px;background:#FAF8F5;color:#0F0F14;display:flex;align-items:center;justify-content:center;text-align:center;padding:18px;font-size:12px;line-height:1.5;box-sizing:border-box">Use the code below to join — this invite is too long for a QR code.</div>`;
+    return `<div style="width:100%;max-width:${size}px;aspect-ratio:1;border-radius:10px;background:#FAF8F5;color:#0F0F14;display:flex;align-items:center;justify-content:center;text-align:center;padding:18px;font-size:12px;line-height:1.5;box-sizing:border-box">Use the code below to join — this invite is too long for a QR code.</div>`;
   }
   const {n,m}=res;
-  const quiet=4; const total=n+quiet*2; const cell=size/total;
+  const quiet=4; const total=n+quiet*2;
+  // Draw on a 1-unit-per-module grid and let the viewBox scale it. Sizing rects in
+  // CSS pixels puts their edges on fractional coordinates, which anti-aliases every
+  // module boundary into grey and can push a scanner's threshold the wrong way.
   let rects='';
-  for(let r=0;r<n;r++) for(let c=0;c<n;c++){ if(m[r][c]===1) rects+=`<rect x="${(c+quiet)*cell}" y="${(r+quiet)*cell}" width="${cell}" height="${cell}" fill="#000000"/>`; }
+  for(let r=0;r<n;r++) for(let c=0;c<n;c++){ if(m[r][c]===1) rects+=`<rect x="${c+quiet}" y="${r+quiet}" width="1" height="1" fill="#000000"/>`; }
   // Pure black-on-white with the full 4-module quiet zone the QR spec requires —
   // some phone scanners refuse to read codes with a smaller margin or off-white background.
-  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" fill="#ffffff"/>${rects}</svg>`;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${total} ${total}" shape-rendering="crispEdges" style="display:block;width:100%;max-width:${size}px;height:auto"><rect width="${total}" height="${total}" fill="#ffffff"/>${rects}</svg>`;
 }
 
 // ── Join / create screen ──
@@ -6547,7 +6567,7 @@ function buildInvite(net){
         <div style="color:${C.textDim};font-size:12px;line-height:1.65">Scanning this code is the only way in. No one outside ${esc(net.name)} can see any photos, pages, or replies — ever.</div>
       </div>
       <div style="background:${C.surface};border-radius:22px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px">
-        ${qrSVG(inviteUrl(net), 174)}
+        ${qrSVG(inviteUrl(net), 240)}
         <div style="background:${C.surfaceHigh};border-radius:10px;padding:8px 20px;font-family:monospace;font-size:18px;letter-spacing:3px;color:${C.accent};font-weight:700">${esc(net.code)}</div>
       </div>
       <button onclick="shareInvite()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer">Share invite</button>

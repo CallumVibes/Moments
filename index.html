@@ -1547,14 +1547,18 @@ async function publishProfile(){
     try{
       const net=A.networks[id];
       const keys=A.netKeys[id]||await deriveNetwork(net.code); A.netKeys[id]=keys;
+      const me=net.members && net.members.find(m=>m.isMe);
       const aEnc=await encryptAvatarFor(id);
       const payload={ v:1, t:'profile', name, bio, ts:Math.floor(Date.now()/1000) };
       const _sig=normSignal(A.profile.signal);
       if(_sig) payload.sig=_sig; else payload.sigRemoved=true;   // mirror avatarRemoved: clearing it must propagate
-      if(aEnc && aEnc.ext) payload.avatar=aEnc.ext;          // external public link
-      else if(aEnc) payload.avatarEnc=stripSrc(aEnc);         // encrypted-on-Blossom avatar
+      // Record my live avatar hash on my own member record (persisted) so a later
+      // change/removal can erase this exact blob from Blossom. Leave it untouched on
+      // an upload failure — the old blob is still the live one until the new one lands.
+      if(aEnc && aEnc.ext){ payload.avatar=aEnc.ext; if(me) me.avatarEnc=null; }          // external public link — not a Blossom blob of ours
+      else if(aEnc){ payload.avatarEnc=stripSrc(aEnc); if(me) me.avatarEnc=stripSrc(aEnc); }  // encrypted-on-Blossom avatar
       else if(!_avatarBlob && !A.profile.avatar){
-        payload.avatarRemoved=true;                           // genuinely no picture: clear any old one
+        payload.avatarRemoved=true; if(me) me.avatarEnc=null;   // genuinely no picture: clear any old one
       } else {
         // We HAVE a picture but encryptAvatarFor() returned null — the Blossom
         // upload didn't happen (offline, Blossom down, quota). Don't claim removal
@@ -1575,6 +1579,23 @@ async function publishProfile(){
   return { avatarUploadFailed };
 }
 function stripSrc(m){ const {_srcBlob,...rest}=m; return rest; }
+
+// Every per-network avatar ciphertext hash currently on record for me. Each network
+// encrypts my picture with its own group key and a fresh IV, so the same photo is a
+// DIFFERENT blob per network; this gathers them all (from the persisted own-member
+// record and this session's upload cache) so a change or removal can erase the
+// orphaned blobs from Blossom.
+function myAvatarShas(){
+  const out=new Set();
+  Object.values((A&&A.networks)||{}).forEach(net=>{
+    const me=net.members && net.members.find(m=>m.isMe);
+    const persisted=me && me.avatarEnc && me.avatarEnc.sha256;
+    if(/^[0-9a-f]{64}$/.test(persisted||'')) out.add(persisted);
+    const cached=_avatarEncCache[net.id] && _avatarEncCache[net.id].sha256;
+    if(/^[0-9a-f]{64}$/.test(cached||'')) out.add(cached);
+  });
+  return out;
+}
 
 /* ════════════════════════════════════════════
    STATE & UI
@@ -2877,8 +2898,16 @@ function closeWhatsNew(){ A.showWhatsNew=false; A.showSettings=true; A.wnOpen=nu
 function toggleWhatsNew(v){ if(!A.wnOpen) A.wnOpen={}; A.wnOpen[v]=!A.wnOpen[v]; haptic(8); renderApp(); }
 function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-version')!==CHANGELOG[0].v; }catch(_){ return false; } }
 
-// ── Release notes (newest first). Bump the top entry's version on each build. ──
+// ── Release notes (newest first). Each shipped release is its own entry and is
+// left untouched once closed; open the next version by adding a NEW entry on top
+// when its first change lands (don't renumber a closed one). CHANGELOG[0].v is the
+// live app version and drives the What's New badge, so a version with no changes
+// must never sit on top. ──
 const CHANGELOG=[
+  { v:'0.9.2', date:'July 2026', title:'Tidy up', changes:[
+    ['change','When you change or remove your profile picture, the old encrypted copy is now erased from the servers instead of lingering there \u2014 the same cleanup deleting a post already does for its photos'],
+    ['change','A single photo on a profile now spans the full width instead of sitting in a half-empty row next to an empty space'],
+  ]},
   { v:'0.9.1', date:'July 2026', title:'In focus', changes:[
     ['fix','Invite QR codes now scan \u2014 they were being drawn slightly wrong, so phone cameras couldn\u2019t read them. Point a camera at one and it opens the join link'],
     ['change','Invite QR codes are larger and sharper, so they\u2019re easier to scan from another phone\u2019s screen'],
@@ -5315,6 +5344,11 @@ async function onPickProfilePic(input){
 async function saveProfile(){
   if(!A.profileDraft) return;
   const _pickedNewPic = !!A.profileDraft.avatarBlob;   // capture before the draft is cleared
+  const _avatarChanged = _pickedNewPic || !!A.profileDraft.avatarCleared;
+  // Snapshot the avatar ciphertext hashes currently on Blossom BEFORE we overwrite or
+  // clear them, so the orphaned blobs can be erased once the new picture (or removal)
+  // has published. Each network holds a distinct blob (own key + fresh IV).
+  const _oldAvatarShas = _avatarChanged ? [...myAvatarShas()] : [];
   // The draft was seeded from {...A.profile}, so it already carries every field
   // (including keyOrigin/keyBackedUp/theme). normalizeProfile re-applies defaults.
   A.profile=normalizeProfile(A.profileDraft, { trim:true });
@@ -5335,8 +5369,16 @@ async function saveProfile(){
   // awaited it. Persist and re-render AFTER it returns, or the Activity reminder
   // wouldn't appear until some later unrelated render.
   saveData(); renderApp();
-  // If the user chose a NEW picture and it couldn't be uploaded, it lives only on
-  // this device — nobody else will see it. Tell them plainly so it's not silent.
+  // Erase the now-orphaned old avatar blobs from Blossom. Re-encryption always yields
+  // a fresh hash (new IV), so any hash still live after publishing is the NEW avatar;
+  // delete only the ones that aren't. Best-effort, same caveat as post deletion:
+  // copies anyone already downloaded remain, and the ciphertext is useless without
+  // the key regardless. Skipped when the new picture failed to upload (old blob is
+  // still the live one, so myAvatarShas() still holds it and it's spared).
+  if(_avatarChanged && _oldAvatarShas.length){
+    const live=myAvatarShas();
+    _oldAvatarShas.forEach(h=>{ if(h && !live.has(h)) blossomDelete(h); });
+  }
   if(_pickedNewPic && res && res.avatarUploadFailed){
     showToast('Saved, but your new picture couldn\u2019t upload \u2014 it\u2019s in Activity as a reminder to save again when you\u2019re online');
   }
@@ -6447,9 +6489,9 @@ function buildMyPage(net){
       </button>
     </div>`;
 
-  const photoCard=(p)=>`
+  const photoCard=(p,h)=>`
         <div style="background:${C.surface};border-radius:16px;overflow:hidden;display:flex;flex-direction:column">
-          <div onclick="openPostView('${p.id}')" ${(()=>{const pb=photoBox(net,p);return pb.attr;})()} style="position:relative;height:140px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()}">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
+          <div onclick="openPostView('${p.id}')" ${(()=>{const pb=photoBox(net,p);return pb.attr;})()} style="position:relative;height:${h||140}px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()}">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
             <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${p.id}')" style="position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.55);border:none;color:#fff;border-radius:8px;padding:2px 7px;cursor:pointer;font-size:14px;font-weight:700;line-height:1.4">···</button>
           </div>
           <div style="padding:8px 10px 10px">
@@ -6472,10 +6514,14 @@ function buildMyPage(net){
 
   // Same date-order interleave as a member's profile: consecutive photo posts pack
   // into a 2-up grid, text posts break the run as full-width cards, so nothing sinks
-  // below everything else just because of its type.
+  // below everything else just because of its type. A lone photo spans full width
+  // (taller) rather than sitting half-width with an empty cell beside it.
   const interleaved = (()=>{
     const out=[]; let run=[];
-    const flush=()=>{ if(run.length){ out.push(`<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">${run.map(photoCard).join('')}</div>`); run=[]; } };
+    const flush=()=>{ if(!run.length) return;
+      if(run.length===1) out.push(photoCard(run[0],200));
+      else out.push(`<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">${run.map(p=>photoCard(p)).join('')}</div>`);
+      run=[]; };
     myPosts.forEach(p=>{ if(p.image||p.enc) run.push(p); else { flush(); out.push(textCard(p)); } });
     flush();
     return out.join('');
@@ -6576,7 +6622,7 @@ function buildProfile(net){
   // photo posts pack into a 2-up gallery row; a text post breaks the run and shows
   // as a full-width card at its place in the timeline, so text and photos interleave
   // by date instead of every text post sinking below the photos.
-  const photoTile = (p)=>`<div onclick="openPostView('${p.id}')" ${(()=>{const pb=photoBox(net,p);return pb.attr;})()} style="border-radius:16px;height:155px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()};position:relative;overflow:hidden">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
+  const photoTile = (p,h)=>`<div onclick="openPostView('${p.id}')" ${(()=>{const pb=photoBox(net,p);return pb.attr;})()} style="border-radius:16px;height:${h||155}px;cursor:pointer;font-size:42px;${(()=>{const pb=photoBox(net,p);return pb.style;})()};position:relative;overflow:hidden">${(()=>{const pb=photoBox(net,p);return pb.inner;})()}
         ${captionSansLink(p)?`<div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.5));padding:8px 10px;color:#FAF8F5;font-size:11px;font-family:'Playfair Display',serif">${esc(captionSansLink(p))}</div>`:''}
       </div>`;
   const textCard = (p)=>`<div style="background:${C.surface};border-radius:16px;padding:14px 16px">
@@ -6587,7 +6633,12 @@ function buildProfile(net){
       </div>`;
   const interleaved = (()=>{
     const out=[]; let run=[];
-    const flush=()=>{ if(run.length){ out.push(`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${run.map(photoTile).join('')}</div>`); run=[]; } };
+    // A run of one photo spans the full width (taller, like the feed) rather than
+    // sitting in a lone half-width grid cell with an empty gap beside it.
+    const flush=()=>{ if(!run.length) return;
+      if(run.length===1) out.push(photoTile(run[0],200));
+      else out.push(`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${run.map(p=>photoTile(p)).join('')}</div>`);
+      run=[]; };
     myPosts.forEach(p=>{ if(p.image||p.enc) run.push(p); else { flush(); out.push(textCard(p)); } });
     flush();
     return out.join('');

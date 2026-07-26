@@ -1088,10 +1088,13 @@ async function handleRemoteEvent(netId, ev){
               title:payload.link.title?String(payload.link.title).slice(0,140):null,
               img:(typeof payload.link.img==='string' && payload.link.img.startsWith('data:image/'))?payload.link.img.slice(0,200000):null };
       }
+      // A disappearing post already past its 24h life when it reaches us (late
+      // backfill, slow relay) is dropped outright — never stored or shown.
+      if(payload.exp && Math.floor(Date.now()/1000) > payload.exp) return;
       const _modHidden = !!(net.modDel && net.modDel[ev.id] && net.ownerPk && net.modDel[ev.id]===net.ownerPk);
       net.posts.push({ id:ev.id, memberId:memId, authorPk:pk, caption:payload.caption||'', modHidden:_modHidden,
         image:(!enc && payload.image)?payload.image:null, enc, encs:_encs,
-        poll:payload.poll||null, link:_lk, voteBy:{},
+        poll:payload.poll||null, link:_lk, voteBy:{}, exp:(typeof payload.exp==='number'?payload.exp:null),
         likes:0, liked:false, likeBy:{}, replies:[], ts:ev.created_at });
       // No stored `time` string: fmtTime() derives the label from the numeric `ts`
       // (its post.time fallback stays only for any legacy ts-less post already saved).
@@ -1429,11 +1432,17 @@ async function publishPost(netId, post){
       image: (!post.enc && post.image && /^https?:/.test(post.image))?post.image:null,
       poll: post.poll||null,
       link: post.link||null,
+      exp: post.exp||undefined,
       name:A.profile.name||'You', bio:(A.profile.bio||'').slice(0,160), nn:A.networks[netId].name, nt:A.networks[netId].nameTs||0, ts:Math.floor(Date.now()/1000) };
     { const _sig=normSignal(A.profile.signal); if(_sig) payload.sig=_sig; }   // identity rides with posts; only when set, so a bare post never wipes it
     if(_av && _av.ext) payload.avatar=_av.ext; else if(_av) payload.avatarEnc=stripSrc(_av);
     const content=await encJSON(keys.groupKey, payload);
-    const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
+    // NIP-40 expiration tag (plaintext) lets relays that honor it GC a disappearing
+    // post; exp also travels inside the encrypted payload so clients hide it even on
+    // relays that ignore the tag.
+    const _tags=[['t',keys.tag]];
+    if(post.exp) _tags.push(['expiration', String(post.exp)]);
+    const ev=await makeNostrEvent(MOMENTS_KIND, _tags, content);
     markSeen(ev.id);
     const delivered=Relay.publish(ev);
     return { id:ev.id, delivered };
@@ -2330,6 +2339,49 @@ function postEncs(post){
   }
   return all;
 }
+
+// ── Disappearing posts ────────────────────────────────────────────────────────
+// A post marked disappearing carries post.exp = created_at + 24h. Three layers make
+// "fades after a day" real without a server: (1) every client HIDES and sweeps it
+// past exp — the actual guarantee; (2) a NIP-40 expiration tag lets relays that honor
+// it GC the event; (3) the author's client fires the normal NIP-09 + Blossom delete
+// on its own expired posts. It's "fades", not "securely destroyed": a member can
+// screenshot, and ciphertext may linger on non-NIP-40 relays until cleanup/GC.
+const EPHEMERAL_TTL = 86400;   // 24 hours
+function isExpired(post){ return !!(post && post.exp && Math.floor(Date.now()/1000) > post.exp); }
+function expLabel(exp){
+  const s = exp - Math.floor(Date.now()/1000);
+  if(s<=0)     return 'gone';
+  if(s<60)     return '<1m left';
+  if(s<3600)   return Math.floor(s/60)+'m left';
+  return Math.floor(s/3600)+'h left';
+}
+// Remove posts whose 24h life has passed. For MY OWN expired posts, best-effort erase
+// from relays + Blossom (same path as manual deletion), once. Display hiding is done
+// separately by the feed filter (isExpired); this handles cleanup + freeing storage.
+function sweepExpired(){
+  if(!A || !A.networks) return false;
+  const now=Math.floor(Date.now()/1000);
+  const mine=(typeof myPubkey==='function')?myPubkey():null;
+  let changed=false;
+  Object.values(A.networks).forEach(net=>{
+    if(!Array.isArray(net.posts)) return;
+    let touched=false;
+    net.posts.forEach(p=>{
+      if(p.exp && now>p.exp && p.authorPk===mine && !p._expiredCleaned){
+        p._expiredCleaned=true;
+        try{ publishDelete(net.id, p.id); }catch(_){}          // kind-5 (queues if offline)
+        try{ postEncs(p).forEach(e=>{ if(e&&e.sha256) blossomDelete(e.sha256); }); }catch(_){}  // erase blobs
+        try{ if(typeof outDrop==='function') outDrop(p.id); }catch(_){}
+      }
+    });
+    const kept=net.posts.filter(p=>!(p.exp && now>p.exp));
+    if(kept.length!==net.posts.length){ net.posts=kept; touched=true; }
+    if(touched) changed=true;
+  });
+  if(changed){ try{ saveData(); }catch(_){} try{ renderApp(); }catch(_){} }
+  return changed;
+}
 function hasMultiPhoto(post){ return postEncs(post).length>1; }
 // Tapping any grid tile opens the post's detail view (where photos show larger).
 // A dedicated per-photo swipe viewer can come later; for now this matches how a
@@ -2759,6 +2811,16 @@ async function enterApp(npub){
         const rel=el.querySelector('.post-time-rel');
         if(rel){ const t=relTime(ts*1000); if(rel.textContent!==t) rel.textContent=t; }
       });
+      // Disappearing posts: tick the countdown in place; once any has expired, sweep
+      // (removes it + fires the author's cleanup) and re-render so it vanishes.
+      let anyExpired=false;
+      document.querySelectorAll('.post-exp').forEach(el=>{
+        const exp=parseInt(el.getAttribute('data-exp')||'0',10);
+        if(!exp) return;
+        if(Math.floor(Date.now()/1000) > exp){ anyExpired=true; return; }
+        const t='\u23f1 '+expLabel(exp); if(el.textContent!==t) el.textContent=t;
+      });
+      if(anyExpired) sweepExpired();
     }catch(_){}
   }, 30000);
   document.getElementById('app-screen').classList.add('active');
@@ -2790,6 +2852,7 @@ async function enterApp(npub){
     await outRestore();   // hand parked upload bytes back to _retryBlobs before any flush runs
   }catch(e){ /* storage unavailable — stay in-memory */ }
 
+  try{ sweepExpired(); }catch(_){}   // clear out any disappearing posts that lapsed while closed
   renderApp();
   Object.keys(A.networks).forEach(id=>activateNetwork(id));
 
@@ -2919,6 +2982,9 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // live app version and drives the What's New badge, so a version with no changes
 // must never sit on top. ──
 const CHANGELOG=[
+  { v:'0.9.3', date:'July 2026', title:'Here and gone', changes:[
+    ['new','Disappearing photos \u2014 flip on \u201cDisappears after 24 hours\u201d when sharing, and the post fades from everyone\u2019s feed a day later, with a little countdown while it\u2019s up. It\u2019s a tidiness feature, not a security one: anyone in the network can still screenshot it while it\u2019s there'],
+  ]},
   { v:'0.9.2', date:'July 2026', title:'Tidy up', changes:[
     ['fix','Relays you remove in Advanced settings now stay removed \u2014 one could reappear if it was also attached to one of your networks'],
     ['fix','Your network name no longer clears if you change the posting option while setting up a new network'],
@@ -3182,26 +3248,28 @@ function buildWhatsNew(){
 
 const ROADMAP=[
   { status:'planned', title:'Get Moments on Zapstore', text:'Install Moments as a proper Android app from Zapstore, the open Nostr app store — coming soon.' },
-  { status:'planned', title:'Multiple photos per post', text:'Share a few shots in one moment, shown as a neat grid.' },
+  { status:'done', title:'Multiple photos per post', text:'Share a few shots in one moment, shown as a neat grid.' },
   { status:'planned', title:'Stronger member controls', text:'Leave and rejoin a network any time — unless an owner has blocked you. Blocking means blocked: no way back in, and no access to what\u2019s shared next.' },
   { status:'exploring', title:'Password-protected key backup', text:'Optionally lock your saved key behind a passphrase, safe to keep anywhere.' },
   { status:'exploring', title:'A dedicated Moments relay', text:'A reliable relay run for Moments, so things just work by default — and because Moments is open, you can always choose your own or run one yourself.' },
   { status:'exploring', title:'Push notifications', text:'Get notified when someone posts, likes, or replies — even when the app is closed.' },
   { status:'exploring', title:'Photos that always load', text:'Reliable delivery so nothing in your feed is ever stuck or missing, wherever it was shared from.' },
-  { status:'exploring', title:'Disappearing photos', text:'Share a moment that fades after a day.' },
+  { status:'done', title:'Disappearing photos', text:'Share a moment that fades after a day.' },
 ];
 function buildRoadmap(){
   const tag={
+    done:['\u2713 DONE',`background:rgba(74,222,128,0.15);color:#4ade80`],
     progress:['IN PROGRESS',`background:${C.accentDim};color:${C.accent}`],
     planned:['PLANNED',`background:rgba(245,200,66,0.15);color:#F5C842`],
     exploring:['EXPLORING',`background:rgba(255,255,255,0.08);color:${C.muted}`],
   };
   const rows=ROADMAP.map(it=>{
     const [label,st]=tag[it.status]||tag.exploring;
-    return `<div style="background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
+    const isDone=it.status==='done';
+    return `<div style="background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px${isDone?';opacity:.65':''}">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:5px">
         <span style="${st};font-size:9px;font-weight:800;letter-spacing:.5px;padding:2px 7px;border-radius:6px;flex-shrink:0">${label}</span>
-        <span style="color:${C.text};font-size:14px;font-weight:700">${esc(it.title)}</span>
+        <span style="color:${C.text};font-size:14px;font-weight:700${isDone?';text-decoration:line-through':''}">${esc(it.title)}</span>
       </div>
       <div style="color:${C.textDim};font-size:13px;line-height:1.5">${esc(it.text)}</div>
     </div>`;
@@ -4235,11 +4303,12 @@ function canIPost(net){
 function openUpload(){
   const net=currentNet();
   if(!canIPost(net)){ showToast('Only the owner can post in this network'); return; }
-  A.showUpload=true; A.pendingPhoto={image:null,caption:''}; A.pollMode=false; A.pollOptions=['','']; A.pollExpiry=null; renderApp();
+  A.showUpload=true; A.pendingPhoto={image:null,caption:''}; A.pollMode=false; A.pollOptions=['','']; A.pollExpiry=null; A.disappearing=false; renderApp();
 }
-function closeUpload(){ A.showUpload=false; A.pendingPhoto=null; A.pollMode=false; A.pollOptions=['','']; A.pollExpiry=null; renderApp(); }
+function closeUpload(){ A.showUpload=false; A.pendingPhoto=null; A.pollMode=false; A.pollOptions=['','']; A.pollExpiry=null; A.disappearing=false; renderApp(); }
 // ── Poll composer ──
 function setPollExpiry(sec){ A.pollExpiry=sec||null; renderApp(); }
+function setDisappearing(on){ A.disappearing=!!on; renderApp(); }
 function setPollMode(on){ A.pollMode=!!on; if(on && (!A.pollOptions||A.pollOptions.length<2)) A.pollOptions=['','']; renderApp(); }
 function setPollOption(i, v){ if(!A.pollOptions) A.pollOptions=['','']; A.pollOptions[i]=v; }
 function addPollOption(){ if(!A.pollOptions) A.pollOptions=['','']; if(A.pollOptions.length<6){ A.pollOptions.push(''); renderApp(); } }
@@ -4261,7 +4330,7 @@ async function sharePoll(){
     time:"just now", likes:0, liked:false, likeBy:{}, replies:[], ts:Math.floor(Date.now()/1000),
     status:'sending' };
   net.posts.unshift(post);
-  A.uploading=false; A.showUpload=false; A.pendingPhoto=null; A.pollMode=false; A.pollOptions=['','']; A.pollExpiry=null;
+  A.uploading=false; A.showUpload=false; A.pendingPhoto=null; A.pollMode=false; A.pollOptions=['','']; A.pollExpiry=null; A.disappearing=false;
   saveData(); renderApp();
   holdForUndo(net.id, post);
 }
@@ -5757,6 +5826,7 @@ async function sharePhoto(){
     image:hasPhoto?pp.image:null, enc:null, hosted:!!(pp&&pp.remote), isVideo:!!(pp&&pp.isVideo),
     isAudio:!!(pp&&pp.isAudio), audioName:(pp&&pp.audioName)||null, audioDur:(pp&&pp.audioDur)||0,
     link:pp.link?{url:pp.link.url,raw:pp.link.raw||pp.link.url,domain:pp.link.domain,title:pp.link.title||null,img:pp.link.img||null}:null,
+    exp: A.disappearing ? Math.floor(Date.now()/1000)+EPHEMERAL_TTL : null,
     time:"just now", likes:0, liked:false, likeBy:{}, replies:[], ts:Math.floor(Date.now()/1000),
     status:'sending' };
   // keep the source bytes so we can (re)encrypt + (re)upload on retry (photo posts only)
@@ -5772,7 +5842,7 @@ async function sharePhoto(){
   }
 
   net.posts.unshift(post);
-  A.uploading=false; A.showUpload=false; A.pendingPhoto=null; A.pendingExtras=null;
+  A.uploading=false; A.showUpload=false; A.pendingPhoto=null; A.pendingExtras=null; A.disappearing=false;
   saveData(); renderApp();
   holdForUndo(net.id, post);
 }
@@ -6139,7 +6209,7 @@ function buildFeed(net){
   // Session-only preference; legacy posts without a timestamp only show under All.
   const range=A.feedRange||'week';   // opens on This week; All is one tap away
   const inRange=rangePredicate(range);
-  const visiblePosts=net.posts.filter(p=>!pending[p.id] && inRange(p));
+  const visiblePosts=net.posts.filter(p=>!pending[p.id] && inRange(p) && !isExpired(p));
   const memberStrip = net.members.slice(0,3).map((mem,i)=>`
     <button onclick="openProfile('${mem.id}')" style="margin-left:${i===0?0:-6}px;position:relative;z-index:${3-i};background:none;border:none;padding:0;cursor:pointer" aria-label="View ${esc(mem.name)}">${avatarHTML(mem,24,8,12,1.5)}</button>
   `).join('');
@@ -6171,7 +6241,7 @@ function buildFeed(net){
             <button onclick="openProfile('${post.memberId}')" style="background:none;border:none;padding:0;cursor:pointer;flex-shrink:0">${avatarHTML(mem,36,12,18)}</button>
             <div>
               <div style="color:${C.text};font-size:13px;font-weight:600;font-family:'Playfair Display',serif">${esc(mem.name)}${mem.left?` <span style="color:${C.muted};font-size:10px;font-weight:500;font-family:'Inter',sans-serif">· left the network</span>`:''}</div>
-              <div class="post-time" data-ts="${post.ts||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(post))}</span>${postStatus(net,post)}</div>
+              <div class="post-time" data-ts="${post.ts||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(post))}</span>${postStatus(net,post)}${post.exp?`<span class="post-exp" data-exp="${post.exp}" style="color:${C.accent};font-weight:700;margin-left:6px">\u23f1 ${esc(expLabel(post.exp))}</span>`:''}</div>
             </div>
             <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${post.id}')" style="margin-left:auto;background:none;border:none;color:${C.muted};font-size:20px;cursor:pointer;padding:4px 6px;line-height:1">···</button>
           </div>
@@ -6441,7 +6511,7 @@ function dismissActivity(netId, key){
 }
 
 function buildMyPage(net){
-  const myPosts=net.posts.filter(p=>p.memberId==='u1');
+  const myPosts=net.posts.filter(p=>p.memberId==='u1' && !isExpired(p));
   const pp=A.pendingPhoto||{image:null,caption:''};
   const uploading=!!A.uploading;
   // Audio has nothing to look at — previewing it as a CSS background would just
@@ -6508,6 +6578,11 @@ function buildMyPage(net){
       ${pollMode ? (pollUI + `<textarea id="caption-input" maxlength="280" oninput="setPhotoCaption(this.value)" placeholder="${pollMode?'Ask a question…':'What\u2019s on your mind?'}" rows="2" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:6px;resize:none;line-height:1.5">${esc(pp.caption)}</textarea>`) : (`<textarea id="caption-input" maxlength="280" oninput="setPhotoCaption(this.value)" placeholder="${pollMode?'Ask a question…':'What\u2019s on your mind?'}" rows="2" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:6px;resize:none;line-height:1.5">${esc(pp.caption)}</textarea>` + pollUI)}
       <div id="caption-count" aria-live="polite" style="text-align:right;font-size:11px;font-weight:700;color:${C.muted};min-height:14px;margin:-2px 2px 4px 0"></div>
       <div id="composer-link-slot">${(!pollMode && A.pendingPhoto && A.pendingPhoto.link)?composerLinkCard(A.pendingPhoto.link):''}</div>
+      ${!pollMode ? `<button onclick="setDisappearing(${!A.disappearing})" style="display:flex;align-items:center;gap:8px;width:100%;background:${A.disappearing?C.accentDim:'transparent'};border:1px solid ${A.disappearing?C.accentBorder:'var(--c-border)'};border-radius:12px;padding:10px 12px;margin-bottom:8px;cursor:pointer;color:${A.disappearing?C.accent:C.muted};font-size:13px;font-weight:600;text-align:left">
+        <span style="font-size:15px">\u23f1</span>
+        <span style="flex:1">Disappears after 24 hours</span>
+        <span style="font-size:11px;font-weight:800;letter-spacing:.5px">${A.disappearing?'ON':'OFF'}</span>
+      </button>${A.disappearing?`<div style="color:${C.muted};font-size:11px;line-height:1.5;margin:-2px 2px 8px">Fades from everyone\u2019s feed after a day. It\u2019s not a security feature \u2014 anyone here can still screenshot it while it\u2019s up.</div>`:''}` : ''}
       <div id="upload-err" style="color:${C.warm};font-size:12px;min-height:16px;margin-bottom:8px"></div>
       <div style="display:flex;gap:10px">
         <button onclick="${pollMode?'sharePoll()':'sharePhoto()'}" ${uploading?'disabled':''} style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:${uploading?'wait':'pointer'};opacity:${uploading?0.6:1}">${uploading?'Sharing…':(pollMode?'Post poll':'Share')}</button>
@@ -6644,7 +6719,7 @@ function buildMyPage(net){
 function buildProfile(net){
   const mem=memberIn(net,A.profileId);
   const pRange=A.profileRange||'all';
-  const allTheirPosts=net.posts.filter(p=>p.memberId===mem.id);
+  const allTheirPosts=net.posts.filter(p=>p.memberId===mem.id && !isExpired(p));
   const myPosts=allTheirPosts.filter(rangePredicate(pRange));
   // Stat stays the true total — filtering the grid shouldn't make someone's
   // post count appear to drop.
@@ -6934,7 +7009,7 @@ function buildSettings(){
         <span style="font-size:20px">⚙</span>
         <div style="flex:1;min-width:0">
           <div style="color:${C.text};font-size:14px;font-weight:700">Advanced</div>
-          <div style="color:${C.muted};font-size:12px;margin-top:2px">Relays and developer options</div>
+          <div style="color:${C.muted};font-size:12px;margin-top:2px">Relays, key backup${canVanish() ? ', storage and account data' : ' and storage'}</div>
         </div>
         <span style="color:${C.muted};font-size:18px">›</span>
       </button>
@@ -7097,7 +7172,7 @@ function buildCommentBubbles(net, replies, postId){
 
 function buildPostView(net){
   const post=net.posts.find(p=>p.id===A.viewPostId);
-  if(!post) return "";
+  if(!post || isExpired(post)) return "";   // gone once its 24h life passes
   const mem=memberIn(net, post.memberId);
   const mine=(post.memberId==='u1');
   const replies = buildCommentBubbles(net, post.replies, post.id);

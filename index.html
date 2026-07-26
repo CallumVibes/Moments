@@ -593,7 +593,15 @@ const RELAY_PRESETS={
 // Draft relay choice on the create screen: 'public' | 'moments' | 'custom'.
 let _createRelayChoice='public';
 let _createCustomRelays='';
+let _createName='';   // draft network name, preserved across re-renders (relay-button clicks)
 function setCreateRelay(choice){ _createRelayChoice=choice; renderApp(); }
+// Keep the typed network name in a draft so a re-render (e.g. tapping a relay button)
+// doesn't wipe it. No renderApp here — just store on each keystroke.
+function setCreateName(v){ _createName=v; }
+// The privacy/encryption note on the create screen stays hidden until the user taps
+// the info icon. Toggled directly in the DOM (not via renderApp) so a half-typed
+// network name isn't wiped by a re-render.
+function toggleEncNote(){ const e=document.getElementById('create-enc-note'); if(e) e.style.display = (e.style.display==='none') ? 'flex' : 'none'; }
 function setCustomRelays(v){ _createCustomRelays=v; }
 // Parse the custom textarea into a clean wss:// list. Rejects anything that isn't
 // a plausible secure relay URL — a bad relay silently breaks a network's sync.
@@ -2912,6 +2920,9 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // must never sit on top. ──
 const CHANGELOG=[
   { v:'0.9.2', date:'July 2026', title:'Tidy up', changes:[
+    ['fix','Relays you remove in Advanced settings now stay removed \u2014 one could reappear if it was also attached to one of your networks'],
+    ['fix','Your network name no longer clears if you change the posting option while setting up a new network'],
+    ['change','The create-a-network screen is tidier \u2014 the note about how your photos stay encrypted is now tucked behind an info icon instead of always taking up space'],
     ['change','When you change or remove your profile picture, the old encrypted copy is now erased from the servers instead of lingering there \u2014 the same cleanup deleting a post already does for its photos'],
     ['change','A single photo on a profile now spans the full width instead of sitting in a half-empty row next to an empty space'],
   ]},
@@ -3532,7 +3543,11 @@ function addRelay(){
     if(err){ err.textContent='That relay is already in the list'; err.style.display='block'; } return;
   }
   if(err) err.style.display='none';
-  A.relays=[...current, url];
+  // Append to the global list (or the defaults if none set yet). Don't fold the
+  // whole activeRelays() union in here — that would silently copy every network's
+  // own relays into the global list.
+  const base=(A.relays&&A.relays.length)?A.relays.slice():DEFAULT_RELAYS.slice();
+  A.relays=[...base, url];
   if(inp) inp.value='';
   saveData(); renderApp();
   try{ Relay.connect(); }catch(_){}
@@ -3543,7 +3558,19 @@ function removeRelay(idx){
   const current=activeRelays();
   if(current.length<=1){ showToast('Keep at least one relay'); return; }
   const url=current[idx];
-  A.relays=current.filter((_,i)=>i!==idx);
+  if(!url) return;
+  // The list shown is the UNION of the global list and every network's own relays
+  // (activeRelays). To actually remove a relay it must be purged from BOTH sources —
+  // otherwise activeRelays() re-adds it from some network's net.relays on the next
+  // render, which is exactly why deletion looked like it did nothing.
+  if(A.relays && A.relays.includes(url)){
+    A.relays=A.relays.filter(u=>u!==url);
+  } else if((!A.relays || !A.relays.length) && DEFAULT_RELAYS.includes(url)){
+    A.relays=DEFAULT_RELAYS.filter(u=>u!==url);   // removing an implicit default: materialise the reduced set
+  }
+  if(A.networks){ Object.values(A.networks).forEach(n=>{
+    if(Array.isArray(n.relays)){ n.relays=n.relays.filter(u=>u!==url); if(!n.relays.length) n.relays=null; }
+  }); }
   saveData(); renderApp();
   try{ Relay.disconnect(url); }catch(_){}
   showToast('Relay removed');
@@ -4594,7 +4621,7 @@ function createNetwork(){
   // networks made before this feature (and 'Public' picks) behave identically.
   const _cr=chosenCreateRelays();
   if(_cr && _cr.length) A.networks[id].relays=_cr;
-  _createRelayChoice='public'; _createCustomRelays='';   // reset the draft
+  _createRelayChoice='public'; _createCustomRelays=''; _createName='';   // reset the draft
   saveData(); switchNetwork(id);
   haptic(18); showToast('Network created');
   requestNotifPermission();
@@ -6055,14 +6082,17 @@ function buildJoinScreen(){
   return `
   <div style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;align-items:center;padding:24px 28px 48px;gap:16px">
     <div style="font-size:46px">📸</div>
-    <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:25px;font-weight:600;text-align:center;line-height:1.2">Your photos,<br/>your people</div>
+    <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:25px;font-weight:600;text-align:center;line-height:1.2">Your moments,<br/>your people</div>
     <div style="color:${C.textDim};font-size:13px;text-align:center;line-height:1.65;max-width:280px">Create a private network or enter a code to join one. Only the people you invite can see anything.</div>
 
     <div style="width:100%;background:${C.surface};border-radius:18px;padding:16px;margin-top:4px">
       <div style="color:${C.textDim};font-size:11px;margin-bottom:10px">Name your network</div>
-      <input id="join-name-input" placeholder="e.g. Family" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:15px;font-family:'Inter',sans-serif;margin-bottom:10px"/>
+      <input id="join-name-input" oninput="setCreateName(this.value)" value="${esc(_createName)}" placeholder="e.g. Family" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:15px;font-family:'Inter',sans-serif;margin-bottom:10px"/>
       <div style="margin-top:14px">
-        <div style="color:${C.textDim};font-size:11px;margin-bottom:8px">Where this network posts</div>
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+          <span style="color:${C.textDim};font-size:11px">Where this network posts</span>
+          <button onclick="toggleEncNote()" aria-label="How your privacy works" style="background:none;border:none;color:${C.muted};cursor:pointer;font-size:14px;line-height:1;padding:2px;display:flex;align-items:center">\u24d8</button>
+        </div>
         <div style="display:flex;gap:6px">
           ${[['public','Public'],['moments','Moment\u2019s'],['custom','Choose']].map(([k,label])=>{
             const on=_createRelayChoice===k;
@@ -6076,13 +6106,12 @@ function buildJoinScreen(){
             <textarea oninput="setCustomRelays(this.value)" placeholder="wss://relay.example.com (one per line)" rows="3" style="width:100%;background:${C.surfaceHigh};border:1px solid var(--c-border);outline:none;border-radius:12px;padding:10px 12px;color:${C.text};font-size:13px;resize:none;font-family:inherit">${esc(_createCustomRelays)}</textarea>
             <div style="color:${C.warn||'#d98324'};font-size:11px;margin-top:6px;line-height:1.5">Advanced: your network only works if these relays are online and accept your posts. If unsure, use Public.</div>
           </div>`:''}
-        <div style="display:flex;gap:7px;align-items:flex-start;margin-top:10px;background:${C.surfaceHigh};border-radius:10px;padding:9px 11px">
+        <div id="create-enc-note" style="display:none;gap:7px;align-items:flex-start;margin-top:10px;background:${C.surfaceHigh};border-radius:10px;padding:9px 11px">
           <span style="flex-shrink:0;font-size:13px;line-height:1.5">🔒</span>
           <div style="color:${C.textDim};font-size:11px;line-height:1.55">Everything is encrypted for this network before it leaves your phone. Whichever relay you pick \u2014 including the public ones \u2014 only ever stores scrambled data it can\u2019t read. Only people with your network\u2019s code can see your photos.</div>
         </div>
-        <div style="color:${C.muted};font-size:11px;margin-top:8px">Optional \u2014 leave on Public and your network uses the standard relays.</div>
       </div>
-      <button onclick="createNetwork()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer">Create network</button>
+      <button onclick="createNetwork()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;margin-top:16px">Create network</button>
     </div>
 
     <div style="width:100%;display:flex;align-items:center;gap:10px">

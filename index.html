@@ -818,6 +818,15 @@ async function handleRemoteEvent(netId, ev){
   let ok=false;
   try{ ok=await verifyEvent(ev); }finally{ delete _verifying[ev.id]; }
   if(!ok) return;
+  // Structural type check. verifyEvent only proves the id/signature commit to whatever
+  // serialization the AUTHOR chose — so a hostile author can sign an event whose
+  // created_at (or kind) is a STRING, or whose tags aren't an array. A string
+  // created_at like `1"><script>…` slips past the numeric clamp below (string>number
+  // coerces to NaN, which is never >), then breaks out of a data-ts="…" attribute
+  // downstream. Require the canonical Nostr types before anything trusts these fields.
+  if(typeof ev.created_at!=='number' || !Number.isFinite(ev.created_at)) return;
+  if(typeof ev.kind!=='number') return;
+  if(!Array.isArray(ev.tags)) return;
   // Receipt-time sanity clamp. created_at is a trust signal all over this app —
   // the identity-field freshness guards, leave/rejoin ordering, and dedup all
   // treat "newer" as "wins". A validly-signed event stamped far in the future
@@ -6263,7 +6272,7 @@ function buildFeed(net){
             <button onclick="openProfile('${post.memberId}')" style="background:none;border:none;padding:0;cursor:pointer;flex-shrink:0">${avatarHTML(mem,36,12,18)}</button>
             <div>
               <div style="color:${C.text};font-size:13px;font-weight:600;font-family:'Playfair Display',serif">${esc(mem.name)}${mem.left?` <span style="color:${C.muted};font-size:10px;font-weight:500;font-family:'Inter',sans-serif">· left the network</span>`:''}</div>
-              <div class="post-time" data-ts="${post.ts||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(post))}</span>${postStatus(net,post)}${post.exp?`<span class="post-exp" data-exp="${post.exp}" style="color:${C.accent};font-weight:700;margin-left:6px">\u23f1 ${esc(expLabel(post.exp))}</span>`:''}</div>
+              <div class="post-time" data-ts="${Number(post.ts)||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(post))}</span>${postStatus(net,post)}${post.exp?`<span class="post-exp" data-exp="${post.exp}" style="color:${C.accent};font-weight:700;margin-left:6px">\u23f1 ${esc(expLabel(post.exp))}</span>`:''}</div>
             </div>
             <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${post.id}')" style="margin-left:auto;background:none;border:none;color:${C.muted};font-size:20px;cursor:pointer;padding:4px 6px;line-height:1">···</button>
           </div>
@@ -6639,7 +6648,7 @@ function buildMyPage(net){
             <div onclick="openPostView('${p.id}')" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word;flex:1">${esc(captionSansLink(p))}</div>
             <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${p.id}')" style="background:none;border:none;color:${C.muted};font-size:18px;cursor:pointer;padding:0 2px;line-height:1;flex-shrink:0">···</button>
           </div>
-          <div class="post-time" data-ts="${p.ts||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span>${postStatus(net,p)}</div>
+          <div class="post-time" data-ts="${Number(p.ts)||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span>${postStatus(net,p)}</div>
           ${p.poll?`<div style="margin-top:10px">${pollHTML(net,p)}</div>`:''}
           ${p.link?linkCardHTML(p):''}
           <div style="margin-top:12px">${actionRow(p)}</div>
@@ -6760,7 +6769,7 @@ function buildProfile(net){
       </div>`; };
   const textCard = (p)=>`<div style="background:${C.surface};border-radius:16px;padding:14px 16px">
         <div onclick="openPostView('${p.id}')" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(p))}</div>
-        <div class="post-time" data-ts="${p.ts||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span></div>
+        <div class="post-time" data-ts="${Number(p.ts)||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span></div>
         ${p.poll?`<div style="margin-top:10px">${pollHTML(net,p)}</div>`:''}
         ${p.link?linkCardHTML(p):''}
       </div>`;
@@ -7213,7 +7222,7 @@ function buildPostView(net){
         <div onclick="openProfile('${post.memberId}')" style="flex-shrink:0;cursor:pointer">${avatarHTML(mem,34,11,14,2)}</div>
         <div style="min-width:0">
           <div style="color:${C.text};font-size:14px;font-weight:600;font-family:'Playfair Display',serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(mem.name||'Friend')}</div>
-          <div class="post-time" data-ts="${post.ts||0}" ${post.ts?'data-abs="1"':''} onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${post.ts?esc(fmtAbs(post.ts)):esc(fmtTime(post))}</span>${postStatus(net,post)}</div>
+          <div class="post-time" data-ts="${Number(post.ts)||0}" ${post.ts?'data-abs="1"':''} onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${post.ts?esc(fmtAbs(post.ts)):esc(fmtTime(post))}</span>${postStatus(net,post)}</div>
         </div>
       </div>
       <button aria-label="Post options" onclick="openPostMenu('${net.id}','${post.id}')" style="background:none;border:none;color:${C.muted};font-size:20px;cursor:pointer;padding:4px 6px;line-height:1">···</button>

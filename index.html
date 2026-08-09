@@ -27,13 +27,19 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <!-- CSP notes: script-src needs 'unsafe-inline' (all logic + event handlers are inline
-       by design) so it can't stop inline-injection XSS — escaping remains the defense.
-       What it DOES block: loading any external script, plaintext http/ws traffic, plugin/
+  <!-- CSP notes: the script directive is HASH-PINNED (sha256 of each inline script block)
+       with no 'unsafe-inline'. Injected script or an inline on*= handler therefore cannot
+       run — the systemic backstop for the XSS class fixed in 0.9.3; escaping is still
+       the first line of defense. All UI events go through the delegated data-act
+       registry (see initDelegation) rather than inline handlers.
+       ⚠ EDITING EITHER SCRIPT BLOCK CHANGES ITS HASH — run fix_csp_hashes.py after any
+       edit, or the app will refuse to run.
+       What it also blocks: loading any external script, plaintext http/ws traffic, plugin/
        base/form/frame vectors. connect-src must stay https:/wss:-wide because users add
-       custom relays and members' media lives on arbitrary Blossom hosts. worker-src 'self'
-       pre-clears the v0.9 service worker (script-src here would otherwise block it). -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
+       custom relays and members' media lives on arbitrary Blossom hosts. style-src keeps
+       'unsafe-inline' (the whole UI is inline styles; styles can't execute JS).
+       worker-src 'self' pre-clears the v0.9 service worker. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-N6wZXfG2Q6PadaCHI11vQrjCIqrMY+97H3wlu7TuJ64='; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -216,10 +222,10 @@
 <nav>
   <span class="nav-logo"></span>
   <ul class="nav-links">
-    <li><a onclick="openModal('about')">About</a></li>
-    <li><a onclick="openModal('login')">Log in</a></li>
+    <li><a data-act="openModal" data-a="about">About</a></li>
+    <li><a data-act="openModal" data-a="login">Log in</a></li>
     <li>
-      <button id="landing-theme-btn" onclick="toggleLandingTheme()" title="Toggle theme" style="background:none;border:1px solid var(--accentBorder);border-radius:20px;padding:5px 12px;font-size:.8rem;color:var(--muted);cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;transition:color .2s,border-color .2s;white-space:nowrap">🌙 Dark</button>
+      <button id="landing-theme-btn" data-act="toggleLandingTheme" title="Toggle theme" style="background:none;border:1px solid var(--accentBorder);border-radius:20px;padding:5px 12px;font-size:.8rem;color:var(--muted);cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;transition:color .2s,border-color .2s;white-space:nowrap">🌙 Dark</button>
     </li>
   </ul>
 </nav>
@@ -235,26 +241,26 @@
     <div class="bubble-glow"></div>
   </div>
   <p class="slogan">Your <span>network</span> only</p>
-  <button class="btn-signup" id="hero-signup-btn" onclick="openModal('signup')">Sign Up <span class="btn-arrow">→</span></button>
+  <button class="btn-signup" id="hero-signup-btn" data-act="openModal" data-a="signup">Sign Up <span class="btn-arrow">→</span></button>
   <a href="https://zapstore.dev/" target="_blank" rel="noopener noreferrer" style="margin-top:18px;display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,140,66,.28);border-radius:100px;padding:8px 16px;color:var(--muted);font-size:.78rem;font-weight:500;text-decoration:none;cursor:pointer">
     <svg width="11" height="18" viewBox="0 0 19 32" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0"><path d="M18.8379 13.9711L8.84956 0.356086C8.30464 -0.386684 7.10438 0.128479 7.30103 1.02073L9.04686 8.94232C9.16268 9.46783 8.74887 9.96266 8.19641 9.9593L0.871032 9.91477C0.194934 9.91066 -0.223975 10.6293 0.126748 11.1916L7.69743 23.3297C7.99957 23.8141 7.73264 24.4447 7.16744 24.5816L5.40958 25.0076C4.70199 25.179 4.51727 26.0734 5.10186 26.4974L12.4572 31.8326C12.9554 32.194 13.6711 31.9411 13.8147 31.3529L15.8505 23.0152C16.0137 22.3465 15.3281 21.7801 14.6762 22.0452L13.0661 22.7001C12.5619 22.9052 11.991 22.6092 11.8849 22.0877L10.7521 16.5224C10.6486 16.014 11.038 15.5365 11.5704 15.5188L18.1639 15.2998C18.8529 15.2769 19.2383 14.517 18.8379 13.9711Z" fill="var(--accent)"/></svg>
     <span>Coming soon to <strong style="color:var(--accent);font-weight:700">Zapstore</strong></span>
   </a>
-  <button id="install-btn" onclick="installApp()" style="display:none;margin-top:16px;background:none;border:1px solid rgba(255,140,66,.4);color:var(--accent);border-radius:100px;padding:11px 26px;font-family:'Inter',sans-serif;font-size:.85rem;font-weight:600;letter-spacing:.02em;cursor:pointer">⬇ Install app</button>
+  <button id="install-btn" data-act="installApp" style="display:none;margin-top:16px;background:none;border:1px solid rgba(255,140,66,.4);color:var(--accent);border-radius:100px;padding:11px 26px;font-family:'Inter',sans-serif;font-size:.85rem;font-weight:600;letter-spacing:.02em;cursor:pointer">⬇ Install app</button>
   <div id="ios-hint" style="display:none;margin-top:16px;max-width:300px;color:var(--muted);font-size:.78rem;line-height:1.6;text-align:center">Tip: tap the <strong style="color:var(--text)">Share</strong> icon, then <strong style="color:var(--text)">Add to Home Screen</strong> to install Moment's.</div>
   <ul class="hero-links">
-    <li><a onclick="openModal('about')">About</a></li>
-    <li><a onclick="openModal('login')">Log in</a></li>
-    <li><button id="landing-theme-btn-m" onclick="toggleLandingTheme()" style="background:none;border:1px solid var(--accentBorder);border-radius:20px;padding:5px 12px;font-size:.8rem;color:var(--muted);cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;white-space:nowrap">🌙 Dark</button></li>
+    <li><a data-act="openModal" data-a="about">About</a></li>
+    <li><a data-act="openModal" data-a="login">Log in</a></li>
+    <li><button id="landing-theme-btn-m" data-act="toggleLandingTheme" style="background:none;border:1px solid var(--accentBorder);border-radius:20px;padding:5px 12px;font-size:.8rem;color:var(--muted);cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;white-space:nowrap">🌙 Dark</button></li>
   </ul>
 </main>
 
 <p class="footer-tag">Vibed with 🧡 by Callum</p>
 
 <!-- ══ SIGN UP MODAL ══ -->
-<div class="modal-overlay" id="modal-signup" onclick="overlayClick(event,'signup')">
+<div class="modal-overlay" id="modal-signup" data-act="overlayClick" data-a="signup">
   <div class="modal">
-    <button aria-label="Close" class="modal-close" onclick="closeModal('signup')">✕</button>
+    <button aria-label="Close" class="modal-close" data-act="closeModal" data-a="signup">✕</button>
     <div class="step-dots">
       <div class="step-dot active" id="sd1"></div>
       <div class="step-dot" id="sd2"></div>
@@ -270,8 +276,8 @@
         <span class="warn-icon">⚠️</span>
         <span>Moment's has no accounts. Your <strong>nsec key IS your identity</strong>. Lose it and access is gone permanently — there is no recovery.</span>
       </div>
-      <button class="btn-primary" id="btn-gen" onclick="generateKeys()">Generate My Keys →</button>
-      <p class="modal-switch">Already have a key? <a onclick="switchModal('signup','login')">Log in</a></p>
+      <button class="btn-primary" id="btn-gen" data-act="generateKeys">Generate My Keys →</button>
+      <p class="modal-switch">Already have a key? <a data-act="switchModal" data-a="signup" data-b="login">Log in</a></p>
     </div>
 
     <!-- Step 2: show key -->
@@ -281,13 +287,13 @@
       <p class="modal-sub">This <strong style="color:var(--warm)">key</strong> is the only way back into your account. Save it somewhere safe.</p>
       <div class="key-box" style="border-color:rgba(242,196,176,.35)">
         <span class="key-label" style="color:rgba(242,196,176,.7)">⚠ Moment key — NEVER share this</span>
-        <span class="nsec-value" id="show-nsec" style="filter:blur(5px);cursor:pointer;user-select:none" onclick="this.style.filter=this.style.filter?'':'blur(5px)'">tap to reveal</span>
-        <button class="copy-btn" onclick="doCopy('show-nsec',this)">Copy</button>
+        <span class="nsec-value" id="show-nsec" style="filter:blur(5px);cursor:pointer;user-select:none" data-act="toggleBlur" role="button" tabindex="0" aria-label="Reveal or hide secret key">tap to reveal</span>
+        <button class="copy-btn" data-act="doCopy" data-a="show-nsec">Copy</button>
       </div>
       <p style="font-size:.74rem;color:var(--muted);text-align:center;margin:4px 0 12px">Tap the key to reveal · tap again to hide</p>
       <div class="divider">save your key</div>
-      <button class="btn-primary" onclick="downloadFile()">⬇ Download Key File (.txt)</button>
-      <button class="btn-ghost" onclick="toNameStep()">I've saved my key — Continue →</button>
+      <button class="btn-primary" data-act="downloadFile">⬇ Download Key File (.txt)</button>
+      <button class="btn-ghost" data-act="toNameStep">I've saved my key — Continue →</button>
     </div>
 
     <!-- Step 3: choose display name -->
@@ -297,10 +303,10 @@
       <p class="modal-sub">This is how your friends will see you in your networks. You can change it anytime.</p>
       <div class="field">
         <label>Display name</label>
-        <input type="text" id="signup-name" placeholder="e.g. Callum" autocomplete="off" maxlength="40" spellcheck="false" onkeydown="if(event.key==='Enter')completeSignup()"/>
+        <input type="text" id="signup-name" placeholder="e.g. Callum" autocomplete="off" maxlength="40" spellcheck="false" data-act-keydown="signupKeydown"/>
         <div class="field-error" id="name-err">Please enter a display name.</div>
       </div>
-      <button class="btn-primary" onclick="completeSignup()">Enter Moment's →</button>
+      <button class="btn-primary" data-act="completeSignup">Enter Moment's →</button>
     </div>
 
     <!-- Step 4: success -->
@@ -315,9 +321,9 @@
 </div>
 
 <!-- ══ LOGIN MODAL ══ -->
-<div class="modal-overlay" id="modal-login" onclick="overlayClick(event,'login')">
+<div class="modal-overlay" id="modal-login" data-act="overlayClick" data-a="login">
   <div class="modal">
-    <button aria-label="Close" class="modal-close" onclick="closeModal('login')">✕</button>
+    <button aria-label="Close" class="modal-close" data-act="closeModal" data-a="login">✕</button>
     <span class="modal-logo">Moment's</span>
     <h2 class="modal-title" style="margin-top:14px">Welcome back</h2>
     <p class="modal-sub">Log in with your moment key or upload your key file.</p>
@@ -328,16 +334,16 @@
         <input type="password" id="login-nsec" placeholder="nsec1…" autocomplete="off" spellcheck="false"/>
         <div class="field-error" id="login-nsec-err">That key doesn't look right — check it and try again.</div>
       </div>
-      <button class="btn-primary" onclick="loginNsec()">Log In →</button>
+      <button class="btn-primary" data-act="loginNsec">Log In →</button>
       <div class="divider">or upload key file</div>
       <div class="file-drop" id="login-drop">
-        <input type="file" accept=".txt" onchange="loadFile(this)"/>
+        <input type="file" accept=".txt" data-act-change="loadFile"/>
         <div class="file-icon">📄</div>
         <p>Upload your <strong style="color:var(--accent)">moments-key.txt</strong></p>
         <div class="file-name" id="file-loaded" style="display:none"></div>
       </div>
       <div class="field-error" id="login-file-err" style="display:block;margin-top:8px"></div>
-      <p class="modal-switch">New here? <a onclick="switchModal('login','signup')">Create your identity</a></p>
+      <p class="modal-switch">New here? <a data-act="switchModal" data-a="login" data-b="signup">Create your identity</a></p>
     </div>
 
     <div id="login-success" style="display:none">
@@ -351,9 +357,9 @@
 </div>
 
 <!-- ══ ABOUT MODAL ══ -->
-<div class="modal-overlay" id="modal-about" onclick="overlayClick(event,'about')">
+<div class="modal-overlay" id="modal-about" data-act="overlayClick" data-a="about">
   <div class="modal">
-    <button aria-label="Close" class="modal-close" onclick="closeModal('about')">✕</button>
+    <button aria-label="Close" class="modal-close" data-act="closeModal" data-a="about">✕</button>
     <span class="modal-logo">Moment's</span>
     <p style="text-align:center;color:var(--accent);font-size:.82rem;font-weight:600;letter-spacing:.04em;margin-top:6px;margin-bottom:20px">Your photos. Your people. Your network.</p>
     <div id="about-body" style="color:var(--textDim);font-size:.9rem;line-height:1.7">
@@ -1423,7 +1429,7 @@ function postStatus(net, post){
   const mine = post && (post.memberId==='u1' || post.authorPk===myPubkey());
   if(!mine || !post.status || post.status==='sent') return '';
   if(post.status==='sending') return ` · <span style="color:${C.muted}">Posting…</span>`;
-  return ` · <span data-act="retryPost" data-a="${net.id}" data-b="${post.id}" data-stop style="color:${C.red};font-weight:700;cursor:pointer">⚠ Failed — Retry</span>`;
+  return ` · <span data-act="retryPost" role="button" tabindex="0" data-a="${net.id}" data-b="${post.id}" data-stop style="color:${C.red};font-weight:700;cursor:pointer">⚠ Failed — Retry</span>`;
 }
 
 // Publish a post / reply / like / delete to the network (encrypted where needed)
@@ -1845,8 +1851,8 @@ function showKeyTextFallback(content, downloadWorked){
         ? "If the download didn't start (some previews block it), copy the contents below and save them as <strong style='color:var(--accent)'>moments-key.txt</strong>."
         : "Downloads are blocked in this preview. Copy the contents below and save them as <strong style='color:var(--accent)'>moments-key.txt</strong>."}
     </div>
-    <textarea id="dl-text" readonly onclick="this.focus();this.select()" style="width:100%;height:140px;background:#0F0F14;border:1px solid rgba(255,255,255,.1);border-radius:11px;color:var(--text);font-family:'Courier New',monospace;font-size:.7rem;padding:12px;resize:none;outline:none"></textarea>
-    <button class="btn-ghost" onclick="copyKeyFile(this)">Copy Key File Contents</button>
+    <textarea id="dl-text" readonly data-act="focusSelect" style="width:100%;height:140px;background:#0F0F14;border:1px solid rgba(255,255,255,.1);border-radius:11px;color:var(--text);font-family:'Courier New',monospace;font-size:.7rem;padding:12px;resize:none;outline:none"></textarea>
+    <button class="btn-ghost" data-act="copyKeyFile">Copy Key File Contents</button>
   `;
   document.getElementById('dl-text').value=content;
 }
@@ -2239,6 +2245,7 @@ function photoSrc(net, post){
 // the feed flickering as photos/avatars pop in one-by-one during load).
 let _renderSoonTimer=null;
 let _lastFrameHTML='';   // renderApp skips DOM writes when output is unchanged
+let _resetScroll=false;  // set by callers whose render replaces list contents (date filters)
 function renderSoon(){
   if(_renderSoonTimer) return;
   _renderSoonTimer=setTimeout(()=>{ _renderSoonTimer=null; if(!syncRenderBlocked()) renderApp(); }, 180);
@@ -2442,7 +2449,7 @@ function photoGrid(net, post){
     const bg = cached ? `background:url('${safeMediaUrl(cached)}') center/cover no-repeat;`
              : (e.blurhash ? `background:url('${safeCssUrl(blurhashToDataURL(e.blurhash))}') center/cover no-repeat;`
              : `background:${C.surfaceHigh};`);
-    return `<div data-photo="${sha}" data-act="openPhotoAt" data-a="${net.id}" data-b="${post.id}" data-c="${idx}" data-stop style="${bg}cursor:pointer;position:relative;overflow:hidden;${extra||''}"></div>`;
+    return `<div data-photo="${sha}" data-act="openPhotoAt" role="button" tabindex="0" aria-label="Open photo" data-a="${net.id}" data-b="${post.id}" data-c="${idx}" data-stop style="${bg}cursor:pointer;position:relative;overflow:hidden;${extra||''}"></div>`;
   };
   const gap='4px';
   if(n===2){
@@ -3015,6 +3022,8 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 const CHANGELOG=[
   { v:'0.9.3', date:'July 2026', title:'Here and gone', changes:[
     ['new','Disappearing photos \u2014 flip on \u201cDisappears after 24 hours\u201d when sharing, and the post fades from everyone\u2019s feed a day later, with a little countdown while it\u2019s up. It\u2019s a tidiness feature, not a security one: anyone in the network can still screenshot it while it\u2019s there'],
+    ['new','Buttons and controls can now be reached with a keyboard and read out by screen readers'],
+    ['fix','Switching between 7d, 14d and All now takes you back to the top instead of leaving you stranded at the bottom'],
     ['fix','The camera preview no longer flickers once a second while recording a video'],
     ['fix','Security hardening around how posts and link previews are displayed'],
   ]},
@@ -3244,7 +3253,7 @@ function buildWhatsNew(){
       </div>` : '';
     return `
     <div style="background:${C.surface};border:1px solid ${ri===0?C.accentBorder:'var(--c-border)'};border-radius:16px;margin-bottom:12px;overflow:hidden">
-      <button onclick="toggleWhatsNew('${esc(rel.v)}')" aria-expanded="${open?'true':'false'}" style="width:100%;background:none;border:none;cursor:pointer;padding:14px;display:flex;align-items:center;gap:10px;text-align:left">
+      <button data-act="toggleWhatsNew" data-a="${esc(rel.v)}" aria-expanded="${open?'true':'false'}" style="width:100%;background:none;border:none;cursor:pointer;padding:14px;display:flex;align-items:center;gap:10px;text-align:left">
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:baseline;gap:8px">
             <span style="font-family:'Playfair Display',serif;color:${C.text};font-size:18px;font-weight:600">${esc(rel.title)}</span>
@@ -3261,11 +3270,11 @@ function buildWhatsNew(){
   return `
   <div id="whatsnew-scroll" class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:74;display:flex;flex-direction:column;overflow-y:auto">
     <div style="padding:20px 20px 10px;display:flex;align-items:center;gap:12px;flex-shrink:0;border-bottom:1px solid var(--c-border)">
-      <button aria-label="Back" onclick="closeWhatsNew()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px;flex-shrink:0">←</button>
+      <button aria-label="Back" data-act="closeWhatsNew" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px;flex-shrink:0">←</button>
       <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">What's New</div>
     </div>
     <div style="padding:20px 18px 48px">
-      <button onclick="openRoadmap()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-bottom:18px">
+      <button data-act="openRoadmap" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-bottom:18px">
         <span style="font-size:20px">🗺️</span>
         <div style="flex:1;min-width:0">
           <div style="color:${C.text};font-size:14px;font-weight:700">What's next</div>
@@ -3309,7 +3318,7 @@ function buildRoadmap(){
   return `
   <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:74;display:flex;flex-direction:column;overflow-y:auto">
     <div style="padding:20px 20px 10px;display:flex;align-items:center;gap:12px;flex-shrink:0;border-bottom:1px solid var(--c-border)">
-      <button aria-label="Back" onclick="closeRoadmap()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">‹</button>
+      <button aria-label="Back" data-act="closeRoadmap" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">‹</button>
       <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">What's next</div>
     </div>
     <div style="padding:20px 18px 48px">
@@ -3347,7 +3356,7 @@ function buildEcosystem(){
   return `
   <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:74;display:flex;flex-direction:column;overflow-y:auto">
     <div style="padding:20px 20px 10px;display:flex;align-items:center;gap:12px;flex-shrink:0;border-bottom:1px solid var(--c-border)">
-      <button aria-label="Back" onclick="closeEcosystem()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">‹</button>
+      <button aria-label="Back" data-act="closeEcosystem" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">‹</button>
       <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">Your key works everywhere</div>
     </div>
     <div style="padding:22px 20px 48px">
@@ -3390,7 +3399,7 @@ function buildContact(){
   return `
   <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:74;display:flex;flex-direction:column;overflow-y:auto">
     <div style="padding:20px 20px 10px;display:flex;align-items:center;gap:12px;flex-shrink:0;border-bottom:1px solid var(--c-border)">
-      <button aria-label="Back" onclick="closeContact()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">‹</button>
+      <button aria-label="Back" data-act="closeContact" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">‹</button>
       <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">Contact</div>
     </div>
     <div style="padding:24px 20px 48px">
@@ -3398,7 +3407,7 @@ function buildContact(){
       <div style="display:flex;align-items:center;gap:12px;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;margin-bottom:10px">
         ${signalMark(20)}
         <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">Signal</div><div style="color:${C.accent};font-size:13px;margin-top:2px">callum.21</div></div>
-        <button onclick="copyContact('callum.21','Signal username')" aria-label="Copy Signal username" title="Copy" style="flex-shrink:0;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:10px;width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">
+        <button data-act="copyContact" data-a="callum.21" data-b="Signal username" aria-label="Copy Signal username" title="Copy" style="flex-shrink:0;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:10px;width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="${C.muted}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="11" height="11" rx="2"/>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -3423,7 +3432,7 @@ function buildContact(){
 
       <div style="color:${C.text};font-family:'Playfair Display',serif;font-size:16px;font-weight:600;margin:26px 0 6px">Support Moment's</div>
       <div style="color:${C.muted};font-size:13px;line-height:1.7;margin-bottom:12px">Moments has no ads and no subscriptions. If it's useful to you, a Bitcoin Lightning tip helps keep it going — entirely optional.</div>
-      <button onclick="supportLightning()" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
+      <button data-act="supportLightning" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:15px 16px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
         <span style="font-size:20px">⚡</span>
         <div style="flex:1;min-width:0"><div style="color:${C.text};font-size:14px;font-weight:600">cal@cake.cash</div><div style="color:${C.accent};font-size:13px;margin-top:2px">Tip over Lightning</div></div>
         <span style="color:#F5C842;font-size:13px;font-weight:700;flex-shrink:0">Zap →</span>
@@ -3452,14 +3461,14 @@ function buildAdvanced(){
         <div style="color:${C.text};font-size:12px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(url.replace(/^wss:\/\//,''))}</div>
         <div class="relay-label" data-url="${esc(url)}" style="color:${sm.c};font-size:10px;font-weight:600;margin-top:1px">${sm.t}</div>
       </div>
-      <button aria-label="Remove relay" onclick="removeRelay(${i})" style="background:none;border:none;color:${C.muted};font-size:14px;cursor:pointer;flex-shrink:0;padding:2px 6px" title="Remove">✕</button>
+      <button aria-label="Remove relay" data-act="removeRelay" data-a="${i}" style="background:none;border:none;color:${C.muted};font-size:14px;cursor:pointer;flex-shrink:0;padding:2px 6px" title="Remove">✕</button>
     </div>`;
   }).join('');
 
   return `
   <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:74;display:flex;flex-direction:column;overflow-y:auto">
     <div style="padding:20px 20px 10px;display:flex;align-items:center;gap:12px;flex-shrink:0;border-bottom:1px solid var(--c-border)">
-      <button aria-label="Back" onclick="closeAdvanced()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px;flex-shrink:0">←</button>
+      <button aria-label="Back" data-act="closeAdvanced" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px;flex-shrink:0">←</button>
       <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">Advanced</div>
     </div>
 
@@ -3476,8 +3485,8 @@ function buildAdvanced(){
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
           <div style="color:${C.text};font-size:14px;font-weight:700">Nostr Relays</div>
           <div style="display:flex;gap:14px;align-items:center">
-            <button onclick="reconnectRelays()" style="background:none;border:none;color:${C.accent};font-size:12px;font-weight:700;cursor:pointer">Reconnect</button>
-            ${!isDefault?`<button onclick="resetRelays()" style="background:none;border:none;color:${C.muted};font-size:12px;font-weight:700;cursor:pointer">Reset</button>`:''}
+            <button data-act="reconnectRelays" style="background:none;border:none;color:${C.accent};font-size:12px;font-weight:700;cursor:pointer">Reconnect</button>
+            ${!isDefault?`<button data-act="resetRelays" style="background:none;border:none;color:${C.muted};font-size:12px;font-weight:700;cursor:pointer">Reset</button>`:''}
           </div>
         </div>
         <div style="color:${C.muted};font-size:11px;line-height:1.5;margin-bottom:14px">Relays are the servers Moment's uses to sync posts with your network. Add relays you trust or remove ones that are slow.</div>
@@ -3487,16 +3496,16 @@ function buildAdvanced(){
         <!-- Add relay input -->
         <div style="display:flex;gap:8px;margin-top:4px">
           <input id="relay-input" type="url" placeholder="wss://relay.example.com" autocomplete="off" autocapitalize="none" spellcheck="false"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();addRelay();}"
+            data-act-keydown="relayKeydown"
             style="flex:1;background:${C.surfaceHigh};border:1.5px solid var(--c-border);outline:none;border-radius:12px;padding:10px 12px;color:${C.text};font-size:12px;font-family:monospace;min-width:0;transition:border-color .2s"
-            onfocus="this.style.borderColor='${C.accentBorder}'" onblur="this.style.borderColor='var(--c-border)'"/>
-          <button onclick="addRelay()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:0 16px;font-size:14px;font-weight:700;cursor:pointer;flex-shrink:0">+</button>
+            data-act-focus="focusBorderOn" data-act-blur="focusBorderOff"/>
+          <button data-act="addRelay" style="background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:0 16px;font-size:14px;font-weight:700;cursor:pointer;flex-shrink:0">+</button>
         </div>
         <div id="relay-err" style="color:${C.red};font-size:11px;margin-top:6px;display:none"></div>
-        <button onclick="reconnectRelays()" style="width:100%;margin-top:12px;background:${C.surfaceHigh};color:${C.text};border:1px solid var(--c-border);border-radius:12px;padding:11px 0;font-size:13px;font-weight:700;cursor:pointer">↻ Reconnect all</button>
+        <button data-act="reconnectRelays" style="width:100%;margin-top:12px;background:${C.surfaceHigh};color:${C.text};border:1px solid var(--c-border);border-radius:12px;padding:11px 0;font-size:13px;font-weight:700;cursor:pointer">↻ Reconnect all</button>
       </div>
 
-      ${A.profile&&A.profile.backupHidden ? `<button onclick="setBackupHidden(false)" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;margin-bottom:14px;cursor:pointer;display:flex;align-items:center;gap:12px;text-align:left">
+      ${A.profile&&A.profile.backupHidden ? `<button data-act="setBackupHidden" data-a="false" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;margin-bottom:14px;cursor:pointer;display:flex;align-items:center;gap:12px;text-align:left">
         <span style="font-size:18px">🔑</span>
         <div style="flex:1;min-width:0">
           <div style="color:${C.text};font-size:14px;font-weight:600">Show key backup</div>
@@ -3509,7 +3518,7 @@ function buildAdvanced(){
       <div style="background:${C.surface};border-radius:16px;padding:16px;margin-bottom:14px">
         <div style="color:${C.text};font-size:13px;font-weight:700;margin-bottom:6px">Cached photos</div>
         <div style="color:${C.muted};font-size:12px;line-height:1.6;margin-bottom:12px">Moments keeps decrypted photos on your device so they load instantly next time. Clearing is safe — they re-download from your network when you view them again. Your posts, networks, and key are never affected.</div>
-        <button onclick="clearMediaCache()" style="width:100%;background:${C.surfaceHigh};color:${C.text};border:1px solid var(--c-border);border-radius:12px;padding:11px 0;font-size:13px;font-weight:700;cursor:pointer">Clear cached photos</button>
+        <button data-act="clearMediaCache" style="width:100%;background:${C.surfaceHigh};color:${C.text};border:1px solid var(--c-border);border-radius:12px;padding:11px 0;font-size:13px;font-weight:700;cursor:pointer">Clear cached photos</button>
       </div>
 
       ${canVanish() ? `
@@ -3519,7 +3528,7 @@ function buildAdvanced(){
         <div style="color:${C.muted};font-size:12px;line-height:1.6;margin-bottom:14px">
           Leaves every network and asks your relays to erase everything you\u2019ve ever posted with this key. Your key keeps working — you can start again from nothing.
         </div>
-        <button onclick="vanishAsk()" style="width:100%;background:none;border:1.5px solid ${C.red}66;color:${C.red};border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer">Delete account data</button>
+        <button data-act="vanishAsk" style="width:100%;background:none;border:1.5px solid ${C.red}66;color:${C.red};border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer">Delete account data</button>
       </div>` : ''}
 
     </div>
@@ -3876,12 +3885,12 @@ function askConfirm(msg, yesLabel, cb){ A.confirmMsg=msg; A.confirmYes=yesLabel|
 function confirmYes(){ const cb=_confirmCb; _confirmCb=null; A.confirmMsg=null; renderApp(); if(cb) cb(); }
 function confirmNo(){ _confirmCb=null; A.confirmMsg=null; renderApp(); }
 function buildConfirm(){
-  return `<div onclick="confirmNo()" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:28px">
+  return `<div data-act="confirmNo" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:28px">
     <div data-act="noop" data-stop style="background:${C.surface};border:1px solid var(--c-border);border-radius:20px;padding:22px;max-width:320px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.5)">
       <div style="color:${C.text};font-size:14px;line-height:1.55;margin-bottom:18px">${esc(A.confirmMsg||'')}</div>
       <div style="display:flex;gap:10px">
-        <button onclick="confirmNo()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer">Cancel</button>
-        <button onclick="confirmYes()" style="flex:1;background:${C.red};color:#fff;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer">${esc(A.confirmYes||'Confirm')}</button>
+        <button data-act="confirmNo" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer">Cancel</button>
+        <button data-act="confirmYes" style="flex:1;background:${C.red};color:#fff;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer">${esc(A.confirmYes||'Confirm')}</button>
       </div>
     </div>
   </div>`;
@@ -3957,15 +3966,15 @@ async function confirmDeleteNetwork(){
 }
 function buildDeleteNetConfirm(){
   const net=A.networks[A.confirmDeleteNet]; if(!net) return '';
-  return `<div onclick="cancelDeleteNet()" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:24px">
+  return `<div data-act="cancelDeleteNet" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:24px">
     <div data-act="noop" data-stop style="background:${C.surface};border:1px solid rgba(248,113,113,0.4);border-radius:20px;padding:22px;width:100%;max-width:340px">
       <div style="color:${C.red};font-size:15px;font-weight:700;margin-bottom:8px">Delete "${esc(net.name)}"?</div>
       <div style="color:${C.textDim};font-size:13px;line-height:1.6;margin-bottom:14px">This removes the network from every member's app. Photos and comments will be gone for everyone. This cannot be undone.</div>
       <div style="color:${C.muted};font-size:12px;margin-bottom:6px">Type <strong style="color:${C.red}">DELETE NETWORK</strong> to confirm</div>
-      <input id="delnet-input" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" oninput="checkDeleteNetInput(this)" placeholder="DELETE NETWORK" style="width:100%;background:var(--c-input,rgba(0,0,0,.15));border:1px solid rgba(248,113,113,0.4);border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:monospace;letter-spacing:1px;outline:none;margin-bottom:14px"/>
+      <input id="delnet-input" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" data-act-input="checkDeleteNetInput" placeholder="DELETE NETWORK" style="width:100%;background:var(--c-input,rgba(0,0,0,.15));border:1px solid rgba(248,113,113,0.4);border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:monospace;letter-spacing:1px;outline:none;margin-bottom:14px"/>
       <div style="display:flex;gap:10px">
-        <button onclick="cancelDeleteNet()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>
-        <button id="delnet-go" disabled onclick="confirmDeleteNetwork()" style="flex:1;background:${C.red};color:#fff;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer;opacity:1">Delete forever</button>
+        <button data-act="cancelDeleteNet" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>
+        <button id="delnet-go" disabled data-act="confirmDeleteNetwork" style="flex:1;background:${C.red};color:#fff;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer;opacity:1">Delete forever</button>
       </div>
     </div>
   </div>`;
@@ -3978,7 +3987,7 @@ function buildVanishConfirm(){
   const nets=Object.keys(A.networks||{}).length;
   const relays=activeRelays().length;
   const busy=!!A.vanishBusy;
-  return `<div onclick="${busy?'':'vanishCancel()'}" style="position:absolute;inset:0;z-index:95;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:24px">
+  return `<div ${busy?'':`data-act="vanishCancel"`} style="position:absolute;inset:0;z-index:95;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:24px">
     <div data-act="noop" data-stop style="background:${C.surface};border:1px solid rgba(248,113,113,0.45);border-radius:20px;padding:22px;width:100%;max-width:360px;max-height:88%;overflow-y:auto">
       <div style="color:${C.red};font-size:16px;font-weight:800;margin-bottom:10px">Delete account data?</div>
       <div style="color:${C.textDim};font-size:13px;line-height:1.65;margin-bottom:10px">
@@ -3995,10 +4004,10 @@ function buildVanishConfirm(){
       </div>
       ${busy ? `<div style="color:${C.muted};font-size:13px;text-align:center;padding:14px 0">Leaving networks and contacting relays…</div>`
       : `<div style="color:${C.muted};font-size:12px;margin-bottom:6px">Type <strong style="color:${C.red}">DELETE ACCOUNT DATA</strong> to confirm</div>
-      <input id="vanish-input" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" oninput="vanishTyped(this)" placeholder="DELETE ACCOUNT DATA" style="width:100%;background:var(--c-input,rgba(0,0,0,.15));border:1px solid rgba(248,113,113,0.4);border-radius:12px;padding:12px 14px;color:${C.text};font-size:13px;font-family:monospace;letter-spacing:1px;outline:none;margin-bottom:14px"/>
+      <input id="vanish-input" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" data-act-input="vanishTyped" placeholder="DELETE ACCOUNT DATA" style="width:100%;background:var(--c-input,rgba(0,0,0,.15));border:1px solid rgba(248,113,113,0.4);border-radius:12px;padding:12px 14px;color:${C.text};font-size:13px;font-family:monospace;letter-spacing:1px;outline:none;margin-bottom:14px"/>
       <div style="display:flex;gap:10px">
-        <button onclick="vanishCancel()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>
-        <button id="vanish-go" disabled onclick="vanishGo()" style="flex:1;background:${C.red};color:#fff;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer">Delete forever</button>
+        <button data-act="vanishCancel" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>
+        <button id="vanish-go" disabled data-act="vanishGo" style="flex:1;background:${C.red};color:#fff;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer">Delete forever</button>
       </div>`}
     </div>
   </div>`;
@@ -4102,14 +4111,14 @@ function toggleMemberPosting(netId){
 function buildPasswordInput(netId){
   const net=A.networks[netId]; if(!net) return '';
   return `
-  <div onclick="cancelPasswordInput()" style="position:absolute;inset:0;z-index:92;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;padding:24px">
+  <div data-act="cancelPasswordInput" style="position:absolute;inset:0;z-index:92;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;padding:24px">
     <div data-act="noop" data-stop style="background:${C.bg};border-radius:20px;padding:22px 20px;width:100%;max-width:340px">
       <div style="color:${C.text};font-size:16px;font-weight:700;margin-bottom:6px">Network password</div>
       <div style="color:${C.muted};font-size:12px;margin-bottom:14px">Members will need this password plus the join code. Leave blank to remove the password.</div>
       <input id="net-pw-input" type="text" value="${esc(net.password||'')}" placeholder="Enter a password…" autocomplete="off" style="width:100%;background:${C.surfaceHigh};border:1.5px solid ${C.accentBorder};outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px"/>
       <div style="display:flex;gap:10px">
-        <button onclick="saveNetworkPassword('${netId}')" style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer">Save</button>
-        <button onclick="cancelPasswordInput()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer">Cancel</button>
+        <button data-act="saveNetworkPassword" data-a="${netId}" style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer">Save</button>
+        <button data-act="cancelPasswordInput" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer">Cancel</button>
       </div>
     </div>
   </div>`;
@@ -4147,7 +4156,7 @@ function copyInviteCode(){
   copyToClipboard(net.code).then(ok=>{ showToast(ok?'Code copied':'Select the code above to copy'); });
 }
 function closeInvite(){ A.showInvite=false; renderApp(); }
-function setFeedRange(r){ A.feedRange=r; haptic(6); renderApp(); }
+function setFeedRange(r){ A.feedRange=r; haptic(6); _resetScroll=true; renderApp(); }
 /* ── Date-range filter, shared by the feed and member profiles ──────────────
    Calendar weeks, Monday 00:00 local. Legacy posts with no timestamp only ever
    appear under All. Single source of truth: the feed and a profile must never
@@ -4178,7 +4187,7 @@ function rangeChips(active, fn, pad){
 // A profile is an archive you visit deliberately, so it opens on All — defaulting
 // to This week would hide almost everything and silently change what the grid
 // showed before this filter existed.
-function setProfileRange(r){ A.profileRange=r; haptic(6); renderApp(); }
+function setProfileRange(r){ A.profileRange=r; haptic(6); _resetScroll=true; renderApp(); }
 function openProfile(id){
   if(!id) return;
   const me=myPubkey();
@@ -4880,15 +4889,15 @@ function confirmJoinWithPassword(){
 function cancelJoinPrompt(){ A.pendingJoinCode=null; renderApp(); }
 function buildJoinPasswordPrompt(){
   return `
-  <div onclick="cancelJoinPrompt()" style="position:absolute;inset:0;z-index:92;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;padding:24px">
+  <div data-act="cancelJoinPrompt" style="position:absolute;inset:0;z-index:92;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;padding:24px">
     <div data-act="noop" data-stop style="background:${C.bg};border-radius:20px;padding:22px 20px;width:100%;max-width:340px">
       <div style="color:${C.text};font-size:16px;font-weight:700;margin-bottom:4px">Join network</div>
       <div style="color:${C.muted};font-size:12px;margin-bottom:4px;font-family:monospace">${esc(A.pendingJoinCode||'')}</div>
       <div style="color:${C.muted};font-size:12px;margin-bottom:14px">This network is password-protected. Enter its password to join.</div>
-      <input id="join-pw-prompt" type="text" placeholder="Network password" autocomplete="off" style="width:100%;background:${C.surfaceHigh};border:1.5px solid ${C.accentBorder};outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px" onkeydown="if(event.key==='Enter')confirmJoinWithPassword()"/>
+      <input id="join-pw-prompt" type="text" placeholder="Network password" autocomplete="off" style="width:100%;background:${C.surfaceHigh};border:1.5px solid ${C.accentBorder};outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px" data-act-keydown="joinPwKeydown"/>
       <div style="display:flex;gap:10px">
-        <button onclick="confirmJoinWithPassword()" style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer">Join →</button>
-        <button onclick="cancelJoinPrompt()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer">Cancel</button>
+        <button data-act="confirmJoinWithPassword" style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer">Join →</button>
+        <button data-act="cancelJoinPrompt" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer">Cancel</button>
       </div>
     </div>
   </div>`;
@@ -5345,15 +5354,15 @@ function buildEditCaption(){
   const net=currentNet(); if(!net) return '';
   const post=net.posts.find(p=>p.id===A.editCaptionId); if(!post) return '';
   return `
-  <div onclick="cancelEditCaption()" style="position:absolute;inset:0;z-index:92;background:rgba(0,0,0,0.5);display:flex;flex-direction:column;justify-content:flex-end">
+  <div data-act="cancelEditCaption" style="position:absolute;inset:0;z-index:92;background:rgba(0,0,0,0.5);display:flex;flex-direction:column;justify-content:flex-end">
     <div data-act="noop" data-stop style="background:${C.surface};border-radius:22px 22px 0 0;padding:18px 18px 26px">
       <div style="width:36px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;margin:0 auto 16px"></div>
       <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:12px">Edit caption</div>
-      <textarea id="edit-caption-input" maxlength="280" oninput="setEditCaptionDraft(this.value)" placeholder="Write a caption…" style="width:100%;min-height:84px;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:14px;padding:12px 14px;color:${C.text};font-family:'Inter',sans-serif;font-size:14px;line-height:1.5;resize:none;outline:none">${esc(post.caption||'')}</textarea>
+      <textarea id="edit-caption-input" maxlength="280" data-act-input="setEditCaptionDraft" placeholder="Write a caption…" style="width:100%;min-height:84px;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:14px;padding:12px 14px;color:${C.text};font-family:'Inter',sans-serif;font-size:14px;line-height:1.5;resize:none;outline:none">${esc(post.caption||'')}</textarea>
       <div id="edit-caption-count" aria-live="polite" style="text-align:right;font-size:11px;font-weight:700;color:${C.muted};min-height:14px;margin-top:3px"></div>
       <div style="display:flex;gap:10px;margin-top:14px">
-        <button onclick="cancelEditCaption()" style="flex:1;background:${C.surfaceHigh};border:none;border-radius:14px;color:${C.muted};font-size:14px;font-weight:600;padding:13px;cursor:pointer">Cancel</button>
-        <button onclick="saveEditCaption()" style="flex:1;background:${C.accent};border:none;border-radius:14px;color:#0F0F14;font-size:14px;font-weight:700;padding:13px;cursor:pointer">Save</button>
+        <button data-act="cancelEditCaption" style="flex:1;background:${C.surfaceHigh};border:none;border-radius:14px;color:${C.muted};font-size:14px;font-weight:600;padding:13px;cursor:pointer">Cancel</button>
+        <button data-act="saveEditCaption" style="flex:1;background:${C.accent};border:none;border-radius:14px;color:#0F0F14;font-size:14px;font-weight:700;padding:13px;cursor:pointer">Save</button>
       </div>
     </div>
   </div>`;
@@ -6200,23 +6209,23 @@ function buildJoinScreen(){
 
     <div style="width:100%;background:${C.surface};border-radius:18px;padding:16px;margin-top:4px">
       <div style="color:${C.textDim};font-size:11px;margin-bottom:10px">Name your network</div>
-      <input id="join-name-input" oninput="setCreateName(this.value)" value="${esc(_createName)}" placeholder="e.g. Family" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:15px;font-family:'Inter',sans-serif;margin-bottom:10px"/>
+      <input id="join-name-input" data-act-input="setCreateName" value="${esc(_createName)}" placeholder="e.g. Family" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:15px;font-family:'Inter',sans-serif;margin-bottom:10px"/>
       <div style="margin-top:14px">
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
           <span style="color:${C.textDim};font-size:11px">Where this network posts</span>
-          <button onclick="toggleEncNote()" aria-label="How your privacy works" style="background:none;border:none;color:${C.muted};cursor:pointer;font-size:14px;line-height:1;padding:2px;display:flex;align-items:center">\u24d8</button>
+          <button data-act="toggleEncNote" aria-label="How your privacy works" style="background:none;border:none;color:${C.muted};cursor:pointer;font-size:14px;line-height:1;padding:2px;display:flex;align-items:center">\u24d8</button>
         </div>
         <div style="display:flex;gap:6px">
           ${[['public','Public'],['moments','Moment\u2019s'],['custom','Choose']].map(([k,label])=>{
             const on=_createRelayChoice===k;
             const soon=(k==='moments');
-            return `<button onclick="${soon?'':`setCreateRelay('${k}')`}" ${soon?'disabled':''} style="flex:1;background:${on?C.accentDim:C.surfaceHigh};border:1px solid ${on?C.accentBorder:'transparent'};color:${soon?C.muted:(on?C.accent:C.text)};border-radius:12px;padding:9px 4px;font-size:12px;font-weight:700;cursor:${soon?'default':'pointer'};opacity:${soon?0.6:1};position:relative">${label}</button>`;
+            return `<button ${soon?'':`data-act="setCreateRelay" data-a="${k}"`} ${soon?'disabled':''} style="flex:1;background:${on?C.accentDim:C.surfaceHigh};border:1px solid ${on?C.accentBorder:'transparent'};color:${soon?C.muted:(on?C.accent:C.text)};border-radius:12px;padding:9px 4px;font-size:12px;font-weight:700;cursor:${soon?'default':'pointer'};opacity:${soon?0.6:1};position:relative">${label}</button>`;
           }).join('')}
         </div>
         ${_createRelayChoice==='moments'?`<div style="color:${C.muted};font-size:11px;margin-top:8px">Moment\u2019s relay coming soon.</div>`:''}
         ${_createRelayChoice==='custom'?`
           <div style="margin-top:10px">
-            <textarea oninput="setCustomRelays(this.value)" placeholder="wss://relay.example.com (one per line)" rows="3" style="width:100%;background:${C.surfaceHigh};border:1px solid var(--c-border);outline:none;border-radius:12px;padding:10px 12px;color:${C.text};font-size:13px;resize:none;font-family:inherit">${esc(_createCustomRelays)}</textarea>
+            <textarea data-act-input="setCustomRelays" placeholder="wss://relay.example.com (one per line)" rows="3" style="width:100%;background:${C.surfaceHigh};border:1px solid var(--c-border);outline:none;border-radius:12px;padding:10px 12px;color:${C.text};font-size:13px;resize:none;font-family:inherit">${esc(_createCustomRelays)}</textarea>
             <div style="color:${C.warn||'#d98324'};font-size:11px;margin-top:6px;line-height:1.5">Advanced: your network only works if these relays are online and accept your posts. If unsure, use Public.</div>
           </div>`:''}
         <div id="create-enc-note" style="display:none;gap:7px;align-items:flex-start;margin-top:10px;background:${C.surfaceHigh};border-radius:10px;padding:9px 11px">
@@ -6224,7 +6233,7 @@ function buildJoinScreen(){
           <div style="color:${C.textDim};font-size:11px;line-height:1.55">Everything is encrypted for this network before it leaves your phone. Whichever relay you pick \u2014 including the public ones \u2014 only ever stores scrambled data it can\u2019t read. Only people with your network\u2019s code can see your photos.</div>
         </div>
       </div>
-      <button onclick="createNetwork()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;margin-top:16px">Create network</button>
+      <button data-act="createNetwork" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;margin-top:16px">Create network</button>
     </div>
 
     <div style="width:100%;display:flex;align-items:center;gap:10px">
@@ -6236,8 +6245,8 @@ function buildJoinScreen(){
     <div style="width:100%;background:${C.surface};border-radius:18px;padding:16px">
       <div style="color:${C.textDim};font-size:11px;margin-bottom:10px">Enter a code you received</div>
       <div style="display:flex;gap:8px;margin-bottom:8px">
-        <input id="join-code-input" placeholder="XXXX-XXXX-XXXX" maxlength="14" oninput="formatCodeInput(this)" style="flex:1;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.accent};font-size:15px;font-family:monospace;letter-spacing:2px;font-weight:700"/>
-        <button onclick="joinNetworkByCode()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:0 16px;font-size:14px;font-weight:700;cursor:pointer">Join</button>
+        <input id="join-code-input" placeholder="XXXX-XXXX-XXXX" maxlength="14" data-act-input="formatCodeInput" style="flex:1;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.accent};font-size:15px;font-family:monospace;letter-spacing:2px;font-weight:700"/>
+        <button data-act="joinNetworkByCode" style="background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:0 16px;font-size:14px;font-weight:700;cursor:pointer">Join</button>
       </div>
     </div>
   </div>`;
@@ -6284,16 +6293,16 @@ function buildFeed(net){
             <button data-act="openProfile" data-a="${post.memberId}" style="background:none;border:none;padding:0;cursor:pointer;flex-shrink:0">${avatarHTML(mem,36,12,18)}</button>
             <div>
               <div style="color:${C.text};font-size:13px;font-weight:600;font-family:'Playfair Display',serif">${esc(mem.name)}${mem.left?` <span style="color:${C.muted};font-size:10px;font-weight:500;font-family:'Inter',sans-serif">· left the network</span>`:''}</div>
-              <div class="post-time" data-ts="${Number(post.ts)||0}" data-act="timeTap" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(post))}</span>${postStatus(net,post)}${post.exp?`<span class="post-exp" data-exp="${post.exp}" style="color:${C.accent};font-weight:700;margin-left:6px">\u23f1 ${esc(expLabel(post.exp))}</span>`:''}</div>
+              <div class="post-time" data-ts="${Number(post.ts)||0}" data-act="timeTap" role="button" tabindex="0" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(post))}</span>${postStatus(net,post)}${post.exp?`<span class="post-exp" data-exp="${post.exp}" style="color:${C.accent};font-weight:700;margin-left:6px">\u23f1 ${esc(expLabel(post.exp))}</span>`:''}</div>
             </div>
             <button aria-label="Post options" data-act="openPostMenu" data-a="${net.id}" data-b="${post.id}" data-stop style="margin-left:auto;background:none;border:none;color:${C.muted};font-size:20px;cursor:pointer;padding:4px 6px;line-height:1">···</button>
           </div>
-          ${hasMultiPhoto(post)?`<div style="margin:0 12px">${photoGrid(net,post)}</div>`:(post.image||post.enc)?(()=>{const pb=photoBox(net,post);return `<div data-act="photoTap" data-a="${net.id}" data-b="${post.id}" ${pb.attr} style="margin:0 12px;border-radius:14px;height:192px;cursor:pointer;font-size:58px;${pb.style}">${pb.inner}</div>`;})():''}
+          ${hasMultiPhoto(post)?`<div style="margin:0 12px">${photoGrid(net,post)}</div>`:(post.image||post.enc)?(()=>{const pb=photoBox(net,post);return `<div data-act="photoTap" role="button" tabindex="0" aria-label="Open photo" data-a="${net.id}" data-b="${post.id}" ${pb.attr} style="margin:0 12px;border-radius:14px;height:192px;cursor:pointer;font-size:58px;${pb.style}">${pb.inner}</div>`;})():''}
           <div style="padding:${(post.image||post.enc)?'10px 14px 14px':'2px 14px 14px'}">
             ${captionSansLink(post)?`<div ${(post.image||post.enc)?'':`data-act="openPostView" data-a="${post.id}"`} style="${(post.image||post.enc)?'':'cursor:pointer;'}font-family:'Playfair Display',serif;${(post.image||post.enc)?'font-style:italic;font-size:13px;color:'+C.textDim:'font-size:16px;line-height:1.5;color:'+C.text};margin-bottom:10px;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(post))}</div>`:''}
             ${post.poll?pollHTML(net,post):''}
             ${post.link?linkCardHTML(post):''}
-            ${(post.link && !post.image && !post.enc && !post.poll)?`<div data-act="openPostView" data-a="${post.id}" style="cursor:pointer;color:${C.muted};font-size:11px;margin-top:8px;display:inline-flex;align-items:center;gap:5px">💬 View post</div>`:''}
+            ${(post.link && !post.image && !post.enc && !post.poll)?`<div data-act="openPostView" role="button" tabindex="0" data-a="${post.id}" style="cursor:pointer;color:${C.muted};font-size:11px;margin-top:8px;display:inline-flex;align-items:center;gap:5px">💬 View post</div>`:''}
             ${post.modHidden?`<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:12px;padding:10px 12px;margin:10px 0 4px;font-size:12px;color:${C.red};line-height:1.5">🚫 The network owner hid this from other members. Only you can still see it.
               <button data-act="askDeletePost" data-a="${post.id}" style="display:block;margin-top:8px;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:10px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer">Delete it everywhere</button></div>`:''}
             <div style="display:flex;align-items:center;gap:14px">
@@ -6503,13 +6512,13 @@ function buildActivity(net){
   }
 
   return `<div style="display:flex;justify-content:flex-end;margin-bottom:2px">
-    <button onclick="clearAllActivity()" style="background:none;border:none;color:${C.muted};font-size:12px;font-weight:600;cursor:pointer;padding:4px 2px">Clear all</button>
+    <button data-act="clearAllActivity" style="background:none;border:none;color:${C.muted};font-size:12px;font-weight:600;cursor:pointer;padding:4px 2px">Clear all</button>
   </div>
   <div style="display:flex;flex-direction:column;gap:8px">${items.slice(0,60).map(it=>{
     // System reminder for a picture that couldn't upload. Tapping it reopens the
     // profile editor so a re-save can retry. No dismiss button — it self-clears.
     if(it.kind==='pendingavatar'){
-      return `<div onclick="navMyPageEdit()" style="background:${C.accentDim};border:1px solid ${C.accentBorder};border-radius:14px;padding:12px 14px;display:flex;gap:11px;align-items:flex-start;cursor:pointer">
+      return `<div data-act="navMyPageEdit" style="background:${C.accentDim};border:1px solid ${C.accentBorder};border-radius:14px;padding:12px 14px;display:flex;gap:11px;align-items:flex-start;cursor:pointer">
         <div style="flex-shrink:0;font-size:18px;line-height:1.2">⚠️</div>
         <div style="flex:1;min-width:0">
           <div style="color:${C.text};font-size:13px;line-height:1.5;font-weight:700">Your profile picture hasn’t sent yet</div>
@@ -6530,8 +6539,8 @@ function buildActivity(net){
       ? `<div style="color:${C.textDim};font-size:13px;margin-top:3px;white-space:pre-wrap;word-break:break-word">“${esc(it.text.slice(0,140))}”</div>`
       : '';
     return `<div style="background:${C.surface};border-radius:14px;padding:12px 14px;display:flex;gap:11px;align-items:flex-start">
-      <div onclick="openPostView('${it.postId}')" style="flex:1;min-width:0;cursor:pointer;display:flex;gap:11px;align-items:flex-start">
-        <div onclick="event.stopPropagation();openProfile('${mem.id||''}')" style="flex-shrink:0;cursor:${mem.id?'pointer':'default'}">${avatarHTML(mem,34,11,15,1.5)}</div>
+      <div data-act="openPostView" role="button" tabindex="0" data-a="${it.postId}" style="flex:1;min-width:0;cursor:pointer;display:flex;gap:11px;align-items:flex-start">
+        <div data-act="openProfile" data-a="${mem.id||''}" data-stop style="flex-shrink:0;cursor:${mem.id?'pointer':'default'}">${avatarHTML(mem,34,11,15,1.5)}</div>
         <div style="flex:1;min-width:0">
           <div style="color:${C.text};font-size:13px;line-height:1.5">
             <strong style="font-weight:700">${name}</strong> ${verb} <span style="color:${C.muted}">${esc(it.label)}${it.label.length>=40?'…':''}</span>
@@ -6540,7 +6549,7 @@ function buildActivity(net){
           ${when?`<div style="color:${C.muted};font-size:11px;margin-top:3px">${when}</div>`:''}
         </div>
       </div>
-      <button onclick="dismissActivity('${net.id}','${esc(it.key)}')" aria-label="Dismiss" style="flex-shrink:0;background:none;border:none;color:${C.muted};font-size:16px;line-height:1;cursor:pointer;padding:2px 4px">✕</button>
+      <button data-act="dismissActivity" data-a="${net.id}" data-b="${esc(it.key)}" aria-label="Dismiss" style="flex-shrink:0;background:none;border:none;color:${C.muted};font-size:16px;line-height:1;cursor:pointer;padding:2px 4px">✕</button>
     </div>`;
   }).join('')}</div>`;
 }
@@ -6645,7 +6654,7 @@ function buildMyPage(net){
 
   const photoCard=(p,h)=>{ const pb=photoBox(net,p); return `
         <div style="background:${C.surface};border-radius:16px;overflow:hidden;display:flex;flex-direction:column">
-          <div data-act="openPostView" data-a="${p.id}" ${pb.attr} style="position:relative;height:${h||140}px;cursor:pointer;font-size:42px;${pb.style}">${pb.inner}
+          <div data-act="openPostView" role="button" tabindex="0" data-a="${p.id}" ${pb.attr} style="position:relative;height:${h||140}px;cursor:pointer;font-size:42px;${pb.style}">${pb.inner}
             <button aria-label="Post options" data-act="openPostMenu" data-a="${net.id}" data-b="${p.id}" data-stop style="position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.55);border:none;color:#fff;border-radius:8px;padding:2px 7px;cursor:pointer;font-size:14px;font-weight:700;line-height:1.4">···</button>
           </div>
           <div style="padding:8px 10px 10px">
@@ -6657,7 +6666,7 @@ function buildMyPage(net){
   const textCard=(p)=>`
         <div style="background:${C.surface};border-radius:16px;padding:14px 16px">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
-            <div data-act="openPostView" data-a="${p.id}" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word;flex:1">${esc(captionSansLink(p))}</div>
+            <div data-act="openPostView" role="button" tabindex="0" data-a="${p.id}" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word;flex:1">${esc(captionSansLink(p))}</div>
             <button aria-label="Post options" data-act="openPostMenu" data-a="${net.id}" data-b="${p.id}" data-stop style="background:none;border:none;color:${C.muted};font-size:18px;cursor:pointer;padding:0 2px;line-height:1;flex-shrink:0">···</button>
           </div>
           <div class="post-time" data-ts="${Number(p.ts)||0}" data-act="timeTap" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span>${postStatus(net,p)}</div>
@@ -6776,11 +6785,11 @@ function buildProfile(net){
   // photo posts pack into a 2-up gallery row; a text post breaks the run and shows
   // as a full-width card at its place in the timeline, so text and photos interleave
   // by date instead of every text post sinking below the photos.
-  const photoTile = (p,h)=>{ const pb=photoBox(net,p); return `<div data-act="openPostView" data-a="${p.id}" ${pb.attr} style="border-radius:16px;height:${h||155}px;cursor:pointer;font-size:42px;${pb.style};position:relative;overflow:hidden">${pb.inner}
+  const photoTile = (p,h)=>{ const pb=photoBox(net,p); return `<div data-act="openPostView" role="button" tabindex="0" data-a="${p.id}" ${pb.attr} style="border-radius:16px;height:${h||155}px;cursor:pointer;font-size:42px;${pb.style};position:relative;overflow:hidden">${pb.inner}
         ${captionSansLink(p)?`<div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.5));padding:8px 10px;color:#FAF8F5;font-size:11px;font-family:'Playfair Display',serif">${esc(captionSansLink(p))}</div>`:''}
       </div>`; };
   const textCard = (p)=>`<div style="background:${C.surface};border-radius:16px;padding:14px 16px">
-        <div data-act="openPostView" data-a="${p.id}" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(p))}</div>
+        <div data-act="openPostView" role="button" tabindex="0" data-a="${p.id}" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(p))}</div>
         <div class="post-time" data-ts="${Number(p.ts)||0}" data-act="timeTap" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span></div>
         ${p.poll?`<div style="margin-top:10px">${pollHTML(net,p)}</div>`:''}
         ${p.link?linkCardHTML(p):''}
@@ -6838,7 +6847,7 @@ function buildInvite(net){
   return `
   <div style="position:absolute;inset:0;background:${C.bg};z-index:60;display:flex;flex-direction:column">
     <div style="padding:24px 24px 16px;display:flex;align-items:center;gap:12px">
-      <button aria-label="Back" onclick="closeInvite()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">←</button>
+      <button aria-label="Back" data-act="closeInvite" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">←</button>
       <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">Invite to ${esc(net.name)}</div>
     </div>
     <div class="hide-scroll" style="flex:1;padding:0 24px;display:flex;flex-direction:column;gap:14px;overflow-y:auto">
@@ -6850,8 +6859,8 @@ function buildInvite(net){
         ${qrSVG(inviteUrl(net), 240)}
         <div style="background:${C.surfaceHigh};border-radius:10px;padding:8px 20px;font-family:monospace;font-size:18px;letter-spacing:3px;color:${C.accent};font-weight:700">${esc(net.code)}</div>
       </div>
-      <button onclick="shareInvite()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer">Share invite</button>
-      <button onclick="copyInviteCode()" style="width:100%;background:${C.surface};color:${C.text};border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:600;cursor:pointer">Copy code</button>
+      <button data-act="shareInvite" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer">Share invite</button>
+      <button data-act="copyInviteCode" style="width:100%;background:${C.surface};color:${C.text};border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:600;cursor:pointer">Copy code</button>
     </div>
   </div>`;
 }
@@ -6957,12 +6966,12 @@ function buildBackupNudge(){
   return `
   <div style="margin:0 16px 12px;display:flex;align-items:center;gap:10px;background:rgba(245,200,66,0.1);border:1px solid rgba(245,200,66,0.3);border-radius:14px;padding:10px 14px">
     <span style="font-size:16px">🔑</span>
-    <div onclick="openSettings()" style="flex:1;min-width:0;cursor:pointer">
+    <div data-act="openSettings" style="flex:1;min-width:0;cursor:pointer">
       <div style="color:#F5C842;font-size:12px;font-weight:700">Back up your key</div>
       <div style="color:${C.textDim};font-size:11px">It's the only way back in — there's no password reset.</div>
     </div>
-    <button aria-label="Settings" onclick="openSettings()" style="background:none;border:none;color:#F5C842;font-size:12px;font-weight:700;white-space:nowrap;cursor:pointer;padding:0">Back up →</button>
-    <button aria-label="Dismiss" onclick="dismissNudge()" title="Dismiss" style="background:none;border:none;color:${C.muted};font-size:16px;line-height:1;cursor:pointer;padding:2px 2px 2px 4px">✕</button>
+    <button aria-label="Settings" data-act="openSettings" style="background:none;border:none;color:#F5C842;font-size:12px;font-weight:700;white-space:nowrap;cursor:pointer;padding:0">Back up →</button>
+    <button aria-label="Dismiss" data-act="dismissNudge" title="Dismiss" style="background:none;border:none;color:${C.muted};font-size:16px;line-height:1;cursor:pointer;padding:2px 2px 2px 4px">✕</button>
   </div>`;
 }
 function dismissNudge(){ A.nudgeDismissed=true; renderApp(); }
@@ -7100,7 +7109,7 @@ function buildKeyBackup(){
   return `
   <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:74;display:flex;flex-direction:column;overflow-y:auto">
     <div style="padding:20px 20px 10px;display:flex;align-items:center;gap:12px;flex-shrink:0;border-bottom:1px solid var(--c-border)">
-      <button aria-label="Back" onclick="closeKeyBackup()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px;flex-shrink:0">←</button>
+      <button aria-label="Back" data-act="closeKeyBackup" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px;flex-shrink:0">←</button>
       <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">Your moment key</div>
       ${backed?`<span style="margin-left:auto;color:${C.accent};font-size:12px;font-weight:700">✓ backed up</span>`:`<span style="margin-left:auto;color:#F5C842;font-size:12px;font-weight:700">not backed up</span>`}
     </div>
@@ -7111,22 +7120,22 @@ function buildKeyBackup(){
 
       <div style="background:${C.surface};border-radius:16px;padding:16px">
         <div style="color:${C.muted};font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;margin-bottom:8px">Moment key (nsec) — never share</div>
-        <div onclick="toggleReveal(this)" style="background:#0F0F14;border:1px solid rgba(245,200,66,0.25);border-radius:10px;padding:11px 13px;color:#fbbf24;font-family:monospace;font-size:11px;word-break:break-all;line-height:1.5;filter:blur(6px);cursor:pointer;user-select:all">${esc(_nsec)}</div>
+        <div data-act="toggleReveal" style="background:#0F0F14;border:1px solid rgba(245,200,66,0.25);border-radius:10px;padding:11px 13px;color:#fbbf24;font-family:monospace;font-size:11px;word-break:break-all;line-height:1.5;filter:blur(6px);cursor:pointer;user-select:all">${esc(_nsec)}</div>
         <div style="color:${C.muted};font-size:10px;text-align:center;margin:6px 0 14px">tap the key to reveal · tap again to hide</div>
-        <button onclick="saveToPasswordManager(this)" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:14px 0;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:6px">🔐 Save to password manager</button>
+        <button data-act="saveToPasswordManager" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:14px 0;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:6px">🔐 Save to password manager</button>
         <div style="color:${C.muted};font-size:11px;text-align:center;line-height:1.5;margin-bottom:14px">Recommended — kept encrypted, synced across your devices, and out of your downloads folder.</div>
 
         <div style="display:flex;gap:10px">
-          <button onclick="backupKeyDownload()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">⬇ Download key file</button>
-          <button onclick="copySecretKey(this)" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">Copy key</button>
+          <button data-act="backupKeyDownload" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">⬇ Download key file</button>
+          <button data-act="copySecretKey" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">Copy key</button>
         </div>
       </div>
 
       ${backed
         ? `<div style="text-align:center;color:${C.accent};font-size:13px;font-weight:700;padding:8px 0 0">✓ You've confirmed your key is backed up</div>
-           <button onclick="hideBackupAsk()" style="width:100%;background:none;border:1px solid var(--c-border);color:${C.muted};border-radius:14px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer;margin-top:14px">Hide this from Settings</button>
+           <button data-act="hideBackupAsk" style="width:100%;background:none;border:1px solid var(--c-border);color:${C.muted};border-radius:14px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer;margin-top:14px">Hide this from Settings</button>
            <div style="color:${C.muted};font-size:11px;text-align:center;line-height:1.5;margin-top:8px">Tidies your Settings. You can bring it back any time from Settings → Advanced.</div>`
-        : `<button onclick="confirmKeyBackedUp()" style="width:100%;background:${C.surfaceHigh};color:${C.text};border:1.5px solid ${C.accentBorder};border-radius:14px;padding:14px 0;font-size:14px;font-weight:700;cursor:pointer">I've backed up my key&nbsp;&nbsp;✓</button>`}
+        : `<button data-act="confirmKeyBackedUp" style="width:100%;background:${C.surfaceHigh};color:${C.text};border:1.5px solid ${C.accentBorder};border-radius:14px;padding:14px 0;font-size:14px;font-weight:700;cursor:pointer">I've backed up my key&nbsp;&nbsp;✓</button>`}
     </div>
   </div>`;
 }
@@ -7135,7 +7144,7 @@ function buildAbout(){
   return `
   <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:74;display:flex;flex-direction:column;overflow-y:auto">
     <div style="padding:20px 20px 10px;display:flex;align-items:center;gap:12px;flex-shrink:0;border-bottom:1px solid var(--c-border)">
-      <button aria-label="Back" onclick="closeAbout()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px;flex-shrink:0">←</button>
+      <button aria-label="Back" data-act="closeAbout" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px;flex-shrink:0">←</button>
       <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">About Moment's</div>
     </div>
     <div style="padding:24px 20px 48px;display:flex;flex-direction:column;gap:0">
@@ -7324,8 +7333,8 @@ function buildNetPicker(){
     // Edit mode renders the row as a <div>: buttons may not nest inside a
     // <button>, and browsers eject the inner ones, shattering the layout.
     const tag=edit?'div':'button';
-    const rowAct=edit?'':`onclick="event.stopPropagation();switchNetwork('${net.id}')"`;
-    const ctlBtn=(label,glyph,act,off)=>`<button aria-label="${label}" onclick="event.stopPropagation();${act}" ${off?'disabled':''} style="flex-shrink:0;width:30px;height:30px;border-radius:10px;background:${C.surface};border:1px solid var(--c-border);color:${off?C.muted:C.text};opacity:${off?0.35:1};font-size:14px;line-height:1;cursor:${off?'default':'pointer'};display:flex;align-items:center;justify-content:center;padding:0">${glyph}</button>`;
+    const rowAct=edit?'':`data-act="switchNetwork" data-a="${net.id}" data-stop`;
+    const ctlBtn=(label,glyph,act,off,arg)=>`<button aria-label="${label}" data-act="${act}" data-a="${arg}" data-stop ${off?'disabled':''} style="flex-shrink:0;width:30px;height:30px;border-radius:10px;background:${C.surface};border:1px solid var(--c-border);color:${off?C.muted:C.text};opacity:${off?0.35:1};font-size:14px;line-height:1;cursor:${off?'default':'pointer'};display:flex;align-items:center;justify-content:center;padding:0">${glyph}</button>`;
     return `
     <${tag} ${rowAct} style="width:100%;background:${net.id===A.activeNetId?C.accentDim:'none'};border:none;border-bottom:${i<nets.length-1?'1px solid var(--c-border)':'none'};cursor:${edit?'default':'pointer'};padding:13px 14px 13px 18px;display:flex;align-items:center;gap:12px;flex-wrap:nowrap;text-align:left;font-family:inherit">
       <span style="flex-shrink:0;width:30px;height:30px;border-radius:9px;background:${C.accentDim};border:1px solid ${C.accentBorder};color:${C.accent};font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center">${esc((net.name||'?')[0].toUpperCase())}</span>
@@ -7335,9 +7344,9 @@ function buildNetPicker(){
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
         ${edit?
-          ctlBtn('Move up','↑',`moveNet('${net.id}',-1)`, i===0)
-          +ctlBtn('Move down','↓',`moveNet('${net.id}',1)`, i===nets.length-1)
-          +`<button aria-label="Leave network" title="Leave" onclick="event.stopPropagation();leaveNetwork('${net.id}')" style="flex-shrink:0;width:30px;height:30px;border-radius:10px;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};font-size:13px;font-weight:800;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">✕</button>`
+          ctlBtn('Move up','↑','moveNetUp', i===0, net.id)
+          +ctlBtn('Move down','↓','moveNetDown', i===nets.length-1, net.id)
+          +`<button aria-label="Leave network" title="Leave" data-act="leaveNetwork" data-a="${net.id}" data-stop style="flex-shrink:0;width:30px;height:30px;border-radius:10px;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};font-size:13px;font-weight:800;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">✕</button>`
         :``}
         ${!edit&&u>0?`<span style="min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:${C.warm};color:#0F0F14;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center">${u>99?'99+':u}</span>`:''}
         ${!edit&&net.id===A.activeNetId?`<span style="color:${C.accent};font-size:16px">✓</span>`:""}
@@ -7345,13 +7354,13 @@ function buildNetPicker(){
     </${tag}>`;
   }).join('');
   return `
-  <div onclick="closeNetPicker()" style="position:absolute;inset:0;z-index:85;background:transparent"></div>
+  <div data-act="closeNetPicker" style="position:absolute;inset:0;z-index:85;background:transparent"></div>
   <div style="position:absolute;top:78px;left:16px;right:16px;z-index:86;background:${C.surfaceHigh};border-radius:18px;border:1px solid var(--c-border);box-shadow:0 16px 48px rgba(0,0,0,0.6);overflow:hidden">
     ${nets.length?`<div data-act="noop" data-stop style="display:flex;justify-content:flex-end;padding:8px 12px 2px">
-      <button onclick="toggleNetPickerEdit()" style="background:none;border:none;color:${edit?C.accent:C.muted};font-size:12px;font-weight:700;cursor:pointer;padding:2px 4px">${edit?'Done':'Edit'}</button>
+      <button data-act="toggleNetPickerEdit" style="background:none;border:none;color:${edit?C.accent:C.muted};font-size:12px;font-weight:700;cursor:pointer;padding:2px 4px">${edit?'Done':'Edit'}</button>
     </div>`:''}
     ${items}
-    <button onclick="event.stopPropagation();showJoinScreen()" style="width:100%;background:none;border:none;border-top:${nets.length?'1px solid var(--c-border)':'none'};padding:13px 18px;color:${C.accent};font-size:13px;font-weight:700;cursor:pointer;text-align:left">＋ Create or join a network</button>
+    <button data-act="showJoinScreen" data-stop style="width:100%;background:none;border:none;border-top:${nets.length?'1px solid var(--c-border)':'none'};padding:13px 18px;color:${C.accent};font-size:13px;font-weight:700;cursor:pointer;text-align:left">＋ Create or join a network</button>
   </div>`;
 }
 function closeNetPicker(){ A.netPickerEdit=false; if(A.showNetPicker){ A.showNetPicker=false; renderApp(); } }
@@ -7473,6 +7482,18 @@ function initDelegation(){
     const fn=ACTIONS[name];
     if(typeof fn!=='function'){ console.warn('[act] no keydown handler:', name); return; }
     try{ fn.apply(null, _actArgs(el).concat(el, e)); }catch(err){ console.error('[act] '+name, err); }
+  });
+  // focus/blur don't bubble — capture phase required.
+  ['focus','blur'].forEach(type=>{
+    document.addEventListener(type, e=>{
+      const el=e.target;
+      if(!el || !el.getAttribute) return;
+      const name=el.getAttribute('data-act-'+type);
+      if(!name) return;
+      const fn=ACTIONS[name];
+      if(typeof fn!=='function'){ console.warn('[act] no '+type+' handler:', name); return; }
+      try{ fn.apply(null, _actArgs(el).concat(el, e)); }catch(err){ console.error('[act] '+name, err); }
+    }, true);
   });
   // Drag & drop (avatar / photo drop zones). dragover must preventDefault or the
   // browser refuses to fire drop at all.
@@ -7618,6 +7639,104 @@ registerActions({
   replyKeydown:      (el,ev)=>{ if(ev.key==='Enter' && !ev.shiftKey){ ev.preventDefault(); submitReply(); } },
 });
 
+// Advanced, key backup, network picker, join screen, activity, invite:
+registerActions({
+  // advanced / relays
+  removeRelay:       i=>removeRelay(i),
+  closeAdvanced:     ()=>closeAdvanced(),
+  reconnectRelays:   ()=>reconnectRelays(),
+  resetRelays:       ()=>resetRelays(),
+  addRelay:          ()=>addRelay(),
+  relayKeydown:      (el,ev)=>{ if(ev.key==='Enter'){ ev.preventDefault(); addRelay(); } },
+  focusBorderOn:     el=>{ el.style.borderColor=C.accentBorder; },
+  focusBorderOff:    el=>{ el.style.borderColor='var(--c-border)'; },
+  setBackupHidden:   v=>setBackupHidden(v),
+  clearMediaCache:   ()=>clearMediaCache(),
+  vanishAsk:         ()=>vanishAsk(),
+  // key backup
+  closeKeyBackup:    ()=>closeKeyBackup(),
+  toggleReveal:      el=>toggleReveal(el),
+  saveToPasswordManager: el=>saveToPasswordManager(el),
+  backupKeyDownload: ()=>backupKeyDownload(),
+  copySecretKey:     el=>copySecretKey(el),
+  hideBackupAsk:     ()=>hideBackupAsk(),
+  confirmKeyBackedUp:()=>confirmKeyBackedUp(),
+  // network picker
+  switchNetwork:     id=>switchNetwork(id),
+  closeNetPicker:    ()=>closeNetPicker(),
+  toggleNetPickerEdit:()=>toggleNetPickerEdit(),
+  showJoinScreen:    ()=>showJoinScreen(),
+  moveNetUp:         id=>moveNet(id,-1),
+  moveNetDown:       id=>moveNet(id,1),
+  // join / create
+  setCreateName:     el=>setCreateName(el.value),
+  toggleEncNote:     ()=>toggleEncNote(),
+  setCreateRelay:    k=>setCreateRelay(k),
+  setCustomRelays:   el=>setCustomRelays(el.value),
+  createNetwork:     ()=>createNetwork(),
+  formatCodeInput:   el=>formatCodeInput(el),
+  joinNetworkByCode: ()=>joinNetworkByCode(),
+  // activity / invite
+  clearAllActivity:  ()=>clearAllActivity(),
+  dismissActivity:   (nid,key)=>dismissActivity(nid,key),
+  closeInvite:       ()=>closeInvite(),
+  shareInvite:       ()=>shareInvite(),
+  copyInviteCode:    ()=>copyInviteCode(),
+});
+
+// Landing page, modals, nav, confirm dialogs and remaining sheets:
+registerActions({
+  openActivity:      ()=>openActivity(),
+  openModal:         id=>openModal(id),
+  closeModal:        id=>closeModal(id),
+  switchModal:       (a,b)=>switchModal(a,b),
+  overlayClick:      (id,el,ev)=>overlayClick(ev,id),
+  toggleLandingTheme:()=>toggleLandingTheme(),
+  generateKeys:      ()=>generateKeys(),
+  toggleBlur:        el=>{ el.style.filter=el.style.filter?'':'blur(5px)'; },
+  doCopy:            (id,el)=>doCopy(id,el),
+  downloadFile:      ()=>downloadFile(),
+  toNameStep:        ()=>toNameStep(),
+  completeSignup:    ()=>completeSignup(),
+  signupKeydown:     (el,ev)=>{ if(ev.key==='Enter') completeSignup(); },
+  loginNsec:         ()=>loginNsec(),
+  loadFile:          el=>loadFile(el),
+  // nav
+  backFromJoin:      ()=>backFromJoin(),
+  openSettings:      ()=>openSettings(),
+  toggleNetPicker:   ()=>toggleNetPicker(),
+  toggleNetwork:     ()=>toggleNetwork(),
+  // confirm dialogs
+  cancelDeleteNet:   ()=>cancelDeleteNet(),
+  checkDeleteNetInput: el=>checkDeleteNetInput(el),
+  confirmDeleteNetwork:()=>confirmDeleteNetwork(),
+  vanishCancel:      ()=>vanishCancel(),
+  vanishTyped:       el=>vanishTyped(el),
+  vanishGo:          ()=>vanishGo(),
+  cancelJoinPrompt:  ()=>cancelJoinPrompt(),
+  joinPwKeydown:     (el,ev)=>{ if(ev.key==='Enter') confirmJoinWithPassword(); },
+  confirmJoinWithPassword:()=>confirmJoinWithPassword(),
+  cancelEditCaption: ()=>cancelEditCaption(),
+  setEditCaptionDraft: el=>setEditCaptionDraft(el.value),
+  saveEditCaption:   ()=>saveEditCaption(),
+  confirmNo:         ()=>confirmNo(),
+  confirmYes:        ()=>confirmYes(),
+  cancelPasswordInput:()=>cancelPasswordInput(),
+  saveNetworkPassword:id=>saveNetworkPassword(id),
+  // sheets
+  toggleWhatsNew:    v=>toggleWhatsNew(v),
+  closeWhatsNew:     ()=>closeWhatsNew(),
+  openRoadmap:       ()=>openRoadmap(),
+  closeRoadmap:      ()=>closeRoadmap(),
+  closeContact:      ()=>closeContact(),
+  supportLightning:  ()=>supportLightning(),
+  dismissNudge:      ()=>dismissNudge(),
+  focusSelect:       el=>{ el.focus(); el.select(); },
+  copyKeyFile:       el=>copyKeyFile(el),
+  closeEcosystem:    ()=>closeEcosystem(),
+  closeAbout:        ()=>closeAbout(),
+});
+
 function renderApp(){
   _actsMemo=null;   // one memo per frame — see activityItems()
   applyTheme();
@@ -7659,15 +7778,15 @@ function renderApp(){
     header = `
     <div style="padding:14px 22px 10px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
       <div style="display:flex;align-items:center;gap:8px">
-        ${hasNets?`<button aria-label="Back" onclick="backFromJoin()" title="Back" style="background:${C.surface};border:none;border-radius:11px;width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px;flex-shrink:0">←</button>`:`<span id="conn-dot" title="Connecting…" style="width:9px;height:9px;border-radius:50%;background:#ef4444;flex-shrink:0;transition:background .3s"></span>`}
+        ${hasNets?`<button aria-label="Back" data-act="backFromJoin" title="Back" style="background:${C.surface};border:none;border-radius:11px;width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px;flex-shrink:0">←</button>`:`<span id="conn-dot" title="Connecting…" style="width:9px;height:9px;border-radius:50%;background:#ef4444;flex-shrink:0;transition:background .3s"></span>`}
         <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:24px;font-weight:600;line-height:1">moments</div>
       </div>
-      <button aria-label="Settings" onclick="openSettings()" title="Settings" style="background:none;border:1.5px solid rgba(255,255,255,0.12);border-radius:12px;padding:7px 11px;color:${C.muted};font-size:15px;font-weight:600;cursor:pointer">⚙</button>
+      <button aria-label="Settings" data-act="openSettings" title="Settings" style="background:none;border:1.5px solid rgba(255,255,255,0.12);border-radius:12px;padding:7px 11px;color:${C.muted};font-size:15px;font-weight:600;cursor:pointer">⚙</button>
     </div>`;
   } else {
     header = `
     <div style="padding:14px 22px 10px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">
-      <button onclick="toggleNetPicker()" style="background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:flex-start;padding:0;gap:2px">
+      <button data-act="toggleNetPicker" style="background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:flex-start;padding:0;gap:2px">
         <div style="display:flex;align-items:center;gap:8px">
           <span id="conn-dot" title="Connecting…" style="width:9px;height:9px;border-radius:50%;background:#ef4444;flex-shrink:0;transition:background .3s"></span>
           <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:24px;font-weight:600;line-height:1">moments</div>
@@ -7676,15 +7795,15 @@ function renderApp(){
         <div style="color:${C.accent};font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;padding-left:17px">${esc(net.name)}</div>
       </button>
       <div style="display:flex;align-items:center;gap:8px">
-        <button onclick="toggleNetwork()" aria-pressed="${networkOnScreen()?'true':'false'}" title="${networkOnScreen()?'Back':'Network'}" style="background:${A.tab===1?C.accent:C.accentDim};border:1.5px solid ${C.accentBorder};border-radius:12px;padding:7px 13px;color:${A.tab===1?'#0F0F14':C.accent};font-size:12px;font-weight:700;cursor:pointer">◉ Network</button>
-        <button aria-label="${actCount>0?`Activity, ${actCount} new`:'Activity'}" onclick="openActivity()" title="Activity" style="background:none;border:1.5px solid ${actCount>0?C.accentBorder:'rgba(255,255,255,0.12)'};border-radius:12px;padding:7px 10px;cursor:pointer;position:relative;display:flex;align-items:center;justify-content:center">
+        <button data-act="toggleNetwork" aria-pressed="${networkOnScreen()?'true':'false'}" title="${networkOnScreen()?'Back':'Network'}" style="background:${A.tab===1?C.accent:C.accentDim};border:1.5px solid ${C.accentBorder};border-radius:12px;padding:7px 13px;color:${A.tab===1?'#0F0F14':C.accent};font-size:12px;font-weight:700;cursor:pointer">◉ Network</button>
+        <button aria-label="${actCount>0?`Activity, ${actCount} new`:'Activity'}" data-act="openActivity" title="Activity" style="background:none;border:1.5px solid ${actCount>0?C.accentBorder:'rgba(255,255,255,0.12)'};border-radius:12px;padding:7px 10px;cursor:pointer;position:relative;display:flex;align-items:center;justify-content:center">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${actCount>0?C.accent:C.muted}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
             <path d="M13.7 21a2 2 0 0 1-3.4 0"/>
           </svg>
           ${actCount>0?`<span style="position:absolute;top:-5px;right:-5px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:${C.warm};color:#0F0F14;font-size:9px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 0 6px ${C.warm}">${actCount>99?'99+':actCount}</span>`:''}
         </button>
-        <button aria-label="Settings" onclick="openSettings()" title="Settings" style="background:none;border:1.5px solid rgba(255,255,255,0.12);border-radius:12px;padding:7px 11px;color:${C.muted};font-size:15px;font-weight:600;cursor:pointer">⚙</button>
+        <button aria-label="Settings" data-act="openSettings" title="Settings" style="background:none;border:1.5px solid rgba(255,255,255,0.12);border-radius:12px;padding:7px 11px;color:${C.muted};font-size:15px;font-weight:600;cursor:pointer">⚙</button>
       </div>
     </div>`;
   }
@@ -7726,8 +7845,8 @@ function renderApp(){
 
   const feedUnread = (net && A.unread)?(A.unread[net.id]||0):0;
   const feedBadge = feedUnread>0?`<span style="position:absolute;top:-4px;right:-10px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:${C.warm};color:#0F0F14;font-size:9px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 0 6px ${C.warm}">${feedUnread>9?'9+':feedUnread}</span>`:'';
-  const navTab = (active,icon,label,onclick,badge)=>`
-    <button onclick="${onclick}" style="background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;padding:4px 16px;position:relative;flex:1">
+  const navTab = (active,icon,label,act,arg,badge)=>`
+    <button data-act="${act}" data-a="${arg}" style="background:none;border:none;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;padding:4px 16px;position:relative;flex:1">
       <span style="font-size:20px;opacity:${active?1:0.3};color:${active?C.accent:C.text};filter:${active?`drop-shadow(0 0 6px ${C.accent})`:'none'};transition:all .2s;position:relative">${icon}${badge||''}</span>
       <span style="color:${active?C.accent:C.muted};font-size:9px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;transition:color .2s">${label}</span>
     </button>`;
@@ -7740,7 +7859,7 @@ function renderApp(){
         </svg>
       </button>
     </div>` : `<div style="flex:1"></div>`;
-  const tabs = navTab(A.tab===0, "⊞", "Feed", "setTab(0)", feedBadge) + camBtn + navTab(A.tab===2, "◎", "My Page", "setTab(2)");
+  const tabs = navTab(A.tab===0, "⊞", "Feed", "setTab", 0, feedBadge) + camBtn + navTab(A.tab===2, "◎", "My Page", "setTab", 2);
 
   const frameHTML = header + `
     ${A.showNetPicker?buildNetPicker():""}
@@ -7775,7 +7894,7 @@ function renderApp(){
   // Re-assigning identical innerHTML still destroys and rebuilds every element,
   // forcing all images to re-decode (a visible black flash on photos). This guard
   // makes every no-op render — whatever triggered it — completely invisible.
-  if(frameHTML===_lastFrameHTML) return;
+  if(frameHTML===_lastFrameHTML){ _resetScroll=false; return; }   // nothing changed: don't strand the flag for a later render
   _lastFrameHTML=frameHTML;
   // Rebuilding innerHTML destroys the scroll containers, which silently resets
   // them to the top — so a like or opening comments used to yank the user back
@@ -7783,10 +7902,16 @@ function renderApp(){
   // it back straight after (layout is synchronous, and post photos have fixed
   // heights, so the restored offset lands on exactly the same content).
   const _scrollKeep={};
-  ['feed-scroll','network-scroll','mypage-scroll','whatsnew-scroll'].forEach(id=>{
-    const el=document.getElementById(id);
-    if(el && el.scrollTop>0) _scrollKeep[id]=el.scrollTop;
-  });
+  // ...except when the render REPLACES the list contents (e.g. changing the date
+  // filter). The old offset then points at content that's gone, stranding the user
+  // at the bottom of a much shorter list — so those callers set _resetScroll.
+  if(!_resetScroll){
+    ['feed-scroll','network-scroll','mypage-scroll','whatsnew-scroll'].forEach(id=>{
+      const el=document.getElementById(id);
+      if(el && el.scrollTop>0) _scrollKeep[id]=el.scrollTop;
+    });
+  }
+  _resetScroll=false;
   document.getElementById('app-frame').innerHTML = frameHTML;
   Object.keys(_scrollKeep).forEach(id=>{
     const el=document.getElementById(id);

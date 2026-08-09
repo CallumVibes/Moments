@@ -3015,6 +3015,7 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 const CHANGELOG=[
   { v:'0.9.3', date:'July 2026', title:'Here and gone', changes:[
     ['new','Disappearing photos \u2014 flip on \u201cDisappears after 24 hours\u201d when sharing, and the post fades from everyone\u2019s feed a day later, with a little countdown while it\u2019s up. It\u2019s a tidiness feature, not a security one: anyone in the network can still screenshot it while it\u2019s there'],
+    ['fix','The camera preview no longer flickers once a second while recording a video'],
     ['fix','Security hardening around how posts and link previews are displayed'],
   ]},
   { v:'0.9.2', date:'July 2026', title:'Tidy up', changes:[
@@ -4570,7 +4571,18 @@ function startRecording(){
     A.cameraMode='recording'; A.recSeconds=0; renderApp();
     // Auto-stop at 30s
     _recTimer=setTimeout(()=>stopRecording(), 30000);
-    _recSecTimer=setInterval(()=>{ A.recSeconds=(A.recSeconds||0)+1; renderApp(); }, 1000);
+    _recSecTimer=setInterval(()=>{
+      A.recSeconds=(A.recSeconds||0)+1;
+      // Patch just the counter text. A full renderApp() here rebuilt the camera
+      // markup — including the <video> element — every second, so the live preview
+      // lost its stream and blacked out for a frame (the 1Hz flash while recording).
+      // Same targeted-patch approach used for likes/comments.
+      try{
+        const els=document.querySelectorAll('.rec-secs');
+        if(els.length){ els.forEach(el=>{ el.textContent=String(A.recSeconds); }); }
+        else renderApp();   // markup not present (shouldn't happen) — fall back
+      }catch(_){ renderApp(); }
+    }, 1000);
   }catch(e){ showToast('Recording not supported on this device'); }
 }
 function stopRecording(){
@@ -6906,7 +6918,7 @@ function buildCamera(){
   return `<div style="position:absolute;inset:0;background:#000;z-index:76;display:flex;flex-direction:column">
     <div style="padding:calc(16px + env(safe-area-inset-top, 0px)) 18px 16px;display:flex;justify-content:space-between;align-items:center">
       <button aria-label="Close camera" data-act="closeCamera" title="Close" style="background:rgba(255,255,255,0.14);border:none;color:#fff;border-radius:50%;width:38px;height:38px;font-size:17px;cursor:pointer">✕</button>
-      ${isRecording?`<div style="background:rgba(220,38,38,0.85);border-radius:20px;padding:5px 14px;color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:#fff;display:inline-block"></span>${recSecs}s / 30s</div>`:''}
+      ${isRecording?`<div style="background:rgba(220,38,38,0.85);border-radius:20px;padding:5px 14px;color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:#fff;display:inline-block"></span><span class="rec-secs">${recSecs}</span>s / 30s</div>`:''}
       <div style="display:flex;align-items:center;gap:10px">
         <button data-act="cameraFallback" aria-label="Open gallery" title="Choose a photo or video" style="background:rgba(255,255,255,0.14);border:none;color:#fff;border-radius:50%;width:38px;height:38px;font-size:15px;cursor:pointer">🖼</button>
         <button data-act="flipCamera" title="Flip camera" style="background:rgba(255,255,255,0.14);border:none;color:#fff;border-radius:50%;width:38px;height:38px;font-size:16px;cursor:pointer">⟲</button>
@@ -6936,7 +6948,7 @@ function buildCamera(){
             : `<span style="width:18px;height:18px;border-radius:50%;background:#DC2626;display:inline-block"></span>`}
         </button>
       </div>
-      <div style="color:rgba(255,255,255,0.4);font-size:11px">${isRecording?`Recording… ${recSecs}s / 30s`:'Tap ○ for photo · ● for video'}</div>
+      <div style="color:rgba(255,255,255,0.4);font-size:11px">${isRecording?`Recording… <span class="rec-secs">${recSecs}</span>s / 30s`:'Tap ○ for photo · ● for video'}</div>
     </div>
   </div>`;
 }

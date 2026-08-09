@@ -39,7 +39,7 @@
        custom relays and members' media lives on arbitrary Blossom hosts. style-src keeps
        'unsafe-inline' (the whole UI is inline styles; styles can't execute JS).
        worker-src 'self' pre-clears the v0.9 service worker. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-N6wZXfG2Q6PadaCHI11vQrjCIqrMY+97H3wlu7TuJ64='; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-8A4Gib2vbdyMz5n2QX128rX6+dMwW3azNK/wgWIkQME='; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -3020,9 +3020,11 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // live app version and drives the What's New badge, so a version with no changes
 // must never sit on top. ──
 const CHANGELOG=[
+  { v:'0.9.4', date:'August 2026', title:'Within reach', changes:[
+    ['new','Buttons and controls can now be reached with a keyboard and read out by screen readers'],
+  ]},
   { v:'0.9.3', date:'July 2026', title:'Here and gone', changes:[
     ['new','Disappearing photos \u2014 flip on \u201cDisappears after 24 hours\u201d when sharing, and the post fades from everyone\u2019s feed a day later, with a little countdown while it\u2019s up. It\u2019s a tidiness feature, not a security one: anyone in the network can still screenshot it while it\u2019s there'],
-    ['new','Buttons and controls can now be reached with a keyboard and read out by screen readers'],
     ['fix','Switching between 7d, 14d and All now takes you back to the top instead of leaving you stranded at the bottom'],
     ['fix','The camera preview no longer flickers once a second while recording a video'],
     ['fix','Security hardening around how posts and link previews are displayed'],

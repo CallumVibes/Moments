@@ -7587,6 +7587,8 @@ registerActions({
 
 // Feed, post view, post menu, likers, comments:
 registerActions({
+  setFeedRange:      r=>setFeedRange(r),
+  setProfileRange:   r=>setProfileRange(r),
   noop:              ()=>{},                       // used with data-stop to swallow taps
   photoTap:          (nid,pid,el,ev)=>photoTap(nid,pid,ev),
   openPhotoAt:       (nid,pid,idx)=>openPhotoAt(nid,pid,idx),

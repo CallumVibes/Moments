@@ -390,7 +390,7 @@
 <div id="app-screen">
   <div id="app-frame"></div>
 </div>
-<input type="file" id="global-photo-input" accept="image/*,video/*" style="display:none" onchange="onPickPhoto(this)"/>
+<input type="file" id="global-photo-input" accept="image/*,video/*" style="display:none" data-act-change="onPickPhoto"/>
 
 <script>
 /* ════════════════════════════════════════════
@@ -1423,7 +1423,7 @@ function postStatus(net, post){
   const mine = post && (post.memberId==='u1' || post.authorPk===myPubkey());
   if(!mine || !post.status || post.status==='sent') return '';
   if(post.status==='sending') return ` · <span style="color:${C.muted}">Posting…</span>`;
-  return ` · <span onclick="event.stopPropagation();retryPost('${net.id}','${post.id}')" style="color:${C.red};font-weight:700;cursor:pointer">⚠ Failed — Retry</span>`;
+  return ` · <span data-act="retryPost" data-a="${net.id}" data-b="${post.id}" data-stop style="color:${C.red};font-weight:700;cursor:pointer">⚠ Failed — Retry</span>`;
 }
 
 // Publish a post / reply / like / delete to the network (encrypted where needed)
@@ -2442,7 +2442,7 @@ function photoGrid(net, post){
     const bg = cached ? `background:url('${safeMediaUrl(cached)}') center/cover no-repeat;`
              : (e.blurhash ? `background:url('${safeCssUrl(blurhashToDataURL(e.blurhash))}') center/cover no-repeat;`
              : `background:${C.surfaceHigh};`);
-    return `<div data-photo="${sha}" onclick="event.stopPropagation();openPhotoAt('${net.id}','${post.id}',${idx})" style="${bg}cursor:pointer;position:relative;overflow:hidden;${extra||''}"></div>`;
+    return `<div data-photo="${sha}" data-act="openPhotoAt" data-a="${net.id}" data-b="${post.id}" data-c="${idx}" data-stop style="${bg}cursor:pointer;position:relative;overflow:hidden;${extra||''}"></div>`;
   };
   const gap='4px';
   if(n===2){
@@ -2488,7 +2488,7 @@ function photoBox(net, post){
           <div style="color:${C.muted};font-size:11px;margin-top:2px">${dur?fmtDur(dur):'Audio'}</div>
         </div>
       </div>
-      <audio ${sha?`data-audio="${esc(sha)}"`:''} ${src?`src="${src}"`:''} controls preload="none" onplay="audioSolo(this)" onclick="event.stopPropagation()"
+      <audio ${sha?`data-audio="${esc(sha)}"`:''} ${src?`src="${src}"`:''} controls preload="none" data-act-play="audioSolo" data-act="noop" data-stop
         style="position:absolute;left:14px;right:14px;bottom:8px;width:calc(100% - 28px);height:32px"></audio>${spinner}` };
   }
   if(isVideo(post)){
@@ -3877,7 +3877,7 @@ function confirmYes(){ const cb=_confirmCb; _confirmCb=null; A.confirmMsg=null; 
 function confirmNo(){ _confirmCb=null; A.confirmMsg=null; renderApp(); }
 function buildConfirm(){
   return `<div onclick="confirmNo()" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:28px">
-    <div onclick="event.stopPropagation()" style="background:${C.surface};border:1px solid var(--c-border);border-radius:20px;padding:22px;max-width:320px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.5)">
+    <div data-act="noop" data-stop style="background:${C.surface};border:1px solid var(--c-border);border-radius:20px;padding:22px;max-width:320px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.5)">
       <div style="color:${C.text};font-size:14px;line-height:1.55;margin-bottom:18px">${esc(A.confirmMsg||'')}</div>
       <div style="display:flex;gap:10px">
         <button onclick="confirmNo()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:pointer">Cancel</button>
@@ -3958,7 +3958,7 @@ async function confirmDeleteNetwork(){
 function buildDeleteNetConfirm(){
   const net=A.networks[A.confirmDeleteNet]; if(!net) return '';
   return `<div onclick="cancelDeleteNet()" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:24px">
-    <div onclick="event.stopPropagation()" style="background:${C.surface};border:1px solid rgba(248,113,113,0.4);border-radius:20px;padding:22px;width:100%;max-width:340px">
+    <div data-act="noop" data-stop style="background:${C.surface};border:1px solid rgba(248,113,113,0.4);border-radius:20px;padding:22px;width:100%;max-width:340px">
       <div style="color:${C.red};font-size:15px;font-weight:700;margin-bottom:8px">Delete "${esc(net.name)}"?</div>
       <div style="color:${C.textDim};font-size:13px;line-height:1.6;margin-bottom:14px">This removes the network from every member's app. Photos and comments will be gone for everyone. This cannot be undone.</div>
       <div style="color:${C.muted};font-size:12px;margin-bottom:6px">Type <strong style="color:${C.red}">DELETE NETWORK</strong> to confirm</div>
@@ -3979,7 +3979,7 @@ function buildVanishConfirm(){
   const relays=activeRelays().length;
   const busy=!!A.vanishBusy;
   return `<div onclick="${busy?'':'vanishCancel()'}" style="position:absolute;inset:0;z-index:95;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:24px">
-    <div onclick="event.stopPropagation()" style="background:${C.surface};border:1px solid rgba(248,113,113,0.45);border-radius:20px;padding:22px;width:100%;max-width:360px;max-height:88%;overflow-y:auto">
+    <div data-act="noop" data-stop style="background:${C.surface};border:1px solid rgba(248,113,113,0.45);border-radius:20px;padding:22px;width:100%;max-width:360px;max-height:88%;overflow-y:auto">
       <div style="color:${C.red};font-size:16px;font-weight:800;margin-bottom:10px">Delete account data?</div>
       <div style="color:${C.textDim};font-size:13px;line-height:1.65;margin-bottom:10px">
         You'll leave ${nets} network${nets===1?'':'s'}, and ${relays} relay${relays===1?'':'s'} will be asked to erase <strong style="color:${C.text}">everything this key has ever published</strong> — posts, comments, likes, your name and picture.
@@ -4103,7 +4103,7 @@ function buildPasswordInput(netId){
   const net=A.networks[netId]; if(!net) return '';
   return `
   <div onclick="cancelPasswordInput()" style="position:absolute;inset:0;z-index:92;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;padding:24px">
-    <div onclick="event.stopPropagation()" style="background:${C.bg};border-radius:20px;padding:22px 20px;width:100%;max-width:340px">
+    <div data-act="noop" data-stop style="background:${C.bg};border-radius:20px;padding:22px 20px;width:100%;max-width:340px">
       <div style="color:${C.text};font-size:16px;font-weight:700;margin-bottom:6px">Network password</div>
       <div style="color:${C.muted};font-size:12px;margin-bottom:14px">Members will need this password plus the join code. Leave blank to remove the password.</div>
       <input id="net-pw-input" type="text" value="${esc(net.password||'')}" placeholder="Enter a password…" autocomplete="off" style="width:100%;background:${C.surfaceHigh};border:1.5px solid ${C.accentBorder};outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px"/>
@@ -4172,7 +4172,7 @@ function rangePredicate(range){
 function rangeChips(active, fn, pad){
   return `<div style="display:flex;gap:6px;padding:${pad||'0'}">
     ${[['week','7d'],['lastweek','14d'],['all','All']].map(([k,label])=>`
-      <button onclick="${fn}('${k}')" style="flex:1;background:${active===k?C.accentDim:C.bg};border:1px solid ${active===k?C.accentBorder:'var(--c-border)'};color:${active===k?C.accent:C.muted};border-radius:20px;padding:7px 0;font-size:12px;font-weight:700;cursor:pointer">${label}</button>`).join('')}
+      <button data-act="${fn}" data-a="${k}" style="flex:1;background:${active===k?C.accentDim:C.bg};border:1px solid ${active===k?C.accentBorder:'var(--c-border)'};color:${active===k?C.accent:C.muted};border-radius:20px;padding:7px 0;font-size:12px;font-weight:700;cursor:pointer">${label}</button>`).join('')}
   </div>`;
 }
 // A profile is an archive you visit deliberately, so it opens on All — defaulting
@@ -4422,7 +4422,7 @@ function pollHTML(net, post){
       const c=counts[i]; const pct=total?Math.round(c/total*100):0;
       const voted=myVote===i;
       const win=i===winnerIdx;
-      return `<button onclick="event.stopPropagation();${ended?'':`votePoll('${post.id}',${i})`}" style="position:relative;width:100%;text-align:left;background:${C.surfaceHigh};border:1.5px solid ${voted?C.accent:'transparent'};border-radius:12px;padding:0;overflow:hidden;cursor:pointer">
+      return `<button ${ended?'':`data-act="votePoll" data-a="${post.id}" data-b="${i}"`} data-stop style="position:relative;width:100%;text-align:left;background:${C.surfaceHigh};border:1.5px solid ${voted?C.accent:'transparent'};border-radius:12px;padding:0;overflow:hidden;cursor:pointer">
         <div style="position:absolute;inset:0;width:${pct}%;background:${win?C.accentDim:'rgba(255,140,66,0.10)'};transition:width .35s"></div>
         <div style="position:relative;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 14px">
           <span style="color:${C.text};font-size:14px;font-weight:${voted||win?700:500}">${win?'👑 ':''}${esc(o)}${voted?' ✓':''}</span>
@@ -4881,7 +4881,7 @@ function cancelJoinPrompt(){ A.pendingJoinCode=null; renderApp(); }
 function buildJoinPasswordPrompt(){
   return `
   <div onclick="cancelJoinPrompt()" style="position:absolute;inset:0;z-index:92;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;padding:24px">
-    <div onclick="event.stopPropagation()" style="background:${C.bg};border-radius:20px;padding:22px 20px;width:100%;max-width:340px">
+    <div data-act="noop" data-stop style="background:${C.bg};border-radius:20px;padding:22px 20px;width:100%;max-width:340px">
       <div style="color:${C.text};font-size:16px;font-weight:700;margin-bottom:4px">Join network</div>
       <div style="color:${C.muted};font-size:12px;margin-bottom:4px;font-family:monospace">${esc(A.pendingJoinCode||'')}</div>
       <div style="color:${C.muted};font-size:12px;margin-bottom:14px">This network is password-protected. Enter its password to join.</div>
@@ -5063,7 +5063,7 @@ function buildLikers(net){
   const mine=(lb[mk]&&lb[mk].v) ? (normEmo(lb[mk].emo)||'♥') : null;
   // Picker up top: tap to react, tap your current one to take it back.
   const picker=REACTIONS.map(r=>`
-      <button onclick="setReaction('${post.id}','${r}')" aria-label="React ${r}" aria-pressed="${mine===r?'true':'false'}" style="flex:1;background:${mine===r?C.accentDim:C.surfaceHigh};border:1px solid ${mine===r?C.accentBorder:'var(--c-border)'};border-radius:12px;padding:9px 0;font-size:20px;cursor:pointer;line-height:1">${r}</button>`).join('');
+      <button data-act="setReaction" data-a="${post.id}" data-b="${r}" aria-label="React ${r}" aria-pressed="${mine===r?'true':'false'}" style="flex:1;background:${mine===r?C.accentDim:C.surfaceHigh};border:1px solid ${mine===r?C.accentBorder:'var(--c-border)'};border-radius:12px;padding:9px 0;font-size:20px;cursor:pointer;line-height:1">${r}</button>`).join('');
   const likers=Object.entries(lb).filter(([,e])=>e&&e.v).map(([pk,e])=>{
     // My own member record is the legacy id 'u1' (isMe), but my reaction is keyed
     // by pubkey — so a straight id===pk lookup misses me and I render as "Someone"
@@ -5076,14 +5076,14 @@ function buildLikers(net){
   const list=likers.length===0
     ? `<div style="color:${C.muted};font-size:13px;text-align:center;padding:16px 0">No reactions yet</div>`
     : likers.map(({mem:m, glyph, isMe})=>`
-      <div ${(m.id&&!isMe)?`onclick="openProfile('${m.id}')"`:''} style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--c-border);cursor:${(m.id&&!isMe)?'pointer':'default'}">
+      <div ${(m.id&&!isMe)?`data-act="openProfile" data-a="${m.id}"`:''} style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--c-border);cursor:${(m.id&&!isMe)?'pointer':'default'}">
         ${avatarHTML(m,36,12,14,1.5)}
         <div style="color:${C.text};font-size:14px;font-weight:600">${esc(m.name)}${isMe?' (you)':''}</div>
         <span style="margin-left:auto;color:${C.warm};font-size:16px">${glyph}</span>
       </div>`).join('');
   return `
-  <div id="likers-sheet" onclick="closeLikers()" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,0.5);display:flex;flex-direction:column;justify-content:flex-end">
-    <div onclick="event.stopPropagation()" style="background:${C.bg};border-radius:24px 24px 0 0;padding:14px 20px 36px;max-height:60%;display:flex;flex-direction:column">
+  <div id="likers-sheet" data-act="closeLikers" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,0.5);display:flex;flex-direction:column;justify-content:flex-end">
+    <div data-act="noop" data-stop style="background:${C.bg};border-radius:24px 24px 0 0;padding:14px 20px 36px;max-height:60%;display:flex;flex-direction:column">
       <div style="width:36px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;margin:0 auto 16px"></div>
       <div style="display:flex;gap:6px;margin-bottom:14px">${picker}</div>
       <div style="color:${C.text};font-weight:700;font-size:15px;margin-bottom:4px">Reactions</div>
@@ -5258,14 +5258,14 @@ function buildPostMenu(){
   const iOwn=(net.ownerPk && net.ownerPk===myPubkey());
   const hasPhoto=!!(post.image||post.enc);
   return `
-  <div id="post-menu-sheet" onclick="closePostMenu()" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,0.45);display:flex;flex-direction:column;justify-content:flex-end">
-    <div onclick="event.stopPropagation()" style="background:${C.surface};border-radius:22px 22px 0 0;padding:16px 16px 32px">
+  <div id="post-menu-sheet" data-act="closePostMenu" style="position:absolute;inset:0;z-index:90;background:rgba(0,0,0,0.45);display:flex;flex-direction:column;justify-content:flex-end">
+    <div data-act="noop" data-stop style="background:${C.surface};border-radius:22px 22px 0 0;padding:16px 16px 32px">
       <div style="width:36px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;margin:0 auto 18px"></div>
-      ${hasPhoto?`<button onclick="closePostMenu();savePhoto('${post.id}')" style="width:100%;background:none;border:none;border-bottom:1px solid var(--c-border);color:${C.text};font-size:15px;font-weight:600;padding:16px 4px;text-align:left;cursor:pointer;display:flex;align-items:center;gap:12px"><span style="font-size:20px">⬇</span> Save photo</button>`:''}
-      ${mine?`<button onclick="startEditCaption('${post.id}')" style="width:100%;background:none;border:none;border-bottom:1px solid var(--c-border);color:${C.text};font-size:15px;font-weight:600;padding:16px 4px;text-align:left;cursor:pointer;display:flex;align-items:center;gap:12px"><span style="font-size:20px">✏️</span> Edit caption</button>`:''}
-      ${mine?`<button onclick="closePostMenu();askConfirm('Delete this moment?','Delete',()=>deletePost('${post.id}'))" style="width:100%;background:none;border:none;color:${C.red};font-size:15px;font-weight:600;padding:16px 4px;text-align:left;cursor:pointer;display:flex;align-items:center;gap:12px"><span style="font-size:20px">🗑</span> Delete</button>`:''}
-      ${(iOwn && !mine)?`<button onclick="closePostMenu();askConfirm('Remove this moment from the network? Everyone will stop seeing it.','Remove',()=>modDeletePost('${post.id}'))" style="width:100%;background:none;border:none;color:${C.red};font-size:15px;font-weight:600;padding:16px 4px;text-align:left;cursor:pointer;display:flex;align-items:center;gap:12px"><span style="font-size:20px">🛡</span> Remove from network</button>`:''}
-      <button onclick="closePostMenu()" style="width:100%;background:${C.surfaceHigh};border:none;border-radius:14px;color:${C.muted};font-size:14px;font-weight:600;padding:14px;margin-top:8px;cursor:pointer">Cancel</button>
+      ${hasPhoto?`<button data-act="menuSavePhoto" data-a="${post.id}" style="width:100%;background:none;border:none;border-bottom:1px solid var(--c-border);color:${C.text};font-size:15px;font-weight:600;padding:16px 4px;text-align:left;cursor:pointer;display:flex;align-items:center;gap:12px"><span style="font-size:20px">⬇</span> Save photo</button>`:''}
+      ${mine?`<button data-act="startEditCaption" data-a="${post.id}" style="width:100%;background:none;border:none;border-bottom:1px solid var(--c-border);color:${C.text};font-size:15px;font-weight:600;padding:16px 4px;text-align:left;cursor:pointer;display:flex;align-items:center;gap:12px"><span style="font-size:20px">✏️</span> Edit caption</button>`:''}
+      ${mine?`<button data-act="menuDeletePost" data-a="${post.id}" style="width:100%;background:none;border:none;color:${C.red};font-size:15px;font-weight:600;padding:16px 4px;text-align:left;cursor:pointer;display:flex;align-items:center;gap:12px"><span style="font-size:20px">🗑</span> Delete</button>`:''}
+      ${(iOwn && !mine)?`<button data-act="menuModDeletePost" data-a="${post.id}" style="width:100%;background:none;border:none;color:${C.red};font-size:15px;font-weight:600;padding:16px 4px;text-align:left;cursor:pointer;display:flex;align-items:center;gap:12px"><span style="font-size:20px">🛡</span> Remove from network</button>`:''}
+      <button data-act="closePostMenu" style="width:100%;background:${C.surfaceHigh};border:none;border-radius:14px;color:${C.muted};font-size:14px;font-weight:600;padding:14px;margin-top:8px;cursor:pointer">Cancel</button>
     </div>
   </div>`;
 }
@@ -5346,7 +5346,7 @@ function buildEditCaption(){
   const post=net.posts.find(p=>p.id===A.editCaptionId); if(!post) return '';
   return `
   <div onclick="cancelEditCaption()" style="position:absolute;inset:0;z-index:92;background:rgba(0,0,0,0.5);display:flex;flex-direction:column;justify-content:flex-end">
-    <div onclick="event.stopPropagation()" style="background:${C.surface};border-radius:22px 22px 0 0;padding:18px 18px 26px">
+    <div data-act="noop" data-stop style="background:${C.surface};border-radius:22px 22px 0 0;padding:18px 18px 26px">
       <div style="width:36px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;margin:0 auto 16px"></div>
       <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:12px">Edit caption</div>
       <textarea id="edit-caption-input" maxlength="280" oninput="setEditCaptionDraft(this.value)" placeholder="Write a caption…" style="width:100%;min-height:84px;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:14px;padding:12px 14px;color:${C.text};font-family:'Inter',sans-serif;font-size:14px;line-height:1.5;resize:none;outline:none">${esc(post.caption||'')}</textarea>
@@ -5837,7 +5837,7 @@ function captionSansLink(post){
 function linkCardHTML(post){
   const l=post.link; if(!l || !l.url) return '';
   const dom=esc(l.domain||l.url.replace(/^https?:\/\//,'').split('/')[0]);
-  return `<div data-url="${esc(l.url)}" onclick="event.stopPropagation();openLink(this.dataset.url)" style="display:flex;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:14px;overflow:hidden;cursor:pointer;margin:12px 0 2px">
+  return `<div data-url="${esc(l.url)}" data-act="openLinkFromData" data-stop style="display:flex;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:14px;overflow:hidden;cursor:pointer;margin:12px 0 2px">
     ${l.img?`<img src="${esc(l.img)}" alt="" style="width:92px;height:76px;object-fit:cover;flex-shrink:0"/>`
            :`<div style="width:56px;height:76px;flex-shrink:0;background:${C.accentDim};display:flex;align-items:center;justify-content:center;color:${C.accent};font-size:20px;font-weight:800">${(dom[0]||'?').toUpperCase()}</div>`}
     <div style="padding:10px 12px;min-width:0;display:flex;flex-direction:column;justify-content:center">
@@ -5848,7 +5848,7 @@ function linkCardHTML(post){
 }
 function composerLinkCard(l){
   return `<div style="position:relative;margin-bottom:8px">${linkCardHTML({link:l})}
-    <button aria-label="Remove link preview" onclick="removeComposerLink()" style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.45);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:12px;cursor:pointer;line-height:1">✕</button>
+    <button aria-label="Remove link preview" data-act="removeComposerLink" style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.45);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:12px;cursor:pointer;line-height:1">✕</button>
   </div>`;
 }
 async function sharePhoto(){
@@ -6254,7 +6254,7 @@ function buildFeed(net){
   const inRange=rangePredicate(range);
   const visiblePosts=net.posts.filter(p=>!pending[p.id] && inRange(p) && !isExpired(p));
   const memberStrip = net.members.slice(0,3).map((mem,i)=>`
-    <button onclick="openProfile('${mem.id}')" style="margin-left:${i===0?0:-6}px;position:relative;z-index:${3-i};background:none;border:none;padding:0;cursor:pointer" aria-label="View ${esc(mem.name)}">${avatarHTML(mem,24,8,12,1.5)}</button>
+    <button data-act="openProfile" data-a="${mem.id}" style="margin-left:${i===0?0:-6}px;position:relative;z-index:${3-i};background:none;border:none;padding:0;cursor:pointer" aria-label="View ${esc(mem.name)}">${avatarHTML(mem,24,8,12,1.5)}</button>
   `).join('');
 
   const stillSyncing = !(A.eosed && A.eosed[net.id]) && Relay.isConnected();
@@ -6274,33 +6274,33 @@ function buildFeed(net){
          <div style="font-size:40px;margin-bottom:10px">📷</div>
          <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:4px">No moments yet</div>
          <div style="color:${C.muted};font-size:13px;margin-bottom:18px">Be the first to share something with your network.</div>
-         <button onclick="addPhotoQuick()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:12px 22px;font-size:14px;font-weight:700;cursor:pointer">Share a moment</button>
+         <button data-act="addPhotoQuick" style="background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:12px 22px;font-size:14px;font-weight:700;cursor:pointer">Share a moment</button>
        </div>`)
     : visiblePosts.map(post=>{
         const mem=memberIn(net,post.memberId);
         return `
         <div style="background:${C.surface};border-radius:22px;overflow:hidden;animation:momentIn .35s ease">
           <div style="padding:12px 14px 8px;display:flex;align-items:center;gap:10px">
-            <button onclick="openProfile('${post.memberId}')" style="background:none;border:none;padding:0;cursor:pointer;flex-shrink:0">${avatarHTML(mem,36,12,18)}</button>
+            <button data-act="openProfile" data-a="${post.memberId}" style="background:none;border:none;padding:0;cursor:pointer;flex-shrink:0">${avatarHTML(mem,36,12,18)}</button>
             <div>
               <div style="color:${C.text};font-size:13px;font-weight:600;font-family:'Playfair Display',serif">${esc(mem.name)}${mem.left?` <span style="color:${C.muted};font-size:10px;font-weight:500;font-family:'Inter',sans-serif">· left the network</span>`:''}</div>
-              <div class="post-time" data-ts="${Number(post.ts)||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(post))}</span>${postStatus(net,post)}${post.exp?`<span class="post-exp" data-exp="${post.exp}" style="color:${C.accent};font-weight:700;margin-left:6px">\u23f1 ${esc(expLabel(post.exp))}</span>`:''}</div>
+              <div class="post-time" data-ts="${Number(post.ts)||0}" data-act="timeTap" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(post))}</span>${postStatus(net,post)}${post.exp?`<span class="post-exp" data-exp="${post.exp}" style="color:${C.accent};font-weight:700;margin-left:6px">\u23f1 ${esc(expLabel(post.exp))}</span>`:''}</div>
             </div>
-            <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${post.id}')" style="margin-left:auto;background:none;border:none;color:${C.muted};font-size:20px;cursor:pointer;padding:4px 6px;line-height:1">···</button>
+            <button aria-label="Post options" data-act="openPostMenu" data-a="${net.id}" data-b="${post.id}" data-stop style="margin-left:auto;background:none;border:none;color:${C.muted};font-size:20px;cursor:pointer;padding:4px 6px;line-height:1">···</button>
           </div>
-          ${hasMultiPhoto(post)?`<div style="margin:0 12px">${photoGrid(net,post)}</div>`:(post.image||post.enc)?(()=>{const pb=photoBox(net,post);return `<div onclick="photoTap('${net.id}','${post.id}',event)" ${pb.attr} style="margin:0 12px;border-radius:14px;height:192px;cursor:pointer;font-size:58px;${pb.style}">${pb.inner}</div>`;})():''}
+          ${hasMultiPhoto(post)?`<div style="margin:0 12px">${photoGrid(net,post)}</div>`:(post.image||post.enc)?(()=>{const pb=photoBox(net,post);return `<div data-act="photoTap" data-a="${net.id}" data-b="${post.id}" ${pb.attr} style="margin:0 12px;border-radius:14px;height:192px;cursor:pointer;font-size:58px;${pb.style}">${pb.inner}</div>`;})():''}
           <div style="padding:${(post.image||post.enc)?'10px 14px 14px':'2px 14px 14px'}">
-            ${captionSansLink(post)?`<div ${(post.image||post.enc)?'':`onclick="openPostView('${post.id}')"`} style="${(post.image||post.enc)?'':'cursor:pointer;'}font-family:'Playfair Display',serif;${(post.image||post.enc)?'font-style:italic;font-size:13px;color:'+C.textDim:'font-size:16px;line-height:1.5;color:'+C.text};margin-bottom:10px;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(post))}</div>`:''}
+            ${captionSansLink(post)?`<div ${(post.image||post.enc)?'':`data-act="openPostView" data-a="${post.id}"`} style="${(post.image||post.enc)?'':'cursor:pointer;'}font-family:'Playfair Display',serif;${(post.image||post.enc)?'font-style:italic;font-size:13px;color:'+C.textDim:'font-size:16px;line-height:1.5;color:'+C.text};margin-bottom:10px;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(post))}</div>`:''}
             ${post.poll?pollHTML(net,post):''}
             ${post.link?linkCardHTML(post):''}
-            ${(post.link && !post.image && !post.enc && !post.poll)?`<div onclick="openPostView('${post.id}')" style="cursor:pointer;color:${C.muted};font-size:11px;margin-top:8px;display:inline-flex;align-items:center;gap:5px">💬 View post</div>`:''}
+            ${(post.link && !post.image && !post.enc && !post.poll)?`<div data-act="openPostView" data-a="${post.id}" style="cursor:pointer;color:${C.muted};font-size:11px;margin-top:8px;display:inline-flex;align-items:center;gap:5px">💬 View post</div>`:''}
             ${post.modHidden?`<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:12px;padding:10px 12px;margin:10px 0 4px;font-size:12px;color:${C.red};line-height:1.5">🚫 The network owner hid this from other members. Only you can still see it.
-              <button onclick="askConfirm('Delete this moment?','Delete',()=>deletePost('${post.id}'))" style="display:block;margin-top:8px;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:10px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer">Delete it everywhere</button></div>`:''}
+              <button data-act="askDeletePost" data-a="${post.id}" style="display:block;margin-top:8px;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:10px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer">Delete it everywhere</button></div>`:''}
             <div style="display:flex;align-items:center;gap:14px">
-              <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" onpointerdown="likePress('${post.id}')" onpointerup="likeRelease('${post.id}')" onpointercancel="likeCancel()" onpointerleave="likeCancel()" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:13px;font-weight:600;user-select:none;-webkit-user-select:none">
+              <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" data-act-pointerdown="likePress" data-a="${post.id}" data-act-pointerup="likeRelease" data-a="${post.id}" data-act-pointercancel="likeCancel" data-act-pointerleave="likeCancel" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:13px;font-weight:600;user-select:none;-webkit-user-select:none">
                 <span style="font-size:17px">${reactionGlyphs(post)}</span>
               </button>
-              <button onclick="openReplies('${post.id}')" aria-label="Comments" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${C.muted};font-size:13px;font-weight:600">
+              <button data-act="openReplies" data-a="${post.id}" aria-label="Comments" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${C.muted};font-size:13px;font-weight:600">
                 <span style="font-size:15px">💬</span><span class="cmt-count" data-cmt-pid="${post.id}" data-fmt="feed">${post.replies.length>0?post.replies.length:""}</span>
               </button>
             </div>
@@ -6317,7 +6317,7 @@ function buildFeed(net){
       </div>
       <div style="padding:4px 20px 14px;display:flex;align-items:center;gap:10px">
         <div style="display:flex">${memberStrip}</div>
-        <button onclick="setTab(1)" style="background:none;border:none;padding:0;cursor:pointer;color:${C.textDim};font-size:12px;text-align:left" aria-label="See all members">${esc(net.name)} · ${net.members.length} member${net.members.length>1?'s':''}</button>
+        <button data-act="setTab" data-a="1" style="background:none;border:none;padding:0;cursor:pointer;color:${C.textDim};font-size:12px;text-align:left" aria-label="See all members">${esc(net.name)} · ${net.members.length} member${net.members.length>1?'s':''}</button>
       </div>
       <div style="position:sticky;top:0;z-index:5;background:${C.bg};padding:6px 16px 10px">
         ${rangeChips(range,'setFeedRange')}
@@ -6333,11 +6333,11 @@ function buildNetwork(net){
     const memIsOwner = net.ownerPk ? (mem.isMe ? owner : mem.id===net.ownerPk) : false;
     const label = memIsOwner ? 'Network owner' : 'Member';
     const removeBtn = (owner && !mem.isMe)
-      ? `<button onclick="event.stopPropagation();removeMember('${net.id}','${mem.id}')" title="Remove from network" style="margin-left:auto;background:none;border:1px solid ${C.accentBorder};color:${C.warm};font-size:11px;font-weight:700;padding:5px 12px;border-radius:20px;cursor:pointer">Remove</button>`
+      ? `<button data-act="removeMember" data-a="${net.id}" data-b="${mem.id}" data-stop title="Remove from network" style="margin-left:auto;background:none;border:1px solid ${C.accentBorder};color:${C.warm};font-size:11px;font-weight:700;padding:5px 12px;border-radius:20px;cursor:pointer">Remove</button>`
       : (!mem.isMe?`<div style="margin-left:auto;background:${C.accentDim};color:${C.accent};font-size:9px;font-weight:700;padding:3px 10px;border-radius:20px;letter-spacing:.5px;text-transform:uppercase">joined</div>`:"");
     return `
     <div style="display:flex;align-items:center;gap:12px">
-      <button onclick="openProfile('${mem.id}')" style="display:flex;align-items:center;gap:12px;background:none;border:none;cursor:pointer;padding:0;text-align:left;flex:1;min-width:0">
+      <button data-act="openProfile" data-a="${mem.id}" style="display:flex;align-items:center;gap:12px;background:none;border:none;cursor:pointer;padding:0;text-align:left;flex:1;min-width:0">
         ${avatarHTML(mem,44,14,20)}
         <div style="min-width:0">
           <div style="color:${C.text};font-size:14px;font-weight:600">${esc(mem.name)}${mem.isMe?" (you)":""}</div>
@@ -6352,29 +6352,29 @@ function buildNetwork(net){
   return `
   <div id="network-scroll" class="hide-scroll" style="flex:1;overflow-y:auto;padding:0 16px calc(80px + env(safe-area-inset-bottom, 0px))">
     <div style="display:flex;align-items:center;gap:12px;padding:6px 0 14px">
-      <button aria-label="Back to feed" onclick="setTab(0)" title="Back to feed" style="background:${C.surfaceHigh};border:none;color:${C.text};border-radius:12px;width:38px;height:38px;font-size:18px;cursor:pointer">←</button>
+      <button aria-label="Back to feed" data-act="setTab" data-a="0" title="Back to feed" style="background:${C.surfaceHigh};border:none;color:${C.text};border-radius:12px;width:38px;height:38px;font-size:18px;cursor:pointer">←</button>
       <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">Network</div>
     </div>
     <div style="background:${C.surface};border-radius:22px;padding:20px;margin-bottom:14px">
       <div style="color:${C.textDim};font-size:10px;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:4px">Your network</div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:18px">
         <div style="color:${C.text};font-family:'Playfair Display',serif;font-size:22px;font-weight:600">${esc(net.name)}</div>
-        <button onclick="renameNetwork()" title="Rename network" style="background:none;border:none;color:${C.muted};font-size:14px;cursor:pointer;padding:2px 4px">✎</button>
+        <button data-act="renameNetwork" title="Rename network" style="background:none;border:none;color:${C.muted};font-size:14px;cursor:pointer;padding:2px 4px">✎</button>
       </div>
       ${!net.ownerPk?`<div style="display:flex;align-items:center;gap:10px;background:${C.accentDim};border:1px solid ${C.accentBorder};border-radius:12px;padding:10px 12px;margin-bottom:16px">
         <div style="flex:1;min-width:0">
           <div style="color:${C.accent};font-size:12px;font-weight:700">No owner set yet</div>
           <div style="color:${C.textDim};font-size:11px;line-height:1.4">This network was made before owners were tracked. Claim it to manage members and remove people.</div>
         </div>
-        <button onclick="claimOwnership('${net.id}')" style="background:${C.accent};color:#0F0F14;border:none;border-radius:10px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">Take ownership</button>
+        <button data-act="claimOwnership" data-a="${net.id}" style="background:${C.accent};color:#0F0F14;border:none;border-radius:10px;padding:8px 12px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap">Take ownership</button>
       </div>`:''}
       <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px">${members}</div>
       <div style="display:flex;gap:10px">
-        <button onclick="openInvite()" style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer">Invite someone →</button>
+        <button data-act="openInvite" style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer">Invite someone →</button>
       </div>
     </div>
     ${owner?`
-    <button onclick="setNetworkPassword('${net.id}')" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-top:14px">
+    <button data-act="setNetworkPassword" data-a="${net.id}" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-top:14px">
       <span style="font-size:18px">🔒</span>
       <div style="flex:1">
         <div style="color:${C.text};font-size:14px;font-weight:600">Password protection</div>
@@ -6382,7 +6382,7 @@ function buildNetwork(net){
       </div>
       <span style="color:${C.muted};font-size:18px">›</span>
     </button>
-    <button onclick="toggleMemberPosting('${net.id}')" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-top:14px">
+    <button data-act="toggleMemberPosting" data-a="${net.id}" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-top:14px">
       <span style="font-size:18px">✍️</span>
       <div style="flex:1">
         <div style="color:${C.text};font-size:14px;font-weight:600">Who can post</div>
@@ -6391,8 +6391,8 @@ function buildNetwork(net){
       <span style="color:${net.membersCanPost===false?C.accent:C.muted};font-size:13px;font-weight:700">${net.membersCanPost===false?'Owner only':'Everyone'}</span>
     </button>`:''}
     <div style="height:1px;background:var(--c-border);margin:22px 4px 16px"></div>
-    ${owner?`<button onclick="deleteNetworkAsk('${net.id}')" style="width:100%;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:16px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:10px">Delete network</button>`:''}
-    <button onclick="leaveNetwork('${net.id}')" style="width:100%;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:16px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;margin-top:14px">Leave network</button>
+    ${owner?`<button data-act="deleteNetworkAsk" data-a="${net.id}" style="width:100%;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:16px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer;margin-bottom:10px">Delete network</button>`:''}
+    <button data-act="leaveNetwork" data-a="${net.id}" style="width:100%;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:16px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer;margin-top:14px">Leave network</button>
   </div>`;
 }
 
@@ -6568,12 +6568,12 @@ function buildMyPage(net){
   const _room = MAX_PHOTOS - 1 - _ex.length;
   const extrasStrip = _canMulti ? `<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center">` +
     _ex.map((x,idx)=>`<div style="position:relative;width:56px;height:56px;border-radius:10px;background:url('${safeMediaUrl(x.image)}') center/cover no-repeat ${C.surfaceHigh}">` +
-      `<button aria-label="Remove photo" onclick="removePendingExtra(${idx})" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;background:${C.bg};border:1px solid var(--c-border);color:${C.text};border-radius:50%;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center">\u00d7</button></div>`).join('') +
-    (_room>0 ? `<label style="width:56px;height:56px;border-radius:10px;border:2px dashed ${C.accentBorder};color:${C.accent};display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer;position:relative">+<input type="file" accept="image/*" multiple onchange="appendPhotos(this)" style="position:absolute;inset:0;opacity:0;cursor:pointer"/></label>` : '') +
+      `<button aria-label="Remove photo" data-act="removePendingExtra" data-a="${idx}" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;background:${C.bg};border:1px solid var(--c-border);color:${C.text};border-radius:50%;font-size:12px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center">\u00d7</button></div>`).join('') +
+    (_room>0 ? `<label style="width:56px;height:56px;border-radius:10px;border:2px dashed ${C.accentBorder};color:${C.accent};display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer;position:relative">+<input type="file" accept="image/*" multiple data-act-change="appendPhotos" style="position:absolute;inset:0;opacity:0;cursor:pointer"/></label>` : '') +
     `<div style="color:${C.muted};font-size:11px;font-weight:700;margin-left:2px">${_ex.length+1} of ${MAX_PHOTOS}</div></div>` : '';
   const picker = (pp.image && pp.isAudio)
     ? `<div style="position:relative;border-radius:14px;background:${C.surfaceHigh};border:1px solid var(--c-border);padding:14px;margin-bottom:12px">
-         <button aria-label="Remove audio" onclick="onClearPhoto()" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);border:none;color:#fff;border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:14px">✕</button>
+         <button aria-label="Remove audio" data-act="onClearPhoto" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);border:none;color:#fff;border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:14px">✕</button>
          <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
            <div style="width:40px;height:40px;border-radius:12px;background:${C.accentDim};border:1px solid ${C.accentBorder};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px">🎵</div>
            <div style="flex:1;min-width:0;padding-right:26px">
@@ -6581,16 +6581,16 @@ function buildMyPage(net){
              <div style="color:${C.muted};font-size:11px;margin-top:2px">${pp.audioDur?fmtDur(pp.audioDur)+' · ':''}${pp.audioSize?Math.max(1,Math.round(pp.audioSize/1048576))+' MB':''}</div>
            </div>
          </div>
-         <audio src="${safeMediaUrl(pp.image)}" controls preload="metadata" onplay="audioSolo(this)" style="width:100%;height:32px"></audio>
+         <audio src="${safeMediaUrl(pp.image)}" controls preload="metadata" data-act-play="audioSolo" style="width:100%;height:32px"></audio>
        </div>`
     : pp.image
     ? `<div style="position:relative;border-radius:14px;height:150px;background:url('${safeMediaUrl(pp.image)}') center/cover no-repeat #000;margin-bottom:12px">
-         <button aria-label="Remove photo" onclick="onClearPhoto()" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);border:none;color:#fff;border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:14px">✕</button>
+         <button aria-label="Remove photo" data-act="onClearPhoto" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.55);border:none;color:#fff;border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:14px">✕</button>
        </div>` + extrasStrip
-    : `<div ondragover="event.preventDefault()" ondrop="onDropPhoto(event)" style="position:relative;border:2px dashed ${C.accentBorder};border-radius:14px;height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:${C.accent};font-size:12px;font-weight:600;margin-bottom:12px;text-align:center;padding:0 12px">
+    : `<div data-act-dragover="preventDefaultAct" data-act-drop="onDropPhoto" style="position:relative;border:2px dashed ${C.accentBorder};border-radius:14px;height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:${C.accent};font-size:12px;font-weight:600;margin-bottom:12px;text-align:center;padding:0 12px">
          <span style="font-size:26px">📷</span>Tap to choose
          <span style="color:${C.muted};font-size:11px;font-weight:500">Photo, video or audio</span>
-         <input type="file" accept="image/*,video/*,audio/*" multiple onchange="onPickPhoto(this)" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer"/>
+         <input type="file" accept="image/*,video/*,audio/*" multiple data-act-change="onPickPhoto" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer"/>
        </div>`;
 
   const pollMode=!!A.pollMode;
@@ -6635,18 +6635,18 @@ function buildMyPage(net){
 
   const actionRow=(p)=>`
     <div style="display:flex;align-items:center;gap:14px">
-      <button class="like-btn" data-like-pid="${p.id}" onclick="toggleLike('${p.id}')" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:4px;color:${p.liked?C.warm:C.muted};font-size:12px;font-weight:600">
+      <button class="like-btn" data-like-pid="${p.id}" data-act="toggleLike" data-a="${p.id}" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:4px;color:${p.liked?C.warm:C.muted};font-size:12px;font-weight:600">
         <span style="font-size:15px">${reactionGlyphs(p)}</span>
       </button>
-      <button onclick="openReplies('${p.id}')" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:4px;color:${C.muted};font-size:12px;font-weight:600">
+      <button data-act="openReplies" data-a="${p.id}" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:4px;color:${C.muted};font-size:12px;font-weight:600">
         <span style="font-size:13px">💬</span><span class="cmt-count" data-cmt-pid="${p.id}" data-fmt="num">${(p.replies&&p.replies.length)||0}</span>
       </button>
     </div>`;
 
   const photoCard=(p,h)=>{ const pb=photoBox(net,p); return `
         <div style="background:${C.surface};border-radius:16px;overflow:hidden;display:flex;flex-direction:column">
-          <div onclick="openPostView('${p.id}')" ${pb.attr} style="position:relative;height:${h||140}px;cursor:pointer;font-size:42px;${pb.style}">${pb.inner}
-            <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${p.id}')" style="position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.55);border:none;color:#fff;border-radius:8px;padding:2px 7px;cursor:pointer;font-size:14px;font-weight:700;line-height:1.4">···</button>
+          <div data-act="openPostView" data-a="${p.id}" ${pb.attr} style="position:relative;height:${h||140}px;cursor:pointer;font-size:42px;${pb.style}">${pb.inner}
+            <button aria-label="Post options" data-act="openPostMenu" data-a="${net.id}" data-b="${p.id}" data-stop style="position:absolute;top:6px;right:6px;background:rgba(0,0,0,0.55);border:none;color:#fff;border-radius:8px;padding:2px 7px;cursor:pointer;font-size:14px;font-weight:700;line-height:1.4">···</button>
           </div>
           <div style="padding:8px 10px 10px">
             <div style="color:${C.textDim};font-size:11px;font-family:'Playfair Display',serif;font-style:italic;margin-bottom:8px;min-height:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(captionSansLink(p))}</div>
@@ -6657,10 +6657,10 @@ function buildMyPage(net){
   const textCard=(p)=>`
         <div style="background:${C.surface};border-radius:16px;padding:14px 16px">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
-            <div onclick="openPostView('${p.id}')" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word;flex:1">${esc(captionSansLink(p))}</div>
-            <button aria-label="Post options" onclick="event.stopPropagation();openPostMenu('${net.id}','${p.id}')" style="background:none;border:none;color:${C.muted};font-size:18px;cursor:pointer;padding:0 2px;line-height:1;flex-shrink:0">···</button>
+            <div data-act="openPostView" data-a="${p.id}" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word;flex:1">${esc(captionSansLink(p))}</div>
+            <button aria-label="Post options" data-act="openPostMenu" data-a="${net.id}" data-b="${p.id}" data-stop style="background:none;border:none;color:${C.muted};font-size:18px;cursor:pointer;padding:0 2px;line-height:1;flex-shrink:0">···</button>
           </div>
-          <div class="post-time" data-ts="${Number(p.ts)||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span>${postStatus(net,p)}</div>
+          <div class="post-time" data-ts="${Number(p.ts)||0}" data-act="timeTap" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span>${postStatus(net,p)}</div>
           ${p.poll?`<div style="margin-top:10px">${pollHTML(net,p)}</div>`:''}
           ${p.link?linkCardHTML(p):''}
           <div style="margin-top:12px">${actionRow(p)}</div>
@@ -6686,7 +6686,7 @@ function buildMyPage(net){
          <div style="font-size:36px;margin-bottom:8px">✏️</div>
          <div style="color:${C.text};font-size:15px;font-weight:700;margin-bottom:4px">Nothing here yet</div>
          <div style="color:${C.muted};font-size:13px;margin-bottom:18px">Your photos and posts will show up here.</div>
-         <button onclick="addPhotoQuick()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:12px 22px;font-size:14px;font-weight:700;cursor:pointer">Share your first moment</button>
+         <button data-act="addPhotoQuick" style="background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:12px 22px;font-size:14px;font-weight:700;cursor:pointer">Share your first moment</button>
        </div>`
     : `<div style="display:flex;flex-direction:column;gap:12px">${interleaved}</div>`;
 
@@ -6701,7 +6701,7 @@ function buildMyPage(net){
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:center;gap:8px">
           <div style="color:${C.text};font-family:'Playfair Display',serif;font-size:20px;font-weight:600">${esc(prof.name||'You')}</div>
-          <button onclick="openEditProfile()" style="background:${C.accentDim};border:1px solid ${C.accentBorder};color:${C.accent};border-radius:10px;padding:3px 10px;font-size:11px;font-weight:700;cursor:pointer">Edit</button>
+          <button data-act="openEditProfile" style="background:${C.accentDim};border:1px solid ${C.accentBorder};color:${C.accent};border-radius:10px;padding:3px 10px;font-size:11px;font-weight:700;cursor:pointer">Edit</button>
         </div>
         <div style="color:${C.muted};font-size:12px;margin-top:2px">${myPosts.length} photo${myPosts.length===1?'':'s'} · ${esc(net.name)}</div>
         ${prof.bio?`<div style="color:${C.textDim};font-size:13px;line-height:1.5;margin-top:8px">${esc(prof.bio)}</div>`:''}
@@ -6715,43 +6715,43 @@ function buildMyPage(net){
     <div style="background:${C.surface};border-radius:22px;padding:20px;margin:12px 0 18px;border:1.5px solid ${C.accentBorder}">
       <div style="color:${C.text};font-size:15px;font-weight:600;margin-bottom:16px">Edit profile</div>
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
-        <div ondragover="event.preventDefault()" ondrop="onDropAvatar(event)" style="position:relative;width:64px;height:64px;border-radius:20px;${pd.avatar?`background:url('${safeMediaUrl(pd.avatar)}') center/cover no-repeat #000`:`background:${C.warm}22;display:flex;align-items:center;justify-content:center;font-size:28px`};border:2px solid ${C.warm};overflow:hidden;flex-shrink:0">
+        <div data-act-dragover="preventDefaultAct" data-act-drop="onDropAvatar" style="position:relative;width:64px;height:64px;border-radius:20px;${pd.avatar?`background:url('${safeMediaUrl(pd.avatar)}') center/cover no-repeat #000`:`background:${C.warm}22;display:flex;align-items:center;justify-content:center;font-size:28px`};border:2px solid ${C.warm};overflow:hidden;flex-shrink:0">
           ${pd.avatar?'':'🧡'}
-          <input type="file" accept="image/*" onchange="onPickProfilePic(this)" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer"/>
+          <input type="file" accept="image/*" data-act-change="onPickProfilePic" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer"/>
         </div>
         <div style="flex:1">
           <div style="color:${C.accent};font-size:13px;font-weight:600">${savingPic?'Uploading…':'Tap or drag a photo'}</div>
-          ${pd.avatar?`<button onclick="clearDraftAvatar()" style="background:none;border:none;color:${C.muted};font-size:12px;cursor:pointer;padding:4px 0">Remove photo</button>`:''}
+          ${pd.avatar?`<button data-act="clearDraftAvatar" style="background:none;border:none;color:${C.muted};font-size:12px;cursor:pointer;padding:4px 0">Remove photo</button>`:''}
         </div>
       </div>
       <div style="display:flex;gap:8px;margin-bottom:14px">
         <input id="avatar-url-input" placeholder="or paste an image link (https://…)" style="flex:1;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:10px 12px;color:${C.text};font-size:12px;font-family:'Inter',sans-serif"/>
-        <button onclick="useAvatarUrl()" style="background:${C.surfaceHigh};color:${C.accent};border:1px solid ${C.accentBorder};border-radius:12px;padding:0 14px;font-size:12px;font-weight:700;cursor:pointer">Use</button>
+        <button data-act="useAvatarUrl" style="background:${C.surfaceHigh};color:${C.accent};border:1px solid ${C.accentBorder};border-radius:12px;padding:0 14px;font-size:12px;font-weight:700;cursor:pointer">Use</button>
       </div>
       <div style="color:${C.muted};font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Display name</div>
-      <input id="name-input" value="${esc(pd.name||'')}" oninput="setDraftName(this.value)" maxlength="40" placeholder="Your name" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px"/>
+      <input id="name-input" value="${esc(pd.name||'')}" data-act-input="setDraftName" maxlength="40" placeholder="Your name" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px"/>
       <div style="color:${C.muted};font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">Bio</div>
-      <textarea id="bio-input" oninput="setDraftBio(this.value)" maxlength="160" placeholder="A short bio…" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;resize:none;height:64px;margin-bottom:14px">${esc(pd.bio||'')}</textarea>
+      <textarea id="bio-input" data-act-input="setDraftBio" maxlength="160" placeholder="A short bio…" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;resize:none;height:64px;margin-bottom:14px">${esc(pd.bio||'')}</textarea>
       <div style="color:${C.muted};font-size:11px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;margin-bottom:6px">Signal username <span style="text-transform:none;letter-spacing:0;font-weight:400">· optional, shown to your networks</span></div>
-      <input id="signal-input" value="${esc(pd.signal||'')}" oninput="setDraftSignal(this.value)" maxlength="48" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="username.01" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px"/>
+      <input id="signal-input" value="${esc(pd.signal||'')}" data-act-input="setDraftSignal" maxlength="48" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="username.01" style="width:100%;background:${C.surfaceHigh};border:none;outline:none;border-radius:12px;padding:11px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px"/>
       <div style="display:flex;gap:10px">
-        <button onclick="saveProfile()" ${savingPic?'disabled':''} style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:${savingPic?'wait':'pointer'};opacity:${savingPic?0.6:1}">Save</button>
-        <button onclick="cancelEditProfile()" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>
+        <button data-act="saveProfile" ${savingPic?'disabled':''} style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:700;cursor:${savingPic?'wait':'pointer'};opacity:${savingPic?0.6:1}">Save</button>
+        <button data-act="cancelEditProfile" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:12px 0;font-size:13px;font-weight:600;cursor:pointer">Cancel</button>
       </div>
     </div>` : "";
 
   const myTab = A.myTab==='activity' ? 'activity' : 'posts';
   const subTabs = `
     <div style="position:sticky;top:0;z-index:5;background:${C.bg};display:flex;gap:8px;padding:12px 0 10px;margin:0 0 6px">
-      <button onclick="setMyTab('posts')" style="flex:1;background:${myTab==='posts'?C.accentDim:C.bg};border:1px solid ${myTab==='posts'?C.accentBorder:'var(--c-border)'};color:${myTab==='posts'?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">Posts</button>
-      <button onclick="setMyTab('activity')" style="flex:1;background:${myTab==='activity'?C.accentDim:C.bg};border:1px solid ${myTab==='activity'?C.accentBorder:'var(--c-border)'};color:${myTab==='activity'?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">Activity</button>
+      <button data-act="setMyTab" data-a="posts" style="flex:1;background:${myTab==='posts'?C.accentDim:C.bg};border:1px solid ${myTab==='posts'?C.accentBorder:'var(--c-border)'};color:${myTab==='posts'?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">Posts</button>
+      <button data-act="setMyTab" data-a="activity" style="flex:1;background:${myTab==='activity'?C.accentDim:C.bg};border:1px solid ${myTab==='activity'?C.accentBorder:'var(--c-border)'};color:${myTab==='activity'?C.accent:C.muted};border-radius:12px;padding:9px 0;font-size:13px;font-weight:700;cursor:pointer">Activity</button>
     </div>`;
 
   return `
   <div id="mypage-scroll" class="hide-scroll" style="flex:1;overflow-y:auto;overscroll-behavior-y:contain;padding:0 16px calc(80px + env(safe-area-inset-bottom, 0px))">
     ${header}
     ${editPanel}
-    ${myTab==='posts' ? (canIPost(net) ? `<button onclick="openUpload()" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:16px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;margin:14px 0 8px;display:flex;align-items:center;justify-content:center;gap:8px">
+    ${myTab==='posts' ? (canIPost(net) ? `<button data-act="openUpload" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:16px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer;margin:14px 0 8px;display:flex;align-items:center;justify-content:center;gap:8px">
       <span style="font-size:18px">＋</span> New post
     </button>` : `<div style="background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 16px;margin:14px 0 8px;color:${C.muted};font-size:13px;text-align:center">Only the network owner can post here. You can still view, like, and comment.</div>`) : ''}
     ${subTabs}
@@ -6776,12 +6776,12 @@ function buildProfile(net){
   // photo posts pack into a 2-up gallery row; a text post breaks the run and shows
   // as a full-width card at its place in the timeline, so text and photos interleave
   // by date instead of every text post sinking below the photos.
-  const photoTile = (p,h)=>{ const pb=photoBox(net,p); return `<div onclick="openPostView('${p.id}')" ${pb.attr} style="border-radius:16px;height:${h||155}px;cursor:pointer;font-size:42px;${pb.style};position:relative;overflow:hidden">${pb.inner}
+  const photoTile = (p,h)=>{ const pb=photoBox(net,p); return `<div data-act="openPostView" data-a="${p.id}" ${pb.attr} style="border-radius:16px;height:${h||155}px;cursor:pointer;font-size:42px;${pb.style};position:relative;overflow:hidden">${pb.inner}
         ${captionSansLink(p)?`<div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,0.5));padding:8px 10px;color:#FAF8F5;font-size:11px;font-family:'Playfair Display',serif">${esc(captionSansLink(p))}</div>`:''}
       </div>`; };
   const textCard = (p)=>`<div style="background:${C.surface};border-radius:16px;padding:14px 16px">
-        <div onclick="openPostView('${p.id}')" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(p))}</div>
-        <div class="post-time" data-ts="${Number(p.ts)||0}" onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span></div>
+        <div data-act="openPostView" data-a="${p.id}" style="cursor:pointer;color:${C.text};font-family:'Playfair Display',serif;font-size:16px;line-height:1.5;white-space:pre-wrap;word-break:break-word">${esc(captionSansLink(p))}</div>
+        <div class="post-time" data-ts="${Number(p.ts)||0}" data-act="timeTap" style="color:${C.muted};font-size:10px;margin-top:6px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${esc(fmtTime(p))}</span></div>
         ${p.poll?`<div style="margin-top:10px">${pollHTML(net,p)}</div>`:''}
         ${p.link?linkCardHTML(p):''}
       </div>`;
@@ -6804,7 +6804,7 @@ function buildProfile(net){
   return `
   <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:60;display:flex;flex-direction:column;overflow-y:auto">
     <div style="padding:24px 24px 0;display:flex;align-items:center;gap:12px">
-      <button aria-label="Back" onclick="closeProfile()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">←</button>
+      <button aria-label="Back" data-act="closeProfile" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">←</button>
     </div>
     <div style="display:flex;flex-direction:column;align-items:center;padding:20px 24px 22px;gap:8px">
       ${avatarHTML(mem,76,24,36,3)}
@@ -6815,7 +6815,7 @@ function buildProfile(net){
       ${mem.signal ? `<div style="display:inline-flex;align-items:center;gap:8px;background:${C.surface};border:1px solid var(--c-border);border-radius:14px;padding:7px 8px 7px 12px;margin-top:4px;max-width:100%">
         ${signalMark(16)}
         <span style="color:${C.accent};font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(mem.signal)}</span>
-        <button onclick="event.stopPropagation();copyContact('${esc(mem.signal)}','Signal username')" aria-label="Copy Signal username" title="Copy" style="flex-shrink:0;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:9px;width:28px;height:28px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">
+        <button data-act="copyContact" data-a="${esc(mem.signal)}" data-b="Signal username" data-stop aria-label="Copy Signal username" title="Copy" style="flex-shrink:0;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:9px;width:28px;height:28px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="${C.muted}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="11" height="11" rx="2"/>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -7203,13 +7203,13 @@ function buildCommentBubbles(net, replies, postId){
     if(mine){
       return `
       <div style="display:flex;justify-content:flex-end;align-items:flex-end;gap:6px;margin-top:${prevMine===false?8:2}px">
-        <button aria-label="Delete comment" onclick="deleteReply('${postId}','${r.id}')" style="background:none;border:none;color:${C.muted};font-size:12px;cursor:pointer;padding:2px 4px;opacity:0.6;flex-shrink:0;line-height:1">✕</button>
+        <button aria-label="Delete comment" data-act="deleteReply" data-a="${postId}" data-b="${r.id}" style="background:none;border:none;color:${C.muted};font-size:12px;cursor:pointer;padding:2px 4px;opacity:0.6;flex-shrink:0;line-height:1">✕</button>
         <div style="max-width:72%;background:${C.accent};color:#0F0F14;border-radius:${isLast?'18px 18px 4px 18px':'18px'};padding:10px 14px;font-size:14px;line-height:1.45;font-weight:500;word-break:break-word">${esc(r.text)}</div>
       </div>`;
     } else {
       return `
       <div style="display:flex;align-items:flex-end;gap:8px;margin-top:${prevSame?2:8}px">
-        <div onclick="openProfile('${mem.id||''}')" style="width:28px;flex-shrink:0;cursor:${mem.id?'pointer':'default'}">${showAvatar?avatarHTML(mem,28,9,12,1.5):''}</div>
+        <div data-act="openProfile" data-a="${mem.id||''}" style="width:28px;flex-shrink:0;cursor:${mem.id?'pointer':'default'}">${showAvatar?avatarHTML(mem,28,9,12,1.5):''}</div>
         <div style="max-width:72%">
           ${showName?`<div style="color:${mem.color||C.muted};font-size:10px;font-weight:700;margin-bottom:3px;padding-left:2px">${esc(mem.name)}</div>`:''}
           <div style="background:${C.surface};border:1px solid var(--c-border);border-radius:${isLast?'18px 18px 18px 4px':'18px'};padding:10px 14px;color:${C.text};font-size:14px;line-height:1.45;word-break:break-word">${esc(r.text)}</div>
@@ -7229,15 +7229,15 @@ function buildPostView(net){
   return `
   <div style="position:absolute;inset:0;background:${C.bg};z-index:72;display:flex;flex-direction:column">
     <div style="padding:18px 18px 10px;display:flex;align-items:center;gap:12px;flex-shrink:0">
-      <button aria-label="Back" onclick="closePostView()" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">←</button>
+      <button aria-label="Back" data-act="closePostView" style="background:${C.surface};border:none;border-radius:12px;width:36px;height:36px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${C.text};font-size:16px">←</button>
       <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
-        <div onclick="openProfile('${post.memberId}')" style="flex-shrink:0;cursor:pointer">${avatarHTML(mem,34,11,14,2)}</div>
+        <div data-act="openProfile" data-a="${post.memberId}" style="flex-shrink:0;cursor:pointer">${avatarHTML(mem,34,11,14,2)}</div>
         <div style="min-width:0">
           <div style="color:${C.text};font-size:14px;font-weight:600;font-family:'Playfair Display',serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(mem.name||'Friend')}</div>
-          <div class="post-time" data-ts="${Number(post.ts)||0}" ${post.ts?'data-abs="1"':''} onclick="timeTap(this,event)" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${post.ts?esc(fmtAbs(post.ts)):esc(fmtTime(post))}</span>${postStatus(net,post)}</div>
+          <div class="post-time" data-ts="${Number(post.ts)||0}" ${post.ts?'data-abs="1"':''} data-act="timeTap" style="color:${C.muted};font-size:10px;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none"><span class="post-time-rel">${post.ts?esc(fmtAbs(post.ts)):esc(fmtTime(post))}</span>${postStatus(net,post)}</div>
         </div>
       </div>
-      <button aria-label="Post options" onclick="openPostMenu('${net.id}','${post.id}')" style="background:none;border:none;color:${C.muted};font-size:20px;cursor:pointer;padding:4px 6px;line-height:1">···</button>
+      <button aria-label="Post options" data-act="openPostMenu" data-a="${net.id}" data-b="${post.id}" style="background:none;border:none;color:${C.muted};font-size:20px;cursor:pointer;padding:4px 6px;line-height:1">···</button>
     </div>
     <div class="hide-scroll" style="flex:1;overflow-y:auto;padding:0 16px 16px">
       ${(()=>{
@@ -7271,16 +7271,16 @@ function buildPostView(net){
             const bg = cached ? `background:url('${safeMediaUrl(cached)}') center/cover no-repeat #000;`
                      : (e.blurhash ? `background:url('${safeCssUrl(blurhashToDataURL(e.blurhash))}') center/cover no-repeat #000;`
                      : `background:${C.surfaceHigh};`);
-            return `<div data-photo="${sha}" onclick="openZoomAt('${net.id}','${post.id}',${idx})" style="${bg}border-radius:18px;width:100%;aspect-ratio:1;cursor:zoom-in;overflow:hidden"></div>`;
+            return `<div data-photo="${sha}" data-act="openZoomAt" data-a="${net.id}" data-b="${post.id}" data-c="${idx}" style="${bg}border-radius:18px;width:100%;aspect-ratio:1;cursor:zoom-in;overflow:hidden"></div>`;
           }).join('') + `</div>`;
         }
-        return `<div onclick="openZoomCurrent()" ${pb.attr} style="border-radius:18px;width:100%;aspect-ratio:1;cursor:zoom-in;${pb.style}">${pb.inner}</div>`;
+        return `<div data-act="openZoomCurrent" ${pb.attr} style="border-radius:18px;width:100%;aspect-ratio:1;cursor:zoom-in;${pb.style}">${pb.inner}</div>`;
       })()}
       ${(post.image||post.enc)&&captionSansLink(post)?`<div style="font-family:'Playfair Display',serif;font-style:italic;color:${C.textDim};font-size:14px;margin:12px 4px 0">${esc(captionSansLink(post))}</div>`:''}
       ${post.poll?`<div style="margin:14px 2px 0">${pollHTML(net,post)}</div>`:''}
       ${post.link?linkCardHTML(post):''}
       <div style="display:flex;align-items:center;gap:18px;margin:14px 4px 18px">
-        <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" onpointerdown="likePress('${post.id}')" onpointerup="likeRelease('${post.id}')" onpointercancel="likeCancel()" onpointerleave="likeCancel()" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:14px;font-weight:600;user-select:none;-webkit-user-select:none">
+        <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" data-act-pointerdown="likePress" data-a="${post.id}" data-act-pointerup="likeRelease" data-a="${post.id}" data-act-pointercancel="likeCancel" data-act-pointerleave="likeCancel" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:14px;font-weight:600;user-select:none;-webkit-user-select:none">
           <span style="font-size:19px">${reactionGlyphs(post)}</span>
         </button>
         <div style="color:${C.muted};font-size:14px;font-weight:600;display:flex;align-items:center;gap:5px"><span style="font-size:15px">💬</span>${post.replies.length} ${post.replies.length===1?'comment':'comments'}</div>
@@ -7288,8 +7288,8 @@ function buildPostView(net){
       <div style="display:flex;flex-direction:column;gap:12px">${replies}</div>
     </div>
     <div style="padding:10px 14px 18px;border-top:1px solid var(--c-border);display:flex;gap:10px;align-items:center;flex-shrink:0">
-      <input id="reply-input" value="${esc(A.replyDraft)}" oninput="setReplyDraft(this.value)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submitReply()}" placeholder="Add a comment…" style="flex:1;background:${C.surfaceHigh};border:none;outline:none;border-radius:22px;padding:11px 16px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif"/>
-      <button aria-label="Send comment" onclick="submitReply()" style="background:${C.accent};color:#0F0F14;border:none;border-radius:50%;width:38px;height:38px;font-size:16px;cursor:pointer;font-weight:700;flex-shrink:0;display:flex;align-items:center;justify-content:center">↑</button>
+      <input id="reply-input" value="${esc(A.replyDraft)}" data-act-input="setReplyDraft" data-act-keydown="replyKeydown" placeholder="Add a comment…" style="flex:1;background:${C.surfaceHigh};border:none;outline:none;border-radius:22px;padding:11px 16px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif"/>
+      <button aria-label="Send comment" data-act="submitReply" style="background:${C.accent};color:#0F0F14;border:none;border-radius:50%;width:38px;height:38px;font-size:16px;cursor:pointer;font-weight:700;flex-shrink:0;display:flex;align-items:center;justify-content:center">↑</button>
     </div>
   </div>`;
 }
@@ -7347,7 +7347,7 @@ function buildNetPicker(){
   return `
   <div onclick="closeNetPicker()" style="position:absolute;inset:0;z-index:85;background:transparent"></div>
   <div style="position:absolute;top:78px;left:16px;right:16px;z-index:86;background:${C.surfaceHigh};border-radius:18px;border:1px solid var(--c-border);box-shadow:0 16px 48px rgba(0,0,0,0.6);overflow:hidden">
-    ${nets.length?`<div onclick="event.stopPropagation()" style="display:flex;justify-content:flex-end;padding:8px 12px 2px">
+    ${nets.length?`<div data-act="noop" data-stop style="display:flex;justify-content:flex-end;padding:8px 12px 2px">
       <button onclick="toggleNetPickerEdit()" style="background:none;border:none;color:${edit?C.accent:C.muted};font-size:12px;font-weight:700;cursor:pointer;padding:2px 4px">${edit?'Done':'Edit'}</button>
     </div>`:''}
     ${items}
@@ -7395,7 +7395,9 @@ function _runAct(el, ev){
   const fn=ACTIONS[name];
   if(typeof fn!=='function'){ console.warn('[act] no handler:', name); return; }
   if(el.hasAttribute('data-stop')) ev.stopPropagation();
-  try{ fn.apply(null, _actArgs(el).concat(ev)); }
+  // handlers receive (…data args, element, event) — element last-but-one so that
+  // handlers needing the node (e.g. timeTap) can take it without data args.
+  try{ fn.apply(null, _actArgs(el).concat(el, ev)); }
   catch(e){ console.error('[act] '+name, e); }
 }
 function initDelegation(){
@@ -7427,8 +7429,8 @@ function initDelegation(){
       catch(err){ console.error('[act] '+name, err); }
     });
   });
-  // load/error on media DON'T bubble — capture phase is required to catch them.
-  ['load','error'].forEach(type=>{
+  // load/error/play on media DON'T bubble — capture phase is required to catch them.
+  ['load','error','play'].forEach(type=>{
     document.addEventListener(type, e=>{
       const el=e.target;
       if(!el || !el.getAttribute) return;
@@ -7439,6 +7441,51 @@ function initDelegation(){
       try{ fn.apply(null, _actArgs(el).concat(el, e)); }
       catch(err){ console.error('[act] '+name, err); }
     }, true);
+  });
+  // Pointer events (like press-and-hold). pointerleave/cancel don't bubble reliably,
+  // so use capture for those two; down/up bubble normally.
+  ['pointerdown','pointerup'].forEach(type=>{
+    document.addEventListener(type, e=>{
+      const el=e.target.closest && e.target.closest('[data-act-'+type+']');
+      if(!el) return;
+      const name=el.getAttribute('data-act-'+type);
+      const fn=ACTIONS[name];
+      if(typeof fn!=='function'){ console.warn('[act] no '+type+' handler:', name); return; }
+      try{ fn.apply(null, _actArgs(el).concat(el, e)); }catch(err){ console.error('[act] '+name, err); }
+    });
+  });
+  ['pointercancel','pointerleave'].forEach(type=>{
+    document.addEventListener(type, e=>{
+      const el=e.target;
+      if(!el || !el.getAttribute) return;
+      const name=el.getAttribute('data-act-'+type);
+      if(!name) return;
+      const fn=ACTIONS[name];
+      if(typeof fn!=='function'){ console.warn('[act] no '+type+' handler:', name); return; }
+      try{ fn.apply(null, _actArgs(el).concat(el, e)); }catch(err){ console.error('[act] '+name, err); }
+    }, true);
+  });
+  // Keydown on specific inputs (reply box Enter-to-send)
+  document.addEventListener('keydown', e=>{
+    const el=e.target.closest && e.target.closest('[data-act-keydown]');
+    if(!el) return;
+    const name=el.getAttribute('data-act-keydown');
+    const fn=ACTIONS[name];
+    if(typeof fn!=='function'){ console.warn('[act] no keydown handler:', name); return; }
+    try{ fn.apply(null, _actArgs(el).concat(el, e)); }catch(err){ console.error('[act] '+name, err); }
+  });
+  // Drag & drop (avatar / photo drop zones). dragover must preventDefault or the
+  // browser refuses to fire drop at all.
+  ['dragover','drop'].forEach(type=>{
+    document.addEventListener(type, e=>{
+      const el=e.target.closest && e.target.closest('[data-act-'+type+']');
+      if(!el) return;
+      const name=el.getAttribute('data-act-'+type);
+      const fn=ACTIONS[name];
+      if(typeof fn!=='function'){ console.warn('[act] no '+type+' handler:', name); return; }
+      try{ fn.apply(null, _actArgs(el).concat(e)); }
+      catch(err){ console.error('[act] '+name, err); }
+    });
   });
 }
 
@@ -7491,6 +7538,82 @@ registerActions({
   capturePhoto:      ()=>capturePhoto(),
   startRecording:    ()=>startRecording(),
   stopRecording:     ()=>stopRecording(),
+});
+
+// Network, Profile and My Page screens:
+registerActions({
+  // Drop zones: dragover must preventDefault or the browser won't fire drop.
+  preventDefaultAct:  (ev)=>{ if(ev&&ev.preventDefault) ev.preventDefault(); },
+  // network
+  claimOwnership:     id=>claimOwnership(id),
+  deleteNetworkAsk:   id=>deleteNetworkAsk(id),
+  leaveNetwork:       id=>leaveNetwork(id),
+  openInvite:         ()=>openInvite(),
+  openProfile:        id=>openProfile(id),
+  renameNetwork:      ()=>renameNetwork(),
+  setNetworkPassword: id=>setNetworkPassword(id),
+  setTab:             i=>setTab(i),
+  toggleMemberPosting:id=>toggleMemberPosting(id),
+  removeMember:       (nid,mid)=>removeMember(nid,mid),
+  // profile
+  closeProfile:       ()=>closeProfile(),
+  copyContact:        (val,label)=>copyContact(val,label),
+  openPostView:       id=>openPostView(id),
+  timeTap:            (el,ev)=>timeTap(el,ev),
+  // my page
+  addPhotoQuick:      ()=>addPhotoQuick(),
+  cancelEditProfile:  ()=>cancelEditProfile(),
+  clearDraftAvatar:   ()=>clearDraftAvatar(),
+  onClearPhoto:       ()=>onClearPhoto(),
+  openEditProfile:    ()=>openEditProfile(),
+  openUpload:         ()=>openUpload(),
+  saveProfile:        ()=>saveProfile(),
+  useAvatarUrl:       ()=>useAvatarUrl(),
+  openPostMenu:       (nid,pid)=>openPostMenu(nid,pid),
+  openReplies:        id=>openReplies(id),
+  toggleLike:         id=>toggleLike(id),
+  removePendingExtra: i=>removePendingExtra(i),
+  setMyTab:           t=>setMyTab(t),
+  setDraftBio:        el=>setDraftBio(el.value),
+  setDraftName:       el=>setDraftName(el.value),
+  setDraftSignal:     el=>setDraftSignal(el.value),
+  appendPhotos:       el=>appendPhotos(el),
+  onPickPhoto:        el=>onPickPhoto(el),
+  onPickProfilePic:   el=>onPickProfilePic(el),
+  audioSolo:          el=>audioSolo(el),
+  onDropAvatar:       ev=>onDropAvatar(ev),
+  onDropPhoto:        ev=>onDropPhoto(ev),
+});
+
+// Feed, post view, post menu, likers, comments:
+registerActions({
+  noop:              ()=>{},                       // used with data-stop to swallow taps
+  photoTap:          (nid,pid,el,ev)=>photoTap(nid,pid,ev),
+  openPhotoAt:       (nid,pid,idx)=>openPhotoAt(nid,pid,idx),
+  openZoomAt:        (nid,pid,idx)=>openZoomAt(nid,pid,idx),
+  openZoomCurrent:   ()=>openZoomCurrent(),
+  closePostView:     ()=>closePostView(),
+  closePostMenu:     ()=>closePostMenu(),
+  startEditCaption:  id=>startEditCaption(id),
+  closeLikers:       ()=>closeLikers(),
+  setReaction:       (pid,r)=>setReaction(pid,r),
+  deleteReply:       (pid,rid)=>deleteReply(pid,rid),
+  votePoll:          (pid,i)=>votePoll(pid,i),
+  retryPost:         (nid,pid)=>retryPost(nid,pid),
+  removeComposerLink:()=>removeComposerLink(),
+  submitReply:       ()=>submitReply(),
+  setReplyDraft:     el=>setReplyDraft(el.value),
+  likePress:         id=>likePress(id),
+  likeRelease:       id=>likeRelease(id),
+  likeCancel:        ()=>likeCancel(),
+  // wrappers replacing inline arrow callbacks / chained calls
+  askDeletePost:     id=>askConfirm('Delete this moment?','Delete',()=>deletePost(id)),
+  menuDeletePost:    id=>{ closePostMenu(); askConfirm('Delete this moment?','Delete',()=>deletePost(id)); },
+  menuModDeletePost: id=>{ closePostMenu(); askConfirm('Remove this moment from the network? Everyone will stop seeing it.','Remove',()=>modDeletePost(id)); },
+  menuSavePhoto:     id=>{ closePostMenu(); savePhoto(id); },
+  openLinkFromData:  (el)=>openLink(el.dataset.url),
+  // Enter (without Shift) sends the reply; Shift+Enter makes a newline
+  replyKeydown:      (el,ev)=>{ if(ev.key==='Enter' && !ev.shiftKey){ ev.preventDefault(); submitReply(); } },
 });
 
 function renderApp(){
@@ -7608,7 +7731,7 @@ function renderApp(){
     </button>`;
   const camBtn = canIPost(net) ? `
     <div style="flex:1;display:flex;justify-content:center">
-      <button aria-label="Add a moment" onclick="addPhotoQuick()" title="Take a photo" style="background:${C.accent};border:none;border-radius:50%;width:56px;height:56px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 6px 20px ${C.accent}66;margin-top:-12px">
+      <button aria-label="Add a moment" data-act="addPhotoQuick" title="Take a photo" style="background:${C.accent};border:none;border-radius:50%;width:56px;height:56px;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 6px 20px ${C.accent}66;margin-top:-12px">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#0F0F14" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h1.7a1 1 0 0 0 .8-.4l1-1.3a1 1 0 0 1 .8-.4h2.4a1 1 0 0 1 .8.4l1 1.3a1 1 0 0 0 .8.4h1.7A1.5 1.5 0 0 1 20 8.5v8A1.5 1.5 0 0 1 18.5 18h-13A1.5 1.5 0 0 1 4 16.5z"/>
           <circle cx="12" cy="12.5" r="3.2"/>

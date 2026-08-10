@@ -39,7 +39,7 @@
        custom relays and members' media lives on arbitrary Blossom hosts. style-src keeps
        'unsafe-inline' (the whole UI is inline styles; styles can't execute JS).
        worker-src 'self' pre-clears the v0.9 service worker. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-8A4Gib2vbdyMz5n2QX128rX6+dMwW3azNK/wgWIkQME='; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-F1QuZ4pUvKyGTSxnMWftzvE5cqjdEk2nG/YiQIlYsIU='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -48,7 +48,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="Moment's"/>
-  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800;900&family=DM+Sans:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Baloo+2:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.bunny.net/css2?family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Baloo+2:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
   <script>try{if(localStorage.getItem('landing-theme')==='light')document.documentElement.classList.add('landing-light');}catch(e){}</script>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -608,6 +608,10 @@ function setCreateName(v){ _createName=v; }
 // the info icon. Toggled directly in the DOM (not via renderApp) so a half-typed
 // network name isn't wiped by a re-render.
 function toggleEncNote(){ const e=document.getElementById('create-enc-note'); if(e) e.style.display = (e.style.display==='none') ? 'flex' : 'none'; }
+// Same pattern for the invite code caveat: the code IS the key, so it grants
+// permanent access to future posts. Honest about today's model rather than
+// hinting at key rotation, which depends on a protocol change that may never ship.
+function toggleCodeNote(){ const e=document.getElementById('code-share-note'); if(e) e.style.display = (e.style.display==='none') ? 'flex' : 'none'; }
 function setCustomRelays(v){ _createCustomRelays=v; }
 // Parse the custom textarea into a clean wss:// list. Rejects anything that isn't
 // a plausible secure relay URL — a bad relay silently breaks a network's sync.
@@ -802,11 +806,13 @@ async function activateNetwork(netId){
 let _allowSyncTimer=null;
 let _renderAfterReconcile=false;
 
-// Simple event dedup (known-good)
-function markSeen(id){
+// Simple event dedup. Entries are tagged with the network's CODE (not its local id,
+// which is regenerated when you rejoin) so a rejoin can un-see only that network's
+// history instead of wiping dedup for every network — see joinWithCode.
+function markSeen(id, code){
   if(!A.seen) A.seen={};
   if(A.seen[id]) return false;
-  A.seen[id]=true;
+  A.seen[id]=code||1;
   return true;
 }
 const _verifying={};   // event id → currently being verified (concurrent duplicate guard)
@@ -846,7 +852,7 @@ async function handleRemoteEvent(netId, ev){
   // events, so it's allowed. A near-future event dropped here self-heals — relays
   // re-deliver it on the next backfill, by which point it has aged into the past.
   if(ev.created_at && ev.created_at > Math.floor(Date.now()/1000) + 900) return;
-  if(!markSeen(ev.id)) return;
+  if(!markSeen(ev.id, (A.networks[netId]||{}).code)) return;
   const net=A.networks[netId]; if(!net) return;
 
   // Deletion events (NIP-09) — only valid from the original author
@@ -854,9 +860,11 @@ async function handleRemoteEvent(netId, ev){
     if(!net.deleted) net.deleted={};
     let changed=false;
     (ev.tags||[]).forEach(t=>{ if(t[0]==='e'){
-      net.deleted[t[1]]=ev.pubkey; // remember who issued the delete (for posts not yet arrived)
+      // Same guards as the other tombstone maps: the key comes from an attacker-
+      // chosen tag, and a kind-5 can carry thousands of them.
+      if(isEventId(t[1]) && tombstoneRoom(net.deleted, t[1])) net.deleted[t[1]]=ev.pubkey; // remember who issued the delete (for posts not yet arrived)
       const idx=net.posts.findIndex(p=>p.id===t[1]);
-      if(idx>=0 && net.posts[idx].authorPk===ev.pubkey){ net.posts.splice(idx,1); changed=true; }
+      if(idx>=0 && net.posts[idx].authorPk===ev.pubkey){ purgePostMedia(net.posts[idx]); net.posts.splice(idx,1); changed=true; }
     }});
     if(changed){ saveData(); if(A.activeNetId===netId && _allowSyncRender && !syncRenderBlocked()) renderSoon(); }
     return;
@@ -927,7 +935,12 @@ async function handleRemoteEvent(netId, ev){
       } else if(!net.ownerPk){
         // ownerPk not known yet — buffer and apply when meta arrives
         if(!net._pendingRemoves) net._pendingRemoves=[];
-        net._pendingRemoves.push({pk:payload.pk, senderPk:pk, ts:payload.ts||ev.created_at});
+        // Buffered until the owner is known. Entries from non-owners are never
+        // applied but used to sit here permanently, so a member could grow this
+        // array without bound across sessions — cap it.
+        if(net._pendingRemoves.length < MAX_PENDING_REMOVES){
+          net._pendingRemoves.push({pk:payload.pk, senderPk:pk, ts:payload.ts||ev.created_at});
+        }
       }
     }
     // Not gated on _allowSyncRender (a live removal should repaint promptly, unlike
@@ -999,6 +1012,19 @@ async function handleRemoteEvent(netId, ev){
     const m={ id:pk, name:normName(payload.name)||'Friend', emoji:memEmoji(pk), color:memColor(pk), avatar:payload.avatar||null, avatarEnc:payload.avatarEnc||null, bio:normBio(payload.bio), signal:normSignal(payload.sig),
       fieldTs:{ name:(payload.name!==undefined?_cts:0), avatar:(_hasAv?_cts:0), bio:(payload.bio!==undefined?_cts:0), signal:(_hasSig?_cts:0) },
       idFieldTs:_cts };
+    // Bound how far the member list can grow. Anyone holding the join code can mint
+    // unlimited keypairs, and each new pubkey used to append a member row that is
+    // persisted, rendered, and (if it carries an avatar) triggers a media fetch —
+    // unbounded storage and bandwidth from a single insider. The cap is set far above
+    // any plausible family/friends network so honest use never hits it.
+    // Trade-off, accepted knowingly: an attacker could squat the cap and block later
+    // legitimate joiners. That's strictly better than unbounded growth, needs the code
+    // (so it's an insider grief, not a stranger's), and is recoverable — the owner can
+    // rename/re-found the network. Revisit if networks ever run genuinely large.
+    // Note this drops the whole event, not just the member row: storing a post whose
+    // author has no member record would leave a dangling reference that renders as an
+    // unknown user, so at the cap we decline the participant entirely.
+    if(net.members.length >= MAX_MEMBERS) return;
     net.members.push(m);
     if(m.avatarEnc) ensureAvatar(net, m);
     changed=true;
@@ -1104,9 +1130,16 @@ async function handleRemoteEvent(netId, ev){
       // backfill, slow relay) is dropped outright — never stored or shown.
       if(payload.exp && Math.floor(Date.now()/1000) > payload.exp) return;
       const _modHidden = !!(net.modDel && net.modDel[ev.id] && net.ownerPk && net.modDel[ev.id]===net.ownerPk);
-      net.posts.push({ id:ev.id, memberId:memId, authorPk:pk, caption:payload.caption||'', modHidden:_modHidden,
-        image:(!enc && payload.image)?payload.image:null, enc, encs:_encs,
-        poll:payload.poll||null, link:_lk, voteBy:{}, exp:(typeof payload.exp==='number'?payload.exp:null),
+      net.posts.push({ id:ev.id, memberId:memId, authorPk:pk, caption:String(payload.caption||'').slice(0,280), modHidden:_modHidden,
+        // payload.image (a PLAINTEXT remote URL) is never accepted. Honest clients
+        // cannot even produce one — locally picked/captured photos are always data
+        // URLs and the send gate requires https:, so this field is always null in
+        // practice. Honoring it let any member drop an auto-loading, unencrypted
+        // tracking pixel into every viewer's feed, which also contradicts the
+        // promise that photos are encrypted before they leave the device. Received
+        // media must come through enc/encs (encrypted, hash-verified, size-capped).
+        image:null, enc, encs:_encs,
+        poll:safePoll(payload.poll), link:_lk, voteBy:{}, exp:(typeof payload.exp==='number'&&Number.isFinite(payload.exp)?payload.exp:null),
         likes:0, liked:false, likeBy:{}, replies:[], ts:ev.created_at });
       // No stored `time` string: fmtTime() derives the label from the numeric `ts`
       // (its post.time fallback stays only for any legacy ts-less post already saved).
@@ -1139,7 +1172,7 @@ async function handleRemoteEvent(netId, ev){
     // relay backfill re-delivers the original reply event on every refresh.
     if(net.replyDel && net.replyDel[ev.id]===pk){ /* deleted by its author — stay gone */ }
     else if(parent && !parent.replies.find(r=>r.id===ev.id)){
-      parent.replies.push({ id:ev.id, memberId:memId, text:payload.text||'', ts:payload.ts||ev.created_at||Math.floor(Date.now()/1000) });
+      parent.replies.push({ id:ev.id, memberId:memId, text:String(payload.text||'').slice(0,1000), ts:payload.ts||ev.created_at||Math.floor(Date.now()/1000) });
       changed=true;
       // notify if replying to our post — or in a thread we commented in — and we're not already reading it
       const myPk=myPubkey();
@@ -1159,7 +1192,7 @@ async function handleRemoteEvent(netId, ev){
     // The tombstone records WHO deleted; it only takes effect against a reply
     // actually authored by that same person (checked wherever it's honoured), so
     // nobody can delete someone else's comment by publishing a fake tombstone.
-    if(payload.r){
+    if(isEventId(payload.r) && tombstoneRoom(net.replyDel, payload.r)){
       if(!net.replyDel) net.replyDel={};
       if(net.replyDel[payload.r]!==pk){ net.replyDel[payload.r]=pk; changed=true; }
     }
@@ -1176,10 +1209,10 @@ async function handleRemoteEvent(netId, ev){
     // and a non-owner publishing a fake mod-delete is ignored everywhere).
     if(payload.e){
       if(!net.modDel) net.modDel={};
-      if(net.modDel[payload.e]!==pk){ net.modDel[payload.e]=pk; changed=true; }
+      if(isEventId(payload.e) && tombstoneRoom(net.modDel, payload.e) && net.modDel[payload.e]!==pk){ net.modDel[payload.e]=pk; changed=true; }
       if(net.ownerPk && pk===net.ownerPk){
         const idx=net.posts.findIndex(p=>p.id===payload.e);
-        if(idx>=0){ net.posts.splice(idx,1); changed=true; }
+        if(idx>=0){ purgePostMedia(net.posts[idx]); net.posts.splice(idx,1); changed=true; }
         if(A.replyPostId===payload.e) A.replyPostId=null;
         if(A.viewPostId===payload.e) A.viewPostId=null;
       }
@@ -1209,6 +1242,10 @@ async function handleRemoteEvent(netId, ev){
   } else if(payload.t==='vote'){
     const parent=net.posts.find(p=>p.id===payload.e);
     if(parent && parent.poll && typeof payload.opt==='number'){
+      // The index must address a real option — an out-of-range or fractional value
+      // would create a phantom tally entry that no option ever displays.
+      const _nOpts=(parent.poll.options||[]).length;
+      if(!Number.isInteger(payload.opt) || payload.opt<0 || payload.opt>=_nOpts) return;
       // Poll expiry is enforced on receipt too — a vote cast after the deadline
       // (by clock or by a modified client) is ignored by every honest client.
       if(parent.poll.exp && (payload.ts||ev.created_at) > parent.poll.exp) return;
@@ -1227,9 +1264,13 @@ async function handleRemoteEvent(netId, ev){
     if(claimsOwner && !net.ownerPk){ net.ownerPk=pk; changed=true; }
     // Name changes are guarded by the same meta timestamp as password/posting, so
     // all meta fields move together and an old meta can't revert any of them.
-    if(net.ownerPk && pk===net.ownerPk && (payload.ts||0) >= (net.metaTs||0)){
-      if(payload.name && net.name!==payload.name){ net.name=payload.name; changed=true; }
-      net.nameTs=payload.ts||net.nameTs||0;
+    // metaTs is clamped to the event's own created_at for the same reason nn/nt is:
+    // an unbounded value would permanently freeze every later legitimate meta out.
+    const _mts=Math.min(Number(payload.ts)||0, ev.created_at);
+    if(net.ownerPk && pk===net.ownerPk && _mts >= (net.metaTs||0)){
+      const _nm=payload.name?String(payload.name).slice(0,60):null;
+      if(_nm && net.name!==_nm){ net.name=_nm; changed=true; }
+      net.nameTs=_mts||net.nameTs||0;
       const np=payload.password||null; if(net.password!==np){ net.password=np; changed=true; }
       // Owner can lock posting to owner-only. Record WHEN it was locked so posts
       // members already made stay visible — only new member posts are ignored.
@@ -1237,11 +1278,11 @@ async function handleRemoteEvent(netId, ev){
         const canPost = payload.membersCanPost!==false;
         if(net.membersCanPost!==canPost){
           net.membersCanPost=canPost;
-          net.postLockTs = canPost ? 0 : (payload.ts||Math.floor(Date.now()/1000));
+          net.postLockTs = canPost ? 0 : (_mts||Math.floor(Date.now()/1000));
           changed=true;
         }
       }
-      net.metaTs=payload.ts||net.metaTs||0;
+      net.metaTs=_mts||net.metaTs||0;
     }
     // Flush any buffered removal events now that we know who the owner is
     if(net.ownerPk && net._pendingRemoves && net._pendingRemoves.length){
@@ -1269,8 +1310,24 @@ async function handleRemoteEvent(netId, ev){
       delete _pendingJoinPasswords[net.id]; // no password required — clear
     }
   }
-  // shared network name can also ride along on posts/replies
-  if(payload.nn && (payload.nt||0) > (net.nameTs||0)){ if(net.name!==payload.nn){ net.name=payload.nn; changed=true; } net.nameTs=payload.nt; }
+  // The shared network name can ride along on posts/replies so members who joined by
+  // code learn it without waiting for the owner's meta. Three guards, because this is
+  // otherwise a rename anyone can perform:
+  //  1. CLAMP nt to the event's own (already clamped) created_at. Unclamped, a modified
+  //     client could send nt = MAX_SAFE_INTEGER and pin nameTs at an unreachable value —
+  //     the owner's real rename could never beat it, and every backfill would re-apply
+  //     the fake name, making the hijack permanent.
+  //  2. Once we know the owner, only THEY may change the name; peer propagation is just
+  //     bootstrapping for members who haven't received the owner's meta yet.
+  //  3. Bound the length — it flows into toasts and the delete-network confirm.
+  if(payload.nn && (!net.ownerPk || pk===net.ownerPk)){
+    const nt=Math.min(Number(payload.nt)||0, ev.created_at);
+    if(nt > (net.nameTs||0)){
+      const nn=String(payload.nn).slice(0,60);
+      if(net.name!==nn){ net.name=nn; changed=true; }
+      net.nameTs=nt;
+    }
+  }
   // Save state always; only re-render the visible feed when the user has asked for it
   // (pull-to-refresh or initial load). Background live events update state silently.
   if(changed){
@@ -1441,7 +1498,10 @@ async function publishPost(netId, post){
     const payload={ v:1, t:'post', caption:post.caption,
       enc: post.enc||null,
       encs: (Array.isArray(post.encs) && post.encs.length) ? post.encs.slice(0, MAX_PHOTOS-1) : undefined,
-      image: (!post.enc && post.image && /^https?:/.test(post.image))?post.image:null,
+      // NOTE: no `image` field. It only ever carried a plaintext remote URL, which
+      // locally captured/picked photos never are (they're data URLs, and those are
+      // uploaded encrypted as `enc`). Receivers ignore it, so emitting it would just
+      // reopen a plaintext-media path that contradicts the encryption promise.
       poll: post.poll||null,
       link: post.link||null,
       exp: post.exp||undefined,
@@ -1455,7 +1515,7 @@ async function publishPost(netId, post){
     const _tags=[['t',keys.tag]];
     if(post.exp) _tags.push(['expiration', String(post.exp)]);
     const ev=await makeNostrEvent(MOMENTS_KIND, _tags, content);
-    markSeen(ev.id);
+    markSeen(ev.id, (A.networks[netId]||{}).code);
     const delivered=Relay.publish(ev);
     return { id:ev.id, delivered };
   }catch(e){ return null; }
@@ -1470,7 +1530,7 @@ async function publishReply(netId, parentId, text){
     if(_av && _av.ext) payload.avatar=_av.ext; else if(_av) payload.avatarEnc=stripSrc(_av);
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag],['e',parentId]], content);
-    markSeen(ev.id);
+    markSeen(ev.id, (A.networks[netId]||{}).code);
     Relay.publish(ev);
     return ev.id;
   }catch(e){ return null; }
@@ -1483,7 +1543,7 @@ async function publishLike(netId, parentId, liked, emo){
     if(liked && normEmo(emo)) payload.emo=normEmo(emo);   // additive: old clients see a plain like
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag],['e',parentId]], content);
-    markSeen(ev.id);
+    markSeen(ev.id, (A.networks[netId]||{}).code);
     Relay.publish(ev);
   }catch(e){}
 }
@@ -1498,7 +1558,7 @@ async function publishDelete(netId, postId){
     const keys=A.netKeys[netId]||await deriveNetwork(A.networks[netId].code);
     A.netKeys[netId]=keys;
     const ev=await makeNostrEvent(5, [['t',keys.tag],['e',postId],['k',String(MOMENTS_KIND)]], 'deleted');
-    markSeen(ev.id);
+    markSeen(ev.id, (A.networks[netId]||{}).code);
     Relay.publish(ev);
   }catch(e){}
 }
@@ -1516,7 +1576,7 @@ async function publishMeta(netId){
     else if(net.membersCanPost===true) payload.membersCanPost=true;
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
-    markSeen(ev.id);
+    markSeen(ev.id, (A.networks[netId]||{}).code);
     Relay.publish(ev);
   }catch(e){}
 }
@@ -1528,7 +1588,7 @@ async function publishRemove(netId, targetPk){
     const payload={ v:1, t:'remove', pk:targetPk, ts:Math.floor(Date.now()/1000) };
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
-    markSeen(ev.id);
+    markSeen(ev.id, (A.networks[netId]||{}).code);
     Relay.publish(ev);
   }catch(e){}
 }
@@ -1543,7 +1603,7 @@ async function publishModDelete(netId, postId){
     const payload={ v:1, t:'mod-delete', e:postId, ts:Math.floor(Date.now()/1000) };
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
-    markSeen(ev.id);
+    markSeen(ev.id, (A.networks[netId]||{}).code);
     Relay.publish(ev);
   }catch(e){}
 }
@@ -1608,7 +1668,7 @@ async function publishProfile(){
       else if(_avatarBlob && !(aEnc && aEnc.ext) && !aEnc){ net.pendingAvatarUpload=Math.floor(Date.now()/1000); }
       const content=await encJSON(keys.groupKey, payload);
       const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
-      markSeen(ev.id);
+      markSeen(ev.id, (net||{}).code);
       Relay.publish(ev);
     }catch(e){}
   }
@@ -2037,6 +2097,21 @@ async function idbDel(key){
   });
 }
 
+// Drop a single post's cached media from this device: revoke the in-memory object
+// URL and delete the persisted ciphertext. Removing a post from net.posts alone left
+// its encrypted bytes in IndexedDB forever — unbounded growth, and for a disappearing
+// photo it meant the ciphertext outlived the post it belonged to.
+function purgePostMedia(post){
+  try{
+    postEncs(post).forEach(e=>{
+      const sha=e && e.sha256; if(!sha) return;
+      try{ idbDel('img:'+sha); }catch(_){}
+      const u=_imgCache[sha];
+      if(u && typeof u==='string' && u.startsWith('blob:')){ try{ URL.revokeObjectURL(u); }catch(_){} }
+      delete _imgCache[sha];
+    });
+  }catch(_){}
+}
 // Wipe a member's cached photo blobs from this device (used when they're removed)
 function purgeMemberPhotos(net, pk){
   try{
@@ -2223,6 +2298,43 @@ function safeDataImage(s){
 // of the data-photo="<sha256>" attribute (stored XSS) or a querySelector. Only known
 // fields are kept. This is the single validator for BOTH the primary enc and the
 // multi-photo extras, so they can't drift apart. Rendered esc()'d too, belt and braces.
+// Validate an incoming poll to the shape the UI can actually render, or null.
+// payload.poll was previously stored raw, so a modified client could ship an
+// arbitrary object — thousands of options, or megabyte-long option strings —
+// which every receiver would persist and render. Mirrors the composer's own
+// limits (2-6 options, 60 chars each) with headroom.
+function safePoll(p){
+  if(!p || typeof p!=='object' || !Array.isArray(p.options)) return null;
+  const options=p.options
+    .filter(o=>typeof o==='string')
+    .slice(0, MAX_POLL_OPTIONS)
+    .map(o=>o.slice(0, 80));
+  if(options.length<2) return null;
+  const out={ options };
+  // exp is a unix seconds deadline; ignore anything non-finite or absurd
+  if(typeof p.exp==='number' && Number.isFinite(p.exp) && p.exp>0) out.exp=Math.min(p.exp, 4102444800); // <= year 2100
+  return out;
+}
+// Tombstone maps (modDel/replyDel) deliberately record a claim from ANY sender and
+// decide authority later, when the owner is known — that's what makes them survive
+// backfill arriving out of order. The cost is that the KEY comes straight from the
+// payload, so without these two guards any member could write unlimited arbitrary
+// entries into a map that is persisted forever. Keys must look like real event ids,
+// and the map can't grow without bound.
+function isEventId(v){ return typeof v==='string' && /^[0-9a-f]{64}$/.test(v); }
+const MAX_TOMBSTONES = 5000;
+const MAX_PENDING_REMOVES = 200;
+function tombstoneRoom(map, key){
+  if(!map) return true;
+  if(Object.prototype.hasOwnProperty.call(map, key)) return true;   // updating an existing claim is always fine
+  return Object.keys(map).length < MAX_TOMBSTONES;
+}
+
+const MAX_POLL_OPTIONS = 6;
+// Ceiling on stored members per network (see the member-append guard). Generous —
+// far past any realistic close-circle network — so it only ever stops abuse.
+const MAX_MEMBERS = 500;
+
 function safeEnc(e){
   if(!e || typeof e.url!=='string' || !/^https?:\/\//.test(e.url)) return null;
   if(typeof e.iv!=='string' || !/^[0-9a-f]{24}$/.test(e.iv)) return null;
@@ -2233,7 +2345,7 @@ function safeEnc(e){
            blurhash:(typeof e.blurhash==='string'?e.blurhash.slice(0,64):'') };
 }
 function photoSrc(net, post){
-  if(post.image) return safeCssUrl(post.image);     // remote https OR a local data: image (just-posted) — sanitized
+  if(post.image) return safeCssUrl(post.image);     // local data: image on a just-posted item only — never from the wire
   const e=post.enc;
   if(e && e.sha256){
     if(_imgCache[e.sha256]) return _imgCache[e.sha256];   // locally-created blob: URL, safe
@@ -2267,10 +2379,13 @@ async function ensurePhoto(net, post, encOverride){
     }catch(_){}
     // 2) Otherwise fetch the ciphertext from Blossom and stash it (still encrypted) for next time
     if(!ct){
-      const res=await fetch(e.url); if(!res.ok) throw new Error('fetch '+res.status);
-      const buf=await res.arrayBuffer();
-      ct=new Uint8Array(buf);
-      try{ await idbSet('img:'+e.sha256, new Blob([buf], {type:'application/octet-stream'})); }catch(_){}
+      const got=await fetchCapped(e.url, MEDIA_MAX_FETCH, 60000);
+      // e.sha256 is the hash of the CIPHERTEXT (see blossomUpload), so this proves the
+      // host returned the bytes the poster actually published — a wrong-host or
+      // tampered/garbage body is rejected before it's decrypted or cached.
+      if(bytesToHex(await sha256(got))!==e.sha256) throw new Error('hash mismatch');
+      ct=got;
+      try{ await idbSet('img:'+e.sha256, new Blob([got], {type:'application/octet-stream'})); }catch(_){}
     }
     const iv=hexToBytes(e.iv);
     const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv}, keys.groupKey, ct);
@@ -2302,19 +2417,23 @@ async function ensureAvatar(net, mem){
     let ct=null;
     try{ const cached=await idbGet('av:'+e.sha256); if(cached) ct=new Uint8Array(await cached.arrayBuffer()); }catch(_){}
     if(!ct){
-      const res=await fetch(e.url);
-      if(!res.ok){
+      let got;
+      try{
+        got=await fetchCapped(e.url, AVATAR_MAX_FETCH, 30000);
+      }catch(err){
         // 404/410 = the blob is genuinely gone (uploader was offline when they set
         // it, or it was pruned). Remember that so the backfill sweep stops hammering
         // it every pass. Any OTHER failure (network blip, timeout, CORS hiccup) is
         // transient — we do NOT mark it, so the next sweep retries. This is the fix
         // for "some members show, some don't": a single transient miss used to drop
-        // a member to initials permanently.
-        if(res.status===404 || res.status===410){ _avatarDead[key]=true; }
-        throw new Error('fetch '+res.status);
+        // a member to initials permanently. An oversized body is treated as dead too:
+        // a legitimate avatar is downscaled at upload and can't exceed the cap.
+        if(err && (err.status===404 || err.status===410 || /too large/.test(err.message||''))) _avatarDead[key]=true;
+        throw err;
       }
-      const buf=await res.arrayBuffer(); ct=new Uint8Array(buf);
-      try{ await idbSet('av:'+e.sha256, new Blob([buf],{type:'application/octet-stream'})); }catch(_){}
+      if(bytesToHex(await sha256(got))!==e.sha256){ _avatarDead[key]=true; throw new Error('hash mismatch'); }
+      ct=got;
+      try{ await idbSet('av:'+e.sha256, new Blob([got],{type:'application/octet-stream'})); }catch(_){}
     }
     const iv=hexToBytes(e.iv);
     const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv}, keys.groupKey, ct);
@@ -2334,8 +2453,52 @@ function isVideo(post){ return !!(post.enc&&post.enc.mime&&post.enc.mime.startsW
 // app is rendered, never handed over as a download. The moment members can pass
 // each other arbitrary files, Moments becomes the thing that delivered someone's
 // .apk to their family. Audio is played, not saved — that's the whole difference.
-const AUDIO_MAX_BYTES = 25*1024*1024;
-function isAudio(post){ return !!(post && ((post.enc&&post.enc.mime&&post.enc.mime.startsWith('audio/')) || (post.image&&post.isAudio))); }
+// Media ciphertext is fetched from whatever host the POSTER chose (member-hosted
+// Blossom), so the URL is attacker-controllable by any member. safeEnc() checks the
+// shape but not the size, and res.arrayBuffer() would happily buffer a multi-GB body
+// — exhausting memory and mobile data long before AES-GCM rejects it. Read the body
+// as a stream instead and abort the moment it exceeds what a legitimate item could be.
+// Also bounds the time spent, so a trickle-feeding host can't pin a request open.
+// NOTE this does NOT hide the viewer's IP from that host — see fetchMediaCapped's
+// caller notes; that's inherent to member-hosted media, not something a cap fixes.
+async function fetchCapped(url, maxBytes, timeoutMs){
+  const ctl=new AbortController();
+  const to=setTimeout(()=>ctl.abort(), timeoutMs||45000);
+  try{
+    const res=await fetch(url, {signal:ctl.signal});
+    if(!res.ok){ const e=new Error('fetch '+res.status); e.status=res.status; throw e; }
+    // Trust Content-Length only to reject early — it can lie or be absent, so the
+    // running total below is the real guard.
+    const cl=parseInt(res.headers.get('content-length')||'0',10);
+    if(cl && cl>maxBytes) throw new Error('too large');
+    if(!res.body || !res.body.getReader){
+      const buf=await res.arrayBuffer();
+      if(buf.byteLength>maxBytes) throw new Error('too large');
+      return new Uint8Array(buf);
+    }
+    const reader=res.body.getReader();
+    const chunks=[]; let total=0;
+    // Race each read against the deadline: aborting the signal normally errors the
+    // body stream, but don't depend solely on that — a stalled read must not be able
+    // to pin this promise open forever.
+    const deadline=new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')), timeoutMs||45000));
+    for(;;){
+      const {done,value}=await Promise.race([reader.read(), deadline]);
+      if(done) break;
+      total+=value.byteLength;
+      if(total>maxBytes){ try{ reader.cancel(); }catch(_){} ctl.abort(); throw new Error('too large'); }
+      chunks.push(value);
+    }
+    const out=new Uint8Array(total); let off=0;
+    for(const c of chunks){ out.set(c, off); off+=c.byteLength; }
+    return out;
+  } finally { clearTimeout(to); }
+}
+// Ciphertext caps. Media must allow a legitimate 200MB video (the upload limit) plus
+// AES-GCM overhead; avatars are downscaled at upload so they get a much tighter cap,
+// which matters because sockpuppet keys are free and every "member" costs one fetch.
+const MEDIA_MAX_FETCH  = 210*1024*1024;
+const AVATAR_MAX_FETCH = 4*1024*1024;function isAudio(post){ return !!(post && ((post.enc&&post.enc.mime&&post.enc.mime.startsWith('audio/')) || (post.image&&post.isAudio))); }
 // Read duration without rendering anything. Resolves 0 rather than hanging if the
 // browser can't decode the container.
 function audioDuration(url){
@@ -2413,7 +2576,13 @@ function sweepExpired(){
         try{ if(typeof outDrop==='function') outDrop(p.id); }catch(_){}
       }
     });
-    const kept=net.posts.filter(p=>!(p.exp && now>p.exp));
+    const kept=net.posts.filter(p=>{
+      const expired=!!(p.exp && now>p.exp);
+      // A disappearing post's encrypted bytes must not outlive the post itself —
+      // otherwise "fades after a day" leaves the ciphertext cached on the device.
+      if(expired) purgePostMedia(p);
+      return !expired;
+    });
     if(kept.length!==net.posts.length){ net.posts=kept; touched=true; }
     if(touched) changed=true;
   });
@@ -2929,6 +3098,18 @@ function logout(){
   if(_syncTimer){ clearInterval(_syncTimer); _syncTimer=null; }
   if(_camStream){ _camStream.getTracks().forEach(t=>t.stop()); _camStream=null; }
   if(_photoStream){ _photoStream.getTracks().forEach(t=>t.stop()); _photoStream=null; }
+  // Cross-identity hygiene on a shared device: decrypted photos live on as blob:
+  // object URLs in this tab even after the key is gone. Revoke them and drop every
+  // in-memory media cache so the next identity starts with nothing of this one's.
+  // (Persisted IndexedDB copies stay encrypted and are keyed per identity.)
+  try{
+    Object.values(_imgCache).forEach(u=>{ try{ if(typeof u==='string' && u.startsWith('blob:')) URL.revokeObjectURL(u); }catch(_){} });
+    for(const k in _imgCache) delete _imgCache[k];
+    for(const k in _imgPending) delete _imgPending[k];
+    for(const k in _avatarEncCache) delete _avatarEncCache[k];
+    for(const k in _retryBlobs) delete _retryBlobs[k];
+    _avatarBlob=null;
+  }catch(_){}
   document.getElementById('app-screen').classList.remove('active');
   A=null;
   document.querySelector('nav').style.display='';
@@ -3020,6 +3201,11 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // live app version and drives the What's New badge, so a version with no changes
 // must never sit on top. ──
 const CHANGELOG=[
+  { v:'0.9.5', date:'August 2026', title:'Tighter', changes:[
+    ['fix','Security hardening across how posts, photos and network details are received'],
+    ['fix','Your light/dark choice is remembered properly \u2014 dark no longer switches itself to light'],
+    ['fix','Photos are cleared from this device when a post is deleted or a disappearing photo expires'],
+  ]},
   { v:'0.9.4', date:'August 2026', title:'Within reach', changes:[
     ['new','Buttons and controls can now be reached with a keyboard and read out by screen readers'],
   ]},
@@ -3953,7 +4139,7 @@ async function publishNetDelete(netId){
     const payload={ v:1, t:'net-delete', ts:Math.floor(Date.now()/1000) };
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
-    markSeen(ev.id);
+    markSeen(ev.id, (A.networks[netId]||{}).code);
     Relay.connect();
     Relay.publish(ev);
   }catch(e){}
@@ -3963,6 +4149,12 @@ async function confirmDeleteNetwork(){
   if(!inp || inp.value.trim()!=='DELETE NETWORK') return;
   const netId=A.confirmDeleteNet; A.confirmDeleteNet=null;
   if(!A.networks[netId]) return;
+  // Owner-only. The button is already hidden for non-owners, so this is
+  // defense-in-depth: without it, anyone reaching this path would destroy their own
+  // local copy (irrecoverably) while publishing a tombstone every other client
+  // correctly ignores — i.e. they'd lose the network and nobody else would notice.
+  // Leaving a network is the non-owner action, and it has its own path.
+  if(!isOwner(A.networks[netId])) return;
   await publishNetDelete(netId);
   applyNetDelete(netId, Math.floor(Date.now()/1000));
 }
@@ -4055,7 +4247,7 @@ async function publishLeave(netId){
     const payload={ v:1, t:'leave', pk:myPubkey(), ts:Math.floor(Date.now()/1000) };
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
-    markSeen(ev.id);
+    markSeen(ev.id, (A.networks[netId]||{}).code);
     Relay.connect();
     Relay.publish(ev);
   }catch(e){}
@@ -4127,6 +4319,13 @@ function buildPasswordInput(netId){
 }
 function renameNetwork(){
   const net=currentNet(); if(!net) return;
+  // Owner-only, like every other meta edit. This matters beyond "it wouldn't
+  // propagate anyway": in an OWNERLESS network publishMeta sends
+  // owner: net.ownerPk||myPubkey(), and receivers accept the first self-consistent
+  // claim (claimsOwner && !net.ownerPk) — so renaming would silently make the
+  // renamer the owner. Taking an ownerless network over must stay the deliberate
+  // act of claimOwnership(), which says so out loud.
+  if(!isOwner(net)) return;
   const name=prompt('Network name (everyone in this network will see this)', net.name);
   if(name && name.trim()){
     net.name=name.trim(); net.nameTs=Math.floor(Date.now()/1000);
@@ -4397,7 +4596,7 @@ async function publishVote(netId, pollId, optIndex){
     const payload={ v:1, t:'vote', name:A.profile.name||'You', e:pollId, opt:optIndex, ts:Math.floor(Date.now()/1000) };
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag],['e',pollId]], content);
-    markSeen(ev.id);
+    markSeen(ev.id, (A.networks[netId]||{}).code);
     Relay.publish(ev);
   }catch(e){}
 }
@@ -4780,11 +4979,14 @@ function joinWithCode(rawCode, enteredPassword){
   // replayed 'remove' event older than this must never kick me out again.
   if(!A.joinTs) A.joinTs={};
   A.joinTs[code]=Math.floor(Date.now()/1000);
-  // Reset the event-dedup set: if this device was removed and rejoined within the
-  // same session, every historical event (posts, meta, profiles) is already marked
-  // "seen" from the previous membership — without this reset the backfill would be
-  // silently dropped, leaving an empty feed and stale meta (posting lock, name, pw).
-  A.seen={};
+  // Reset the event-dedup set FOR THIS NETWORK ONLY: if this device was removed and
+  // rejoined within the same session, every historical event (posts, meta, profiles)
+  // is already marked "seen" from the previous membership — without this the backfill
+  // would be silently dropped, leaving an empty feed and stale meta (posting lock,
+  // name, pw). Entries are tagged with the network CODE rather than its local id,
+  // because rejoining mints a fresh id but the code is the same. Wiping the whole set
+  // (as this used to) re-opened dedup for every other network too.
+  if(A.seen){ for(const k in A.seen){ if(A.seen[k]===code) delete A.seen[k]; } }
   saveData(); switchNetwork(id); haptic(18); requestNotifPermission();
   // Announce ourselves (name + avatar) to the new network so everyone sees our real
   // display name straight away — not "Friend" until our first post/like/comment.
@@ -4821,8 +5023,8 @@ async function adoptOwnAvatar(net, e){
   if(!e || !e.url || !e.iv || !e.sha256) return false;
   try{
     const keys=A.netKeys[net.id]||await deriveNetwork(net.code); A.netKeys[net.id]=keys;
-    const res=await fetch(e.url); if(!res.ok) return false;
-    const ct=new Uint8Array(await res.arrayBuffer());
+    const ct=await fetchCapped(e.url, AVATAR_MAX_FETCH, 30000);
+    if(bytesToHex(await sha256(ct))!==e.sha256) return false;
     const pt=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:hexToBytes(e.iv)}, keys.groupKey, ct));
     const blob=new Blob([pt], {type:e.mime||'image/jpeg'});
     _avatarBlob=blob;
@@ -4847,7 +5049,7 @@ async function publishProfileTo(netId){
       if(aEnc && aEnc.ext) payload.avatar=aEnc.ext; else if(aEnc) payload.avatarEnc=stripSrc(aEnc);
       const content=await encJSON(keys.groupKey, payload);
       const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
-      markSeen(ev.id);
+      markSeen(ev.id, (A.networks[netId]||{}).code);
       const delivered=Relay.publish(ev);
       // If nothing was delivered (no open sockets yet) and we have retries left, try again shortly
       if(!delivered && attempts<5){ setTimeout(tryPublish, 1500); }
@@ -5040,14 +5242,14 @@ async function publishReplyDelete(netId, postId, replyId){
     const payload={ v:1, t:'reply-delete', e:postId, r:replyId, ts:Math.floor(Date.now()/1000) };
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
-    markSeen(ev.id);
+    markSeen(ev.id, (A.networks[netId]||{}).code);
     Relay.publish(ev);
     // NIP-09: also ask relays to drop the reply's own event. Only valid once the
     // reply has a real 64-hex nostr id — a temp "r<timestamp>" id means the reply
     // was deleted before its publish resolved, so there's nothing on relays yet.
     if(/^[0-9a-f]{64}$/.test(replyId)){
       const del=await makeNostrEvent(5, [['t',keys.tag],['e',replyId],['k',String(MOMENTS_KIND)]], 'deleted');
-      markSeen(del.id);
+      markSeen(del.id, (A.networks[netId]||{}).code);
       Relay.publish(del);
     }
   }catch(e){}
@@ -5290,6 +5492,7 @@ function deletePost(pid){
   // only the author can delete
   const mk=myPubkey();
   if(post.memberId!=='u1' && post.authorPk!==mk) return;
+  purgePostMedia(post);
   net.posts.splice(idx,1);
   // If this post is still inside its undo-send window, the delete IS the undo:
   // cancel the held publish and dismiss the Undo toast so it can't outlive the post.
@@ -5319,6 +5522,7 @@ function modDeletePost(pid){
   // (every backfill does) can't resurrect it on my own device.
   if(!net.modDel) net.modDel={};
   net.modDel[pid]=myPubkey();
+  purgePostMedia(net.posts[idx]);
   net.posts.splice(idx,1);
   if(A.replyPostId===pid) A.replyPostId=null;
   if(A.viewPostId===pid) A.viewPostId=null;
@@ -5376,7 +5580,7 @@ async function publishCaptionEdit(netId, postId, caption){
     const payload={ v:1, t:'edit', e:postId, caption, ts:Math.floor(Date.now()/1000) };
     const content=await encJSON(keys.groupKey, payload);
     const ev=await makeNostrEvent(MOMENTS_KIND, [['t',keys.tag]], content);
-    markSeen(ev.id);
+    markSeen(ev.id, (A.networks[netId]||{}).code);
     Relay.publish(ev);
   }catch(e){}
 }
@@ -5470,7 +5674,10 @@ function normalizeProfile(src, opts){
     avatar: src.avatar || null,
     avatarExternal: !!src.avatarExternal,
     signal: normSignal(src.signal),
-    theme: (src.theme==='dark' ? 'dark' : 'light'),
+    // Dark is the structural default: #app-frame is dark and .theme-light is an
+    // opt-in override, so a profile with no theme has always RENDERED dark. Defaulting
+    // the stored value to 'light' silently flipped those legacy profiles on upgrade.
+    theme: (src.theme==='light' ? 'light' : 'dark'),
     keyOrigin: (src.keyOrigin==='generated' ? 'generated' : 'imported'),
     keyBackedUp: !!src.keyBackedUp,
     backupHidden: !!src.backupHidden
@@ -6859,7 +7066,14 @@ function buildInvite(net){
       </div>
       <div style="background:${C.surface};border-radius:22px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px">
         ${qrSVG(inviteUrl(net), 240)}
-        <div style="background:${C.surfaceHigh};border-radius:10px;padding:8px 20px;font-family:monospace;font-size:18px;letter-spacing:3px;color:${C.accent};font-weight:700">${esc(net.code)}</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="background:${C.surfaceHigh};border-radius:10px;padding:8px 20px;font-family:monospace;font-size:18px;letter-spacing:3px;color:${C.accent};font-weight:700">${esc(net.code)}</div>
+          <button data-act="toggleCodeNote" aria-label="What sharing this code means" style="background:none;border:none;color:${C.muted};cursor:pointer;font-size:15px;line-height:1;padding:4px;display:flex;align-items:center">\u24d8</button>
+        </div>
+        <div id="code-share-note" style="display:none;gap:7px;align-items:flex-start;background:${C.surfaceHigh};border-radius:10px;padding:9px 11px">
+          <span style="font-size:12px;line-height:1.5;flex-shrink:0">\u{1F511}</span>
+          <span style="color:${C.textDim};font-size:12px;line-height:1.55">This code is the key. Anyone you give it to can see everything shared here \u2014 including posts made after they join, and even if you remove them later. Only share it with people you trust.</span>
+        </div>
       </div>
       <button data-act="shareInvite" style="width:100%;background:${C.accent};color:#0F0F14;border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:700;cursor:pointer">Share invite</button>
       <button data-act="copyInviteCode" style="width:100%;background:${C.surface};color:${C.text};border:none;border-radius:14px;padding:14px 0;font-size:15px;font-weight:600;cursor:pointer">Copy code</button>
@@ -7001,7 +7215,7 @@ function buildSettings(){
       <div style="background:${C.surface};border-radius:18px;padding:16px;display:flex;align-items:center;justify-content:space-between;gap:12px">
         <div style="min-width:0">
           <div style="color:${C.text};font-size:14px;font-weight:700">Appearance</div>
-          <div style="color:${C.muted};font-size:11px">${A.profile.theme==='light'?'Light · default':'Dark'}</div>
+          <div style="color:${C.muted};font-size:11px">${A.profile.theme==='light'?'Light':'Dark'}</div>
         </div>
         <button data-act="toggleTheme" title="Toggle theme" aria-label="Toggle theme" style="position:relative;flex-shrink:0;width:54px;height:30px;border-radius:30px;border:none;cursor:pointer;background:${A.profile.theme==='light'?C.accent:C.surfaceHigh};transition:background .2s">
           <span style="position:absolute;top:3px;left:${A.profile.theme==='light'?'27px':'3px'};width:24px;height:24px;border-radius:50%;background:#fff;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;font-size:12px">${A.profile.theme==='light'?'☀':'🌙'}</span>
@@ -7673,6 +7887,7 @@ registerActions({
   // join / create
   setCreateName:     el=>setCreateName(el.value),
   toggleEncNote:     ()=>toggleEncNote(),
+  toggleCodeNote:    ()=>toggleCodeNote(),
   setCreateRelay:    k=>setCreateRelay(k),
   setCustomRelays:   el=>setCustomRelays(el.value),
   createNetwork:     ()=>createNetwork(),

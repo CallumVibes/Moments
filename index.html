@@ -39,7 +39,7 @@
        custom relays and members' media lives on arbitrary Blossom hosts. style-src keeps
        'unsafe-inline' (the whole UI is inline styles; styles can't execute JS).
        worker-src 'self' pre-clears the v0.9 service worker. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-F1QuZ4pUvKyGTSxnMWftzvE5cqjdEk2nG/YiQIlYsIU='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-XnGO7VDchYKW4i5dyvGeCC+LWsnBwzxrZt9Pqz5fP5o='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -1261,7 +1261,17 @@ async function handleRemoteEvent(netId, ev){
     // This blocks anyone from spoofing owner:<someoneElse> to seize control.
     const claimsOwner = payload.owner && payload.owner===pk;
     // Establish the owner only from a self-consistent meta (signer == claimed owner).
-    if(claimsOwner && !net.ownerPk){ net.ownerPk=pk; changed=true; }
+    // The first such claim wins, and we must accept it — refusing would stop a
+    // legitimate take-ownership of an abandoned network from ever propagating, leaving
+    // the network ownerless on every other device. What we can do is stop it being
+    // SILENT: if this network already had an owner, this is someone filling a vacancy
+    // rather than the founder being identified, and any code-holder can win that race.
+    // Record it so the group can see it happened.
+    if(claimsOwner && !net.ownerPk){
+      const takeover = !!net.hadOwner;
+      net.ownerPk=pk; net.hadOwner=true; changed=true;
+      if(takeover && pk!==myPubkey()) net.ownerTakeover={ pk, ts: ev.created_at||Math.floor(Date.now()/1000) };
+    }
     // Name changes are guarded by the same meta timestamp as password/posting, so
     // all meta fields move together and an old meta can't revert any of them.
     // metaTs is clamped to the event's own created_at for the same reason nn/nt is:
@@ -1271,7 +1281,6 @@ async function handleRemoteEvent(netId, ev){
       const _nm=payload.name?String(payload.name).slice(0,60):null;
       if(_nm && net.name!==_nm){ net.name=_nm; changed=true; }
       net.nameTs=_mts||net.nameTs||0;
-      const np=payload.password||null; if(net.password!==np){ net.password=np; changed=true; }
       // Owner can lock posting to owner-only. Record WHEN it was locked so posts
       // members already made stay visible — only new member posts are ignored.
       if(payload.membersCanPost!==undefined){
@@ -1289,25 +1298,6 @@ async function handleRemoteEvent(netId, ev){
       net._pendingRemoves.filter(r=>r.senderPk===net.ownerPk).forEach(r=>applyRemoval(net, r.pk, netId, r.ts));
       net._pendingRemoves=net._pendingRemoves.filter(r=>r.senderPk!==net.ownerPk);
       changed=true;
-    }
-    // Validate password for a newly joined member
-    const _pw=_pendingJoinPasswords[net.id];
-    if(_pw !== undefined && net.password){
-      delete _pendingJoinPasswords[net.id];
-      if(_pw !== net.password){
-        // Capture BEFORE leaving — leaveNetwork() destroys the record we need.
-        const nm=net.name, code=net.code;
-        leaveNetwork(net.id, true);
-        // Ask for the password instead of dead-ending. Until now a wrong or absent
-        // password just bounced you back to the join screen with a toast, and you
-        // had to retype the whole code. Blank means they didn't know one was
-        // needed, so that isn't an error — just ask.
-        if(_pw!=='') showToast('Wrong password for "'+nm+'"');
-        promptJoinPassword(code);
-        return;
-      }
-    } else if(_pw !== undefined){
-      delete _pendingJoinPasswords[net.id]; // no password required — clear
     }
   }
   // The shared network name can ride along on posts/replies so members who joined by
@@ -1571,7 +1561,7 @@ async function publishMeta(netId){
     // to now if this network has never stamped one, so the first published meta wins.
     const metaTs = Math.max(net.metaTs||0, net.nameTs||0) || Math.floor(Date.now()/1000);
     net.metaTs = metaTs;
-    const payload={ v:1, t:'meta', name:net.name, owner:net.ownerPk||myPubkey(), ts:metaTs, password:net.password||null };
+    const payload={ v:1, t:'meta', name:net.name, owner:net.ownerPk||myPubkey(), ts:metaTs };
     if(net.membersCanPost===false) payload.membersCanPost=false;
     else if(net.membersCanPost===true) payload.membersCanPost=true;
     const content=await encJSON(keys.groupKey, payload);
@@ -2985,8 +2975,6 @@ async function enterApp(npub){
     showWhatsNew:false,
     relays:null,
     likersPostId:null,
-    showPasswordInput:null,
-    pendingJoinCode:null,
     netKeys:{},
     subscribed:{},
     seen:{},
@@ -3063,10 +3051,10 @@ async function enterApp(npub){
   renderApp();
   Object.keys(A.networks).forEach(id=>activateNetwork(id));
 
-  // If the user arrived via an invite link (?join=CODE&pw=PASSWORD), join that network now
+  // If the user arrived via an invite link (?join=CODE), join that network now
   if(_pendingJoin){
-    const code=_pendingJoin; const pw=_pendingPw; _pendingJoin=null; _pendingPw=null;
-    setTimeout(()=>{ try{ joinWithCode(code, pw||''); showToast('Joining network…'); }catch(_){} }, 400);
+    const code=_pendingJoin; _pendingJoin=null; _pendingPw=null;
+    setTimeout(()=>{ try{ joinWithCode(code); showToast('Joining network…'); }catch(_){} }, 400);
   }
 }
 
@@ -3202,6 +3190,7 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // must never sit on top. ──
 const CHANGELOG=[
   { v:'0.9.5', date:'August 2026', title:'Tighter', changes:[
+    ['change','Network passwords have been removed. They looked like protection but weren\u2019t: the join code alone unlocks a network, so the password was only ever a speed bump for people using the normal app. Treat your join code as the real key and share it carefully'],
     ['fix','Security hardening across how posts, photos and network details are received'],
     ['fix','Your light/dark choice is remembered properly \u2014 dark no longer switches itself to light'],
     ['fix','Photos are cleared from this device when a post is deleted or a disappearing photo expires'],
@@ -3513,7 +3502,7 @@ function buildRoadmap(){
       <div style="color:${C.muted};font-size:12px;line-height:1.6;margin-bottom:18px">Where Moments is heading. Plans shift as we learn what matters — no promises on timing.</div>
       ${rows}
       <div style="color:${C.muted};font-size:11px;line-height:1.6;margin-top:18px;padding-top:16px;border-top:1px solid var(--c-border)">
-        One honest note: today, anyone you share a network\u2019s join code with can see everything in it, and a password only adds a small speed bump. Treat the code itself as the real key. Stronger member controls (above) will fix this properly.
+        One honest note: the join code IS the key. Anyone you share it with can see everything in the network \u2014 including posts made after they join, and even if you remove them later. Treat it like a house key. Stronger member controls (above) will fix this properly.
       </div>
     </div>
   </div>`;
@@ -4007,7 +3996,6 @@ function closeTopOverlay(){
   try{ if(typeof _zoomOpen!=='undefined' && _zoomOpen){ closeZoom(); return true; } }catch(_){}
   if(A.showScanner){ A.showScanner=false; renderApp(); return true; }
   if(A.showCamera){ try{ closeCamera(); }catch(_){ A.showCamera=false; renderApp(); } return true; }
-  if(A.pendingJoinCode){ A.pendingJoinCode=null; renderApp(); return true; }
   if(A.likersPostId){ A.likersPostId=null; renderApp(); return true; }
   if(A.showVanish){ A.showVanish=false; renderApp(); return true; }
   if(A.showInvite){ A.showInvite=false; renderApp(); return true; }
@@ -4086,7 +4074,8 @@ function buildConfirm(){
 // Claim an ownerless network (e.g. created in an older build) so you can manage members
 function claimOwnership(netId){
   const net=A.networks[netId]; if(!net || net.ownerPk) return;
-  net.ownerPk=myPubkey();
+  net.ownerPk=myPubkey(); net.hadOwner=true;
+  delete net.ownerTakeover;   // I did this deliberately — no need to flag it to myself
   if(!net.removed) net.removed={};
   saveData(); renderApp();
   publishMeta(netId);
@@ -4271,22 +4260,6 @@ function _doRemove(netId, pk){
 }
 function toggleNetPicker(){ A.showNetPicker=!A.showNetPicker; renderApp(); }
 
-// ── Network password (owner only) ──
-function setNetworkPassword(netId){
-  const net=A.networks[netId]; if(!net||!isOwner(net)) return;
-  A.showPasswordInput=netId; renderApp();
-}
-function saveNetworkPassword(netId){
-  const net=A.networks[netId]; if(!net||!isOwner(net)) return;
-  const inp=document.getElementById('net-pw-input');
-  const pw=(inp&&inp.value.trim())||'';
-  net.password=pw||null;
-  const ts=Math.floor(Date.now()/1000); net.metaTs=ts; net.nameTs=Math.max(net.nameTs||0, ts);
-  A.showPasswordInput=null;
-  saveData(); renderApp(); publishMeta(netId);
-  showToast(pw?'Password set':'Password removed');
-}
-function cancelPasswordInput(){ A.showPasswordInput=null; renderApp(); }
 
 // Owner-only: allow or block other members from posting. Existing posts are kept;
 // only new member posts are blocked once this is turned off.
@@ -4301,21 +4274,6 @@ function toggleMemberPosting(netId){
   net.nameTs=ts; net.metaTs=ts;
   saveData(); renderApp(); publishMeta(netId);
   showToast(nowAllowed ? 'Members can post again' : 'Only you can post now');
-}
-function buildPasswordInput(netId){
-  const net=A.networks[netId]; if(!net) return '';
-  return `
-  <div data-act="cancelPasswordInput" style="position:absolute;inset:0;z-index:92;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;padding:24px">
-    <div data-act="noop" data-stop style="background:${C.bg};border-radius:20px;padding:22px 20px;width:100%;max-width:340px">
-      <div style="color:${C.text};font-size:16px;font-weight:700;margin-bottom:6px">Network password</div>
-      <div style="color:${C.muted};font-size:12px;margin-bottom:14px">Members will need this password plus the join code. Leave blank to remove the password.</div>
-      <input id="net-pw-input" type="text" value="${esc(net.password||'')}" placeholder="Enter a password…" autocomplete="off" style="width:100%;background:${C.surfaceHigh};border:1.5px solid ${C.accentBorder};outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px"/>
-      <div style="display:flex;gap:10px">
-        <button data-act="saveNetworkPassword" data-a="${netId}" style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer">Save</button>
-        <button data-act="cancelPasswordInput" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer">Cancel</button>
-      </div>
-    </div>
-  </div>`;
 }
 function renameNetwork(){
   const net=currentNet(); if(!net) return;
@@ -4335,16 +4293,14 @@ function renameNetwork(){
 function openInvite(){ A.showInvite=true; A.showNetPicker=false; renderApp(); }
 // Native share sheet for invites, with a clipboard fallback
 function inviteUrl(net){
-  // The invite link carries only the join code — never the password. A password-
-  // protected network's password is shared separately, so a forwarded link alone
+  // The invite link carries only the join code.
   // can't grant access.
   return SITE_URL+'/?join='+net.code;
 }
 function shareInvite(){
   const net=currentNet(); if(!net) return;
   const url=inviteUrl(net);
-  const pwNote=net.password?' You\'ll also need the password, which I\'ll send you separately.':'';
-  const text='Join my private Moments network "'+net.name+'". Use code '+net.code+' (or scan the QR).'+pwNote;
+  const text='Join my private Moments network "'+net.name+'". Use code '+net.code+' (or scan the QR).';
   if(navigator.share){
     navigator.share({ title:"Join "+net.name+" on Moment's", text, url }).catch(()=>{});
   } else {
@@ -4922,6 +4878,11 @@ function applyAvatarToDom(memberId, url){
 }
 
 function makeCode(){
+  // ⚠ The alphabet length MUST stay a power of two. `rnd[i] % length` is only
+  // unbiased because 256 divides evenly by 32; at 33 characters the first 25
+  // symbols would appear ~3% more often, silently weakening every code with no
+  // visible error. If a character is ever added or removed here, switch to
+  // rejection sampling instead of `%`.
   const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no I,O,0,1
   const rnd=crypto.getRandomValues(new Uint8Array(12));
   let out='';
@@ -4935,7 +4896,7 @@ function createNetwork(){
   if(!name) name='My Network';
   const id='net-'+Date.now();
   const emoji=NET_EMOJIS[Math.floor(Math.random()*NET_EMOJIS.length)];
-  A.networks[id]={ id, name, nameTs:Math.floor(Date.now()/1000), code:makeCode(), emoji, color:C.accent, ownerPk:myPubkey(), removed:{}, deleted:{}, _pendingRemoves:[],
+  A.networks[id]={ id, name, nameTs:Math.floor(Date.now()/1000), code:makeCode(), emoji, color:C.accent, ownerPk:myPubkey(), hadOwner:true, removed:{}, deleted:{}, _pendingRemoves:[],
     membersCanPost:true,   // everyone can post by default until the owner changes it
     members:[{id:"u1",name:A.profile.name||"You",emoji:"🧡",color:C.warm,isMe:true,npub:A.npub,avatar:A.profile.avatar||null,bio:A.profile.bio||"",signal:normSignal(A.profile.signal)}],
     posts:[] };
@@ -4955,15 +4916,10 @@ function joinNetworkByCode(){
   const input=document.getElementById('join-code-input');
   const code=parseScannedCode((input&&input.value)||'')||'';
   if(code.length<6) return;
-  // No inline password box any more — a password-protected network is handled by
-  // the pop-up (promptJoinPassword) after the first join attempt fails.
-  const pw='';
-  joinWithCode(code, pw);
+  joinWithCode(code);
 }
-// Tracks passwords entered when joining, validated on first meta event
-const _pendingJoinPasswords={};
 
-function joinWithCode(rawCode, enteredPassword){
+function joinWithCode(rawCode){
   const code=parseScannedCode(rawCode)||String(rawCode||'').trim().toUpperCase();
   if(code.length<6) return false;
   if(A.deletedNets && A.deletedNets[code]){ showToast('That network was deleted by its owner'); return false; }
@@ -4973,8 +4929,6 @@ function joinWithCode(rawCode, enteredPassword){
   A.networks[id]={ id, name:'Private network', nameTs:0, code, emoji:"🔗", color:C.accent, ownerPk:'', removed:{}, deleted:{}, _pendingRemoves:[],
     members:[{id:"u1",name:A.profile.name||"You",emoji:"🧡",color:C.warm,isMe:true,npub:A.npub,avatar:A.profile.avatar||null,bio:A.profile.bio||"",signal:normSignal(A.profile.signal)}],
     posts:[] };
-  // Store whatever password the user entered (even blank) for validation when meta arrives
-  _pendingJoinPasswords[id] = enteredPassword||'';
   // Remember WHEN I joined (survives a later leave/removal — see A.joinTs). A
   // replayed 'remove' event older than this must never kick me out again.
   if(!A.joinTs) A.joinTs={};
@@ -5079,33 +5033,6 @@ function parseScannedCode(text){
    their phone's native camera (which opens the join link). */
 let _camStream=null, _scanTimer=null, _connTimer=null, _syncTimer=null, _timeTimer=null;
 
-// After entering a code (or arriving via an invite link), prompt for optional password then join
-function promptJoinPassword(code){
-  A.pendingJoinCode=code; renderApp();
-}
-function confirmJoinWithPassword(){
-  const inp=document.getElementById('join-pw-prompt');
-  const pw=(inp&&inp.value.trim())||'';
-  const code=A.pendingJoinCode;
-  A.pendingJoinCode=null;
-  joinWithCode(code, pw);
-}
-function cancelJoinPrompt(){ A.pendingJoinCode=null; renderApp(); }
-function buildJoinPasswordPrompt(){
-  return `
-  <div data-act="cancelJoinPrompt" style="position:absolute;inset:0;z-index:92;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;padding:24px">
-    <div data-act="noop" data-stop style="background:${C.bg};border-radius:20px;padding:22px 20px;width:100%;max-width:340px">
-      <div style="color:${C.text};font-size:16px;font-weight:700;margin-bottom:4px">Join network</div>
-      <div style="color:${C.muted};font-size:12px;margin-bottom:4px;font-family:monospace">${esc(A.pendingJoinCode||'')}</div>
-      <div style="color:${C.muted};font-size:12px;margin-bottom:14px">This network is password-protected. Enter its password to join.</div>
-      <input id="join-pw-prompt" type="text" placeholder="Network password" autocomplete="off" style="width:100%;background:${C.surfaceHigh};border:1.5px solid ${C.accentBorder};outline:none;border-radius:12px;padding:12px 14px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-bottom:14px" data-act-keydown="joinPwKeydown"/>
-      <div style="display:flex;gap:10px">
-        <button data-act="confirmJoinWithPassword" style="flex:1;background:${C.accent};color:#0F0F14;border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:700;cursor:pointer">Join →</button>
-        <button data-act="cancelJoinPrompt" style="flex:1;background:${C.surfaceHigh};color:${C.text};border:none;border-radius:12px;padding:13px 0;font-size:14px;font-weight:600;cursor:pointer">Cancel</button>
-      </div>
-    </div>
-  </div>`;
-}
 
 function recomputeLikes(p){
   const lb=p.likeBy||{};
@@ -6592,14 +6519,6 @@ function buildNetwork(net){
       </div>
     </div>
     ${owner?`
-    <button data-act="setNetworkPassword" data-a="${net.id}" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-top:14px">
-      <span style="font-size:18px">🔒</span>
-      <div style="flex:1">
-        <div style="color:${C.text};font-size:14px;font-weight:600">Password protection</div>
-        <div style="color:${C.muted};font-size:12px;margin-top:2px">${net.password?'Password set — tap to change or remove':'Off — anyone with the code can join'}</div>
-      </div>
-      <span style="color:${C.muted};font-size:18px">›</span>
-    </button>
     <button data-act="toggleMemberPosting" data-a="${net.id}" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:16px;padding:14px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px;margin-top:14px">
       <span style="font-size:18px">✍️</span>
       <div style="flex:1">
@@ -6705,6 +6624,12 @@ function activityItems(net){
   if(net.pendingAvatarUpload){
     items.unshift({ key:'sys:pendingavatar', kind:'pendingavatar', ts:net.pendingAvatarUpload, system:true });
   }
+  // Someone took over this network after it was left without an owner. Any
+  // code-holder can win that race, so make it visible rather than silent. Dismissable
+  // — once you've seen it, it's noise.
+  if(net.ownerTakeover && net.ownerTakeover.pk && !dismissed['sys:takeover:'+net.ownerTakeover.pk]){
+    items.unshift({ key:'sys:takeover:'+net.ownerTakeover.pk, kind:'takeover', pk:net.ownerTakeover.pk, ts:net.ownerTakeover.ts||0, system:true });
+  }
   _actsMemo={ net, items };
   return items;
 }
@@ -6733,6 +6658,19 @@ function buildActivity(net){
           <div style="color:${C.text};font-size:13px;line-height:1.5;font-weight:700">Your profile picture hasn’t sent yet</div>
           <div style="color:${C.textDim};font-size:13px;margin-top:3px;line-height:1.5">It’s saved on this device but couldn’t upload. Tap here to open your profile and save again while you’re online.</div>
         </div>
+      </div>`;
+    }
+    // Someone claimed this network after it was left ownerless. Dismissable.
+    if(it.kind==='takeover'){
+      const who=esc((memberIn(net,it.pk).name)||'A member');
+      const w=it.ts?esc(relTime(it.ts*1000)):'';
+      return `<div style="background:${C.surface};border:1px solid var(--c-border);border-radius:14px;padding:12px 14px;display:flex;gap:11px;align-items:flex-start">
+        <div style="flex-shrink:0;font-size:18px;line-height:1.2">\u{1F511}</div>
+        <div style="flex:1;min-width:0">
+          <div style="color:${C.text};font-size:13px;line-height:1.5;font-weight:700">${who} is now the owner of this network</div>
+          <div style="color:${C.textDim};font-size:13px;margin-top:3px;line-height:1.5">It was left without an owner, and they took it over${w?' '+w:''}. Anyone with the join code can do this, so check it was someone you expect.</div>
+        </div>
+        <button data-act="dismissActivity" data-a="${net.id}" data-b="${esc(it.key)}" aria-label="Dismiss" style="background:none;border:none;color:${C.muted};font-size:15px;cursor:pointer;padding:0 2px;flex-shrink:0">\u00d7</button>
       </div>`;
     }
     const mem=memberIn(net,it.pk);
@@ -7788,7 +7726,6 @@ registerActions({
   openInvite:         ()=>openInvite(),
   openProfile:        id=>openProfile(id),
   renameNetwork:      ()=>renameNetwork(),
-  setNetworkPassword: id=>setNetworkPassword(id),
   setTab:             i=>setTab(i),
   toggleMemberPosting:id=>toggleMemberPosting(id),
   removeMember:       (nid,mid)=>removeMember(nid,mid),
@@ -7930,16 +7867,11 @@ registerActions({
   vanishCancel:      ()=>vanishCancel(),
   vanishTyped:       el=>vanishTyped(el),
   vanishGo:          ()=>vanishGo(),
-  cancelJoinPrompt:  ()=>cancelJoinPrompt(),
-  joinPwKeydown:     (el,ev)=>{ if(ev.key==='Enter') confirmJoinWithPassword(); },
-  confirmJoinWithPassword:()=>confirmJoinWithPassword(),
   cancelEditCaption: ()=>cancelEditCaption(),
   setEditCaptionDraft: el=>setEditCaptionDraft(el.value),
   saveEditCaption:   ()=>saveEditCaption(),
   confirmNo:         ()=>confirmNo(),
   confirmYes:        ()=>confirmYes(),
-  cancelPasswordInput:()=>cancelPasswordInput(),
-  saveNetworkPassword:id=>saveNetworkPassword(id),
   // sheets
   toggleWhatsNew:    v=>toggleWhatsNew(v),
   closeWhatsNew:     ()=>closeWhatsNew(),
@@ -8045,7 +7977,7 @@ function renderApp(){
       ${A.showEcosystem?buildEcosystem():""}
       ${A.showVanish?buildVanishConfirm():""}
       ${A.confirmMsg?buildConfirm():""}
-      ${A.pendingJoinCode?buildJoinPasswordPrompt():""}`;
+`;
     const jh = header + `
     <div id="screen-root" style="flex:1;display:flex;flex-direction:column;position:relative;overflow:hidden">
       ${buildJoinScreen()}${jOverlays}
@@ -8101,8 +8033,6 @@ function renderApp(){
       ${A.menuPostId?buildPostMenu():""}
       ${A.editCaptionId?buildEditCaption():""}
       ${A.likersPostId?buildLikers(net):""}
-      ${A.showPasswordInput?buildPasswordInput(A.showPasswordInput):""}
-      ${A.pendingJoinCode?buildJoinPasswordPrompt():""}
     </div>
     <div style="position:absolute;bottom:0;left:0;right:0;background:var(--c-navBg);backdrop-filter:blur(20px);border-top:1px solid var(--c-border);padding:10px 0 calc(18px + env(safe-area-inset-bottom, 0px));display:flex;justify-content:space-around;z-index:30">
       ${tabs}
@@ -8457,13 +8387,9 @@ let _pendingJoin=null, _pendingPw=null;
     const m=(location.search||'').match(/[?&]join=([^&#\s]+)/i) || (location.hash||'').match(/join=([^&#\s]+)/i);
     if(m){
       _pendingJoin=decodeURIComponent(m[1]).toUpperCase();
-      // New invite links no longer include the password (it's shared separately).
-      // We still read #pw= / ?pw= here so older links that predate this change keep working;
-      // if there's no password in the link, the join screen prompts the user for it.
-      const pwHash=(location.hash||'').match(/[#&]pw=([^&\s]+)/i);
-      const pwQuery=(location.search||'').match(/[?&]pw=([^&#\s]+)/i);
-      const pw=pwHash||pwQuery;
-      if(pw) _pendingPw=decodeURIComponent(pw[1]);
+      // Network passwords were removed in 0.9.5 (they were never cryptographic —
+      // the key comes from the code alone). Any ?pw=/#pw= on an old link is ignored;
+      // it's still stripped from the address bar below.
       try{ history.replaceState(null,'',location.pathname); }catch(_){}  // strip code/password from the address bar
     }
   }catch(_){}

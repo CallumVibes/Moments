@@ -39,7 +39,7 @@
        custom relays and members' media lives on arbitrary Blossom hosts. style-src keeps
        'unsafe-inline' (the whole UI is inline styles; styles can't execute JS).
        worker-src 'self' pre-clears the v0.9 service worker. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-XnGO7VDchYKW4i5dyvGeCC+LWsnBwzxrZt9Pqz5fP5o='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-Qvd0pPI0eqtKjPTC6ULJXZY7EgZdgaWBg3qcel7hgCY='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -3190,6 +3190,7 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // must never sit on top. ──
 const CHANGELOG=[
   { v:'0.9.5', date:'August 2026', title:'Tighter', changes:[
+    ['new','Reactions are easier to find \u2014 tap the + beside a post to pick one, and tap anyone else\u2019s reaction to add yours'],
     ['change','Network passwords have been removed. They looked like protection but weren\u2019t: the join code alone unlocks a network, so the password was only ever a speed bump for people using the normal app. Treat your join code as the real key and share it carefully'],
     ['fix','Security hardening across how posts, photos and network details are received'],
     ['fix','Your light/dark choice is remembered properly \u2014 dark no longer switches itself to light'],
@@ -4085,11 +4086,23 @@ function claimOwnership(netId){
    The owner publishes an encrypted net-delete tombstone; every member's client
    verifies the owner signature and removes the network locally. The join code
    is marked dead in A.deletedNets so rejoining can't resurrect it from backfill. */
-function applyNetDelete(netId, ts){
+// A tombstone is either a bare timestamp (legacy) or {ts, self} — self meaning THIS
+// device deleted the network, rather than receiving the owner's tombstone. Only the
+// wording differs; both block a rejoin identically.
+function netTombstone(code){
+  const v=A.deletedNets && A.deletedNets[code];
+  if(!v) return null;
+  return (typeof v==='number') ? {ts:v, self:false} : v;
+}
+function markNetDeleted(code, ts, self){
+  if(!code) return;
+  if(!A.deletedNets) A.deletedNets={};
+  A.deletedNets[code]={ ts: ts||Math.floor(Date.now()/1000), self: !!self };
+}
+function applyNetDelete(netId, ts, self){
   const net=A.networks[netId]; if(!net) return;
   const name=net.name||'This network';
-  if(!A.deletedNets) A.deletedNets={};
-  if(net.code) A.deletedNets[net.code]=ts||Math.floor(Date.now()/1000);
+  markNetDeleted(net.code, ts, !!self);
   try{ if(A.netKeys[netId]) Relay.unsubscribe('moments-'+A.netKeys[netId].tag); }catch(e){}
   delete A.networks[netId];
   if(A.netKeys) delete A.netKeys[netId];
@@ -4113,7 +4126,7 @@ function applyNetDelete(netId, ts){
   } else if(!syncRenderBlocked()){
     renderSoon();
   }
-  showToast('"'+name+'" was deleted by its owner');
+  showToast(self ? '"'+name+'" deleted' : '"'+name+'" was deleted by its owner');
 }
 function deleteNetworkAsk(netId){ A.confirmDeleteNet=netId; renderApp(); }
 function cancelDeleteNet(){ A.confirmDeleteNet=null; renderApp(); }
@@ -4145,7 +4158,7 @@ async function confirmDeleteNetwork(){
   // Leaving a network is the non-owner action, and it has its own path.
   if(!isOwner(A.networks[netId])) return;
   await publishNetDelete(netId);
-  applyNetDelete(netId, Math.floor(Date.now()/1000));
+  applyNetDelete(netId, Math.floor(Date.now()/1000), true);   // I did this myself
 }
 function buildDeleteNetConfirm(){
   const net=A.networks[A.confirmDeleteNet]; if(!net) return '';
@@ -4210,8 +4223,7 @@ async function _doLeave(netId){
   // accidentally resurrect it from backfill by rejoining.
   const lastMember=(net.members||[]).filter(m=>!m.isMe).length===0;
   if(lastMember){
-    if(!A.deletedNets) A.deletedNets={};
-    if(net.code) A.deletedNets[net.code]=Math.floor(Date.now()/1000);
+    markNetDeleted(net.code, Math.floor(Date.now()/1000), true);
     if(isOwner(net) || !net.ownerPk) await publishNetDelete(netId);
   }
   await publishLeave(netId);   // tell everyone else I'm leaving (so my name doesn't linger)
@@ -4922,7 +4934,14 @@ function joinNetworkByCode(){
 function joinWithCode(rawCode){
   const code=parseScannedCode(rawCode)||String(rawCode||'').trim().toUpperCase();
   if(code.length<6) return false;
-  if(A.deletedNets && A.deletedNets[code]){ showToast('That network was deleted by its owner'); return false; }
+  const _tomb=netTombstone(code);
+  if(_tomb){
+    // Distinguish "I deleted this" from "someone else deleted it" — the old wording
+    // blamed the owner even when the owner was you.
+    showToast(_tomb.self ? 'You deleted that network \u2014 its code can\u2019t be reused'
+                         : 'That network was deleted by its owner');
+    return false;
+  }
   const existing=Object.values(A.networks).find(nw=>nw.code===code);
   if(existing){ switchNetwork(existing.id); return true; }
   const id='net-'+Date.now();
@@ -5060,6 +5079,29 @@ function reactionGlyphs(p){
   const glyphs=Object.keys(counts).sort((a,b)=>counts[b]-counts[a]).slice(0,3).join('');
   return glyphs||'♡';
 }
+// Reactions shown as tappable chips: you can see what others used and join with one
+// tap, instead of the picker being hidden behind a 450ms long-press nobody discovers.
+// The long-press still works; a visible "+" opens the same sheet. Counts stay small
+// and unordered-by-popularity on purpose — this is a family circle, not a leaderboard.
+function reactionChips(post){
+  const lb=post.likeBy||{}; const counts={}; const mk=myPubkey()||'self';
+  let mine=null;
+  Object.keys(lb).forEach(pk=>{
+    const e=lb[pk]; if(!e||!e.v) return;
+    const g=normEmo(e.emo)||'♥';
+    counts[g]=(counts[g]||0)+1;
+    if(pk===mk) mine=g;
+  });
+  const glyphs=Object.keys(counts);
+  const chips=glyphs.map(g=>{
+    const isMine=(mine===g);
+    return `<button data-act="setReaction" data-a="${esc(post.id)}" data-b="${esc(g)}" data-stop aria-label="React ${esc(g)}"
+      style="background:${isMine?C.accentDim:C.surfaceHigh};border:1px solid ${isMine?C.accentBorder:'transparent'};border-radius:20px;padding:3px 9px;display:flex;align-items:center;gap:4px;cursor:pointer;font-size:13px;color:${isMine?C.accent:C.textDim};font-weight:600">
+      <span>${esc(g)}</span><span style="font-size:11px">${counts[g]}</span></button>`;
+  }).join('');
+  return chips;
+}
+
 // Pick a reaction from the sheet. Tapping your current one removes it.
 function setReaction(pid, emo){
   const net=currentNet(); const p=net&&net.posts.find(x=>x.id===pid); if(!p) return;
@@ -6442,9 +6484,11 @@ function buildFeed(net){
             ${post.modHidden?`<div style="background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);border-radius:12px;padding:10px 12px;margin:10px 0 4px;font-size:12px;color:${C.red};line-height:1.5">🚫 The network owner hid this from other members. Only you can still see it.
               <button data-act="askDeletePost" data-a="${post.id}" style="display:block;margin-top:8px;background:none;border:1px solid rgba(248,113,113,0.4);color:${C.red};border-radius:10px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer">Delete it everywhere</button></div>`:''}
             <div style="display:flex;align-items:center;gap:14px">
-              <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" data-act-pointerdown="likePress" data-a="${post.id}" data-act-pointerup="likeRelease" data-a="${post.id}" data-act-pointercancel="likeCancel" data-act-pointerleave="likeCancel" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:13px;font-weight:600;user-select:none;-webkit-user-select:none">
-                <span style="font-size:17px">${reactionGlyphs(post)}</span>
+              <button aria-label="${post.liked?'Unlike':'Like'}" class="like-btn" data-like-pid="${post.id}" data-act-pointerdown="likePress" data-a="${post.id}" data-act-pointerup="likeRelease" data-act-pointercancel="likeCancel" data-act-pointerleave="likeCancel" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${post.liked?C.warm:C.muted};font-size:13px;font-weight:600;user-select:none;-webkit-user-select:none">
+                <span style="font-size:17px">${post.liked?'♥':'♡'}</span>
               </button>
+              ${reactionChips(post)}
+              <button data-act="openLikers" data-a="${post.id}" aria-label="Add a reaction" style="background:none;border:1px solid var(--c-border);border-radius:20px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:${C.muted};font-size:14px;line-height:1;padding:0">+</button>
               <button data-act="openReplies" data-a="${post.id}" aria-label="Comments" style="background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:5px;color:${C.muted};font-size:13px;font-weight:600">
                 <span style="font-size:15px">💬</span><span class="cmt-count" data-cmt-pid="${post.id}" data-fmt="feed">${post.replies.length>0?post.replies.length:""}</span>
               </button>
@@ -7745,6 +7789,7 @@ registerActions({
   useAvatarUrl:       ()=>useAvatarUrl(),
   openPostMenu:       (nid,pid)=>openPostMenu(nid,pid),
   openReplies:        id=>openReplies(id),
+  openLikers:         id=>showLikers(id),
   toggleLike:         id=>toggleLike(id),
   removePendingExtra: i=>removePendingExtra(i),
   setMyTab:           t=>setMyTab(t),

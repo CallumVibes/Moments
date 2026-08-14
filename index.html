@@ -39,7 +39,7 @@
        custom relays and members' media lives on arbitrary Blossom hosts. style-src keeps
        'unsafe-inline' (the whole UI is inline styles; styles can't execute JS).
        worker-src 'self' pre-clears the v0.9 service worker. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-Qvd0pPI0eqtKjPTC6ULJXZY7EgZdgaWBg3qcel7hgCY='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-sx12fU+GsVEExPxDOUb+uHuzz4SXjVMGknrG93SKjWc='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -271,10 +271,10 @@
     <div class="screen active" id="ss1">
       <span class="modal-logo">Moment's</span>
       <h2 class="modal-title" style="margin-top:14px">Create your identity</h2>
-      <p class="modal-sub">No email. No password. No servers.<br>Your moment key is your identity — forever.</p>
+      <p class="modal-sub">No email. No password. No servers.<br>Just a key that belongs to you.</p>
       <div class="warn-box">
-        <span class="warn-icon">⚠️</span>
-        <span>Moment's has no accounts. Your <strong>nsec key IS your identity</strong>. Lose it and access is gone permanently — there is no recovery.</span>
+        <span class="warn-icon">🔑</span>
+        <span>Your <strong>moment key</strong> is your account. We'll show it to you next — save it somewhere safe, like a password manager.</span>
       </div>
       <button class="btn-primary" id="btn-gen" data-act="generateKeys">Generate My Keys →</button>
       <p class="modal-switch">Already have a key? <a data-act="switchModal" data-a="signup" data-b="login">Log in</a></p>
@@ -284,7 +284,7 @@
     <div class="screen" id="ss2">
       <span class="modal-logo">Moment's</span>
       <h2 class="modal-title" style="margin-top:14px">Your moment key</h2>
-      <p class="modal-sub">This <strong style="color:var(--warm)">key</strong> is the only way back into your account. Save it somewhere safe.</p>
+      <p class="modal-sub">This <strong style="color:var(--warm)">key</strong> is the only way back into your account. There's no email reset and nobody can recover it for you — so save it somewhere safe.</p>
       <div class="key-box" style="border-color:rgba(242,196,176,.35)">
         <span class="key-label" style="color:rgba(242,196,176,.7)">⚠ Moment key — NEVER share this</span>
         <span class="nsec-value" id="show-nsec" style="filter:blur(5px);cursor:pointer;user-select:none" data-act="toggleBlur" role="button" tabindex="0" aria-label="Reveal or hide secret key">tap to reveal</span>
@@ -3189,6 +3189,11 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // live app version and drives the What's New badge, so a version with no changes
 // must never sit on top. ──
 const CHANGELOG=[
+  { v:'0.9.6', date:'August 2026', title:'Small print', changes:[
+    ['change','Creating a network now takes you straight to inviting someone \u2014 a network of one isn\u2019t much of a network'],
+    ['change','Gentler wording when you create your identity. The full \u201cthere\u2019s no recovery\u201d warning now sits on the key screen, where it matters'],
+    ['fix','Clearer wording when you try to rejoin a network you deleted yourself'],
+  ]},
   { v:'0.9.5', date:'August 2026', title:'Tighter', changes:[
     ['new','Reactions are easier to find \u2014 tap the + beside a post to pick one, and tap anyone else\u2019s reaction to add yours'],
     ['change','Network passwords have been removed. They looked like protection but weren\u2019t: the join code alone unlocks a network, so the password was only ever a speed bump for people using the normal app. Treat your join code as the real key and share it carefully'],
@@ -4922,6 +4927,10 @@ function createNetwork(){
   requestNotifPermission();
   publishMeta(id);          // share the network name + owner with everyone who joins
   publishProfileTo(id);     // announce the creator as a member, so joiners see them even before any posts exist
+  // Close the loop: a brand-new network is empty, and the first thing that makes it
+  // feel like anything is a second person in it. Land on the invite sheet rather than
+  // an empty feed, so the obvious next step is bringing someone in.
+  A.showInvite=true; renderApp();
 }
 
 function joinNetworkByCode(){
@@ -7043,7 +7052,7 @@ function buildInvite(net){
     </div>
     <div class="hide-scroll" style="flex:1;padding:0 24px;display:flex;flex-direction:column;gap:14px;overflow-y:auto">
       <div style="background:${C.surface};border-radius:18px;padding:16px">
-        <div style="color:${C.text};font-size:13px;font-weight:600;margin-bottom:4px">Private by design</div>
+        <div style="color:${C.text};font-size:13px;font-weight:600;margin-bottom:4px">${((net.members||[]).length<=1)?'Bring someone in':'Private by design'}</div>
         <div style="color:${C.textDim};font-size:12px;line-height:1.65">Scanning this code is the only way in. No one outside ${esc(net.name)} can see any photos, pages, or replies — ever.</div>
       </div>
       <div style="background:${C.surface};border-radius:22px;padding:22px;display:flex;flex-direction:column;align-items:center;gap:14px">
@@ -7886,7 +7895,13 @@ registerActions({
 // Landing page, modals, nav, confirm dialogs and remaining sheets:
 registerActions({
   openActivity:      ()=>openActivity(),
-  openModal:         id=>openModal(id),
+  openModal:         id=>{
+    // An invite link waiting to be redeemed skips the key ceremony: startInviteSignup
+    // generates the key silently and jumps to the name step, so the joiner lands in a
+    // populated network first and is nudged to back up afterwards.
+    if(id==='signup' && _pendingJoin) return startInviteSignup();
+    openModal(id);
+  },
   closeModal:        id=>closeModal(id),
   switchModal:       (a,b)=>switchModal(a,b),
   overlayClick:      (id,el,ev)=>overlayClick(ev,id),
@@ -8450,7 +8465,10 @@ autoLogin().then(loggedIn=>{
     const banner=document.getElementById('invite-banner');
     const btn=document.getElementById('hero-signup-btn');
     if(banner){ banner.style.display='block'; }
-    if(btn){ btn.textContent='Join the network →'; btn.onclick=function(){ startInviteSignup(); }; }
+    // Only the label changes here. The button keeps its delegated data-act; the
+    // openModal action itself routes to the invite flow when a join is pending, so
+    // there's ONE handler rather than a direct .onclick racing the delegated one.
+    if(btn){ btn.textContent='Join the network →'; }
     // Update signup modal title/sub to reflect the invite context
     const title=document.querySelector('#modal-signup .modal-title');
     const sub=document.querySelector('#modal-signup .modal-sub');

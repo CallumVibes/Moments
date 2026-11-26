@@ -85,7 +85,7 @@ function oprfRandomBlind(){
 /* One OPRF round against one server. Returns the unblinded point's compressed
    bytes. The caller never sends anything derived from the PIN in the clear;
    `tag` is an opaque per-account value used only for rate limiting. */
-async function oprfEvaluate(url, tag, point, timeoutMs){
+async function oprfEvaluate(url, tag, point, timeoutMs, proof){
   const C=_oprfCurve(), n=C.CURVE.n;
   const r=oprfRandomBlind();
   const blinded=point.multiply(r);
@@ -97,7 +97,12 @@ async function oprfEvaluate(url, tag, point, timeoutMs){
     res=await fetch(url.replace(/\/+$/,'')+'/evaluate', {
       method:'POST',
       headers:{'content-type':'application/json'},
-      body:JSON.stringify({ v:1, tag:tag, blinded:blinded.toHex(true) }),
+      // `proof` is a fresh ID token for a social enrollment. The server needs it
+      // because that enrollment's tag derives from a public identifier, so a
+      // tag alone proves nothing about who is asking.
+      body:JSON.stringify(proof
+        ? { v:1, tag:tag, blinded:blinded.toHex(true), social:true, proof:proof }
+        : { v:1, tag:tag, blinded:blinded.toHex(true) }),
       signal:ctl.signal,
       // No cookies, no credentials: the server must not be able to build a
       // profile across requests beyond the rate-limit tag it is given.
@@ -110,6 +115,7 @@ async function oprfEvaluate(url, tag, point, timeoutMs){
   }finally{ clearTimeout(timer); }
 
   if(res.status===429) throw new Error('oprf-rate-limited');
+  if(res.status===401) throw new Error('oprf-proof-rejected');
   if(!res.ok) throw new Error('oprf-server-error');
   let body;
   try{ body=await res.json(); }catch(_){ throw new Error('oprf-bad-response'); }
@@ -131,10 +137,10 @@ async function oprfEvaluate(url, tag, point, timeoutMs){
    root secret. Order is fixed by the server list so the root is reproducible,
    and every server's output is required — a partial result must never silently
    produce a weaker key. */
-async function oprfRoot(servers, tag, pinInput){
+async function oprfRoot(servers, tag, input, proof){
   if(!Array.isArray(servers) || servers.length<1) throw new Error('oprf-no-servers');
-  const point=await oprfHashToCurve(OPRF_DOMAIN, pinInput);
+  const point=await oprfHashToCurve(OPRF_DOMAIN, input);
   const parts=[];
-  for(const url of servers) parts.push(await oprfEvaluate(url, tag, point));
+  for(const url of servers) parts.push(await oprfEvaluate(url, tag, point, undefined, proof));
   return await sha256(concatBytes(strToBytes(OPRF_DOMAIN+':root:'), ...parts));
 }

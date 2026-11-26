@@ -181,6 +181,27 @@ function vaultPinStrength(pin){
   return { ok:true, why:'' };
 }
 
+/* ── Social factor ──
+   The tag MUST match what the server recomputes from the verified token, or
+   the proof could be paired with someone else's tag. */
+async function vaultSocialTag(issuer, sub){
+  return bytesToHex(await sha256(strToBytes('moments:oprf:social:v1:'+issuer+':'+sub)));
+}
+
+/* `pin` is optional. Without it, the vault is reachable by anyone who can
+   authenticate as this user to the provider — which includes the provider.
+   With it, the provider would additionally have to guess a PIN that the OPRF
+   servers rate-limit. */
+async function vaultKeysFromSocial(ident, pin){
+  if(!vaultPinAvailable()) throw new Error('pin-unavailable');
+  if(!ident || !ident.sub || !ident.idToken) throw new Error('social-bad-token');
+  const issuer=(SOCIAL_PROVIDERS[ident.provider]||{}).issuer||'';
+  const extra=String(pin||'').replace(/\D/g,'');
+  const input=await sha256(strToBytes('moments:social:v1:'+issuer+':'+ident.sub+':'+extra));
+  const root=await oprfRoot(VAULT_OPRF_SERVERS, await vaultSocialTag(issuer, ident.sub), input, ident.idToken);
+  return vaultKeysFromRoot(root, 'social');
+}
+
 /* A passphrase is the only factor an attacker can guess at, so refuse the ones
    that make the whole design pointless. Deliberately not a strength meter:
    it is a floor, and it blocks rather than warns. */
@@ -371,7 +392,13 @@ function vaultErrText(err){
   if(m==='oprf-rate-limited') return 'Too many PIN attempts for that handle. Wait a while and try again — this is the limit that keeps a short PIN safe.';
   if(m==='oprf-unreachable'||m==='oprf-timeout') return "Couldn't reach the PIN servers. Check your connection, or use a recovery code.";
   if(m==='oprf-server-error'||m==='oprf-bad-response') return 'A PIN server answered incorrectly. Try again, or use a recovery code.';
-  if(m==='oprf-no-servers') return 'PIN sign-in needs two independent servers configured.';
+  if(m==='oprf-no-servers') return 'This sign-in method needs two independent servers configured.';
+  if(m==='oprf-proof-rejected') return 'That sign-in could not be verified. Try signing in again.';
+  if(m==='social-unconfigured') return 'This copy of Moments has no social sign-in configured.';
+  if(m==='social-popup-blocked') return 'Your browser blocked the sign-in window. Allow pop-ups for this site and try again.';
+  if(m==='social-cancelled') return 'Sign-in cancelled. Nothing was changed.';
+  if(m==='social-denied') return "That sign-in didn't complete. Try again, or use another method.";
+  if(m==='social-bad-token'||m==='social-timeout') return 'That sign-in could not be completed. Try again, or use another method.';
   if(m==='oprf-unavailable'||m==='oprf-h2c-failed') return "This browser can't do the PIN calculation. Use a recovery code instead.";
   return 'Something went wrong. '+(m||'Please try again.');
 }
@@ -422,6 +449,77 @@ async function signupPasskey(){
   }finally{
     if(btn){ btn.disabled=false; setLabel('⚡ Create with Face ID / Fingerprint'); }
   }
+}
+
+/* Signup with a social account: no key shown, no code to save, no passphrase.
+   A recovery code is still enrolled and offered, because a provider account can
+   be lost or closed — but it is not forced, which is the whole point. */
+async function signupSocial(provider){
+  const btn=document.getElementById('btn-social-'+provider);
+  const label=(SOCIAL_PROVIDERS[provider]||{}).label||provider;
+  const setLabel=t=>{ if(btn) btn.textContent=t; };
+  if(btn) btn.disabled=true;
+  vaultMsg('social-err','');
+  try{
+    setLabel('Waiting for '+label+'…');
+    const ident=await socialSignIn(provider);
+    setLabel('Setting up your account…');
+    const ek=await vaultKeysFromSocial(ident, '');
+
+    // Already enrolled? Then this is a sign-in, not a signup.
+    const existing=await vaultReadEnrollment(ek);
+    if(existing){ vaultAdopt(existing); return; }
+
+    const keys=nostrGenerate();
+    await vaultEnroll(keys.nsec, 'moments', ek);
+    const code=vaultGenRecoveryCode();
+    let codeOk=true;
+    try{ await vaultEnroll(keys.nsec, 'moments', await vaultKeysFromCode(code)); }
+    catch(_){ codeOk=false; }
+
+    _keyGeneratedHere=true;
+    _nsec=keys.nsec; _npub=keys.npub;
+    const dec=bech32Decode(_nsec); _sk=dec?dec.bytes:null;
+    _vaultCreated=true;
+    _vaultRecoveryCode=codeOk?code:'';
+    _vaultCodeSaved=false;
+    const nsecEl=document.getElementById('show-nsec');
+    if(nsecEl){ nsecEl.textContent=_nsec; nsecEl.style.filter='blur(5px)'; }
+    if(codeOk) showRecoveryCodeStep(); else toNameStep();
+  }catch(err){
+    vaultMsg('social-err', vaultErrText(err), true);
+  }finally{
+    if(btn){ btn.disabled=false; setLabel('Continue with '+label); }
+  }
+}
+
+async function loginSocial(provider){
+  const btn=document.getElementById('btn-social-login-'+provider);
+  const label=(SOCIAL_PROVIDERS[provider]||{}).label||provider;
+  const setLabel=t=>{ if(btn) btn.textContent=t; };
+  if(btn) btn.disabled=true;
+  vaultMsg('social-login-err','');
+  try{
+    setLabel('Waiting for '+label+'…');
+    const ident=await socialSignIn(provider);
+    setLabel('Finding your account…');
+    await vaultWaitForRelay(6000);
+    const obj=await vaultReadEnrollment(await vaultKeysFromSocial(ident, ''));
+    if(!obj){
+      vaultMsg('social-login-err', "That "+label+" account isn't linked to a Moments account yet. Create one, or use another way in.", true);
+      return;
+    }
+    vaultAdopt(obj);
+  }catch(err){
+    vaultMsg('social-login-err', vaultErrText(err), true);
+  }finally{
+    if(btn){ btn.disabled=false; setLabel('Continue with '+label); }
+  }
+}
+
+async function addSocialFactor(provider, pin){
+  const ident=await socialSignIn(provider);
+  await vaultEnroll(_nsec, _keyGeneratedHere?'moments':'imported', await vaultKeysFromSocial(ident, pin||''));
 }
 
 function showRecoveryCodeStep(){
@@ -561,9 +659,10 @@ async function addCodeFactor(){
 const LOGIN_METHODS=['code','pin','phrase','nsec'];
 function pickLogin(method){
   if(!LOGIN_METHODS.includes(method)) return;
-  const pk=document.getElementById('btn-passkey-login');
-  if(pk) pk.style.display='none';
-  vaultMsg('passkey-login-err','');
+  ['btn-passkey-login','social-login-or','btn-social-login-google'].forEach(id=>{
+    const el=document.getElementById(id); if(el) el.style.display='none';
+  });
+  vaultMsg('passkey-login-err',''); vaultMsg('social-login-err','');
   const ch=document.getElementById('login-chooser'); if(ch) ch.style.display='none';
   LOGIN_METHODS.forEach(m=>{
     const el=document.getElementById('lm-'+m);
@@ -585,7 +684,12 @@ function backToChooser(){
   const ch=document.getElementById('login-chooser'); if(ch) ch.style.display='';
   const pk=document.getElementById('btn-passkey-login');
   if(pk && vaultSupported()) pk.style.display='';
-  ['login-code-err','login-pin-err','login-phrase-err','passkey-login-err'].forEach(id=>vaultMsg(id,''));
+  if(socialAnyAvailable() && vaultPinAvailable()){
+    ['social-login-or','btn-social-login-google'].forEach(id=>{
+      const el=document.getElementById(id); if(el) el.style.display='';
+    });
+  }
+  ['login-code-err','login-pin-err','login-phrase-err','passkey-login-err','social-login-err'].forEach(id=>vaultMsg(id,''));
 }
 
 /* Reveal the passkey paths only where they can actually work; everywhere else
@@ -593,6 +697,18 @@ function backToChooser(){
 function vaultInitUi(){
   if(vaultPinAvailable()){
     const el=document.getElementById('pick-pin'); if(el) el.style.display='';
+  }
+  // Social needs BOTH a configured provider and the OPRF servers: without the
+  // servers the key would have to come from the token itself, which is public.
+  if(socialAnyAvailable() && vaultPinAvailable()){
+    Object.keys(SOCIAL_PROVIDERS).filter(socialAvailable).forEach(p=>{
+      ['btn-social-'+p,'btn-social-login-'+p].forEach(id=>{
+        const el=document.getElementById(id); if(el) el.style.display='';
+      });
+    });
+    ['social-or','social-login-or'].forEach(id=>{
+      const el=document.getElementById(id); if(el) el.style.display='';
+    });
   }
   if(!vaultSupported()) return;
   ['btn-passkey','passkey-or','btn-passkey-login','login-chooser-or'].forEach(id=>{

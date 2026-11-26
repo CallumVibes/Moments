@@ -53,6 +53,7 @@ none of them involves an account on anybody's server.
 
 | | What you hold | Works on a new device | Notes |
 |---|---|---|---|
+| **Continue with Google** | Nothing at all | Always | Easiest by far. Google *could* reach your key — see below |
 | **Passkey** | Face ID / fingerprint | Only if your passkey syncs *and* carries its PRF secret | One tap. Not guaranteed — see below |
 | **Handle + PIN** | 6+ digits | Always, while the PIN servers are up | Needs two OPRF servers — see below |
 | **Recovery code** | 26 characters, ~125 bits | Always | Generated at signup; save it |
@@ -80,18 +81,46 @@ key, relays cannot tell that two enrollments belong to one person, and cannot
 link either to the npub it restores. There is nothing to enumerate — finding a
 vault requires already knowing the factor that derives its locator.
 
-### Why not "sign in with Google"?
+### "Continue with Google" — what it does and does not protect
 
-Because it cannot be done without custody. If the only thing you supply is an
-OAuth token, then whoever validates that token and holds the blob can decrypt
-it — there is no secret left for you to hold. A provider login could *locate*
-an account; it can never be the key. So Moments asks you to hold the smallest
-possible thing instead: a passkey your phone already syncs, or a code.
+This is the easiest way in: tap one button, no key, no code, nothing to
+remember, on any device. Here is exactly what it is worth.
 
-(For the record: Proton has no third-party auth API, and Discord's OAuth has
-nowhere to store a blob at all. Google Drive's app-data folder would work, but
-its redirect URIs are per-host, which would silently break every self-hosted
-copy.)
+**Your key is not in your Google account, and Google cannot passively read
+it.** The encrypted vault lives on relays. The key that opens it is not in the
+token and is not derivable from it — which matters, because the `sub` claim a
+Google login yields is an *identifier, not a secret*: it is stable and handed
+to every app you authorize. A design that derived the key from `sub` would let
+anyone who learns your Google user ID open your vault. So instead the key comes
+from the two OPRF servers, which apply their secret only on proof of a fresh
+login.
+
+**But Google issues that proof.** Google can mint an ID token for any of its
+own users, present it, and obtain the key. No arrangement of storage or
+encryption changes this: *any lock whose only key is "can prove you are her to
+Google" is a lock Google can open.* The same is true of anyone who takes over
+the Google account.
+
+What the OPRF buys is the difference between Google **having** your key and
+Google having to **go and take** it — a deliberate, targeted act that mints a
+token for a named user and leaves a record on two independent third-party
+servers. Passive access becomes an active attack. That is a real improvement,
+and it is not the same as end-to-end encryption. Moments does not claim it is.
+
+**If you want that gap closed**, add a PIN to the social factor. Google can
+mint the token but does not know the PIN, and the OPRF servers rate-limit
+guesses. Then it takes Google *and* a successful guess.
+
+For most people — someone who would otherwise lose the account outright — a key
+protected by their Google account, with its 2FA and recovery flows, is far
+safer than a text file they will lose. Pick the row of the table that matches
+what you actually worry about.
+
+(On the others: Proton has no third-party auth API. Discord works the same way
+as Google here, since the blob goes on relays rather than at the provider.
+Redirect URIs are per-origin, so self-hosted copies need their own client ID —
+`SOCIAL_PROVIDERS` is empty by default and the buttons stay hidden until it is
+filled in.)
 
 ### How a 6-digit PIN can possibly be safe
 
@@ -180,6 +209,11 @@ Moments uses real cryptography, but it makes deliberate tradeoffs in favor of si
 - **Password handling.** Network passwords are never carried in invite URLs, and ownership of a network's password is locked to its verified original signer.
 - **Metadata.** Relays can see the opaque network tag, event timing, and sizes of encrypted blobs, even though they cannot read content.
 - **A recovery factor is a credential.** Anyone holding your recovery code — or your handle and PIN, or handle and passphrase — can take over the account, and you cannot revoke a factor remotely. Enroll only what you can keep private.
+- **Social sign-in trusts the provider.** With "Continue with Google", Google
+  can obtain your key if it chooses to, because it issues the only credential
+  involved. The two OPRF operators colluding could too, since a login reveals
+  your `sub` to them. Adding a PIN closes both. The other factors involve
+  neither party.
 - **PIN servers see a rate-limit tag.** To count attempts, each OPRF server receives an opaque hash of your handle. It never sees your handle, your PIN, or your npub, but it can tell that *some* account is being unlocked, and how often. That is the minimum a lockout requires.
 
 This software is provided "as is", without warranty of any kind (see [LICENSE](LICENSE)). It has not been independently audited. Do not rely on it for high-stakes confidentiality.

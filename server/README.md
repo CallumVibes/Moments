@@ -31,6 +31,25 @@ so neither operator alone can compute the root, and neither alone can grind.
 **The safety of a PIN rests on those two operators not colluding.** Two
 endpoints on one provider's infrastructure are one operator wearing two hats.
 
+## Social sign-in proofs
+
+A social enrollment's OPRF input derives from the provider's `sub`, which is an
+**identifier, not a secret** — stable and handed to every app the user
+authorizes. So the server refuses to evaluate a social tag unless the request
+carries a fresh, signed ID token for that same `sub`: signature checked against
+the issuer's JWKS, audience matched to a configured client ID, expiry and
+freshness enforced, and the tag recomputed from the verified claims so a proof
+cannot be paired with someone else's tag. A rejected proof is checked *before*
+the rate limit, so a stranger cannot burn a real user's budget.
+
+What this cannot defend against, by construction: **the identity provider
+itself**, which can mint a token for any of its users. That is inherent to
+social sign-in. The app says so plainly rather than implying otherwise, and
+offers an optional PIN on top for users who want the gap closed.
+
+Set `OPRF_AUDIENCES` to the client IDs you accept. With none set, every social
+request is refused rather than evaluated unproven.
+
 ## Running it
 
 ```sh
@@ -49,6 +68,7 @@ curve implementation.
 | `OPRF_BURST` | `10` | Attempts per tag per 10 minutes |
 | `OPRF_DAILY` | `60` | Attempts per tag per 24 hours |
 | `OPRF_ORIGIN` | `*` | Set this to your app's origin in production |
+| `OPRF_AUDIENCES` | *(none)* | Comma-separated OAuth client IDs accepted as proof. Empty = social refused |
 
 ## Before you put this in production
 

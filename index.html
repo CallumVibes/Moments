@@ -39,7 +39,7 @@
        custom relays and members' media lives on arbitrary Blossom hosts. style-src keeps
        'unsafe-inline' (the whole UI is inline styles; styles can't execute JS).
        worker-src 'self' pre-clears the v0.9 service worker. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-5DM5PX6YoQuohIXt85ix2WRLVGIz8WYpvmvxTJ+zDds='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-+U4xEhfVIjEXTgRFq0TRiURAQnaBXoXOW+WgJFy84oI='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -286,6 +286,9 @@
         <span class="warn-icon">🔑</span>
         <span>Your <strong>moment key</strong> is your account. We'll show it to you next — save it somewhere safe, like a password manager.</span>
       </div>
+      <button class="btn-primary" id="btn-social-google" data-act="signupSocial" data-a="google" style="display:none">Continue with Google</button>
+      <div class="field-error" id="social-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
+      <div class="divider" id="social-or" style="display:none">or</div>
       <button class="btn-primary" id="btn-passkey" data-act="signupPasskey" style="display:none">⚡ Create with Face ID / Fingerprint</button>
       <div class="field-error" id="passkey-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
       <div class="divider" id="passkey-or" style="display:none">or save a key yourself</div>
@@ -360,6 +363,9 @@
       <!-- One primary path, everything else behind a chooser. Stacking every
            factor at once turned this screen into a wall of five forms and three
            competing buttons; a person signing in only ever needs one of them. -->
+      <button class="btn-primary" id="btn-social-login-google" data-act="loginSocial" data-a="google" style="display:none">Continue with Google</button>
+      <div class="field-error" id="social-login-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
+      <div class="divider" id="social-login-or" style="display:none">or</div>
       <button class="btn-primary" id="btn-passkey-login" data-act="loginPasskey" style="display:none">⚡ Sign in with Face ID / Fingerprint</button>
       <div class="field-error" id="passkey-login-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
 
@@ -2045,6 +2051,158 @@ async function completeSignup(){
   }, 1500);
 }
 
+/* ==== src/social.js ==== */
+/* ════════════════════════════════════════════
+   SOCIAL SIGN-IN — "tied to her Google login"
+
+   The goal: someone who will never save an nsec, never write down a recovery
+   code, and should not have to. She taps "Continue with Google" and she is in,
+   on any device, forever.
+
+   The obvious design does not work, and it is worth saying why precisely,
+   because it is not about where the blob is stored or how it is encrypted.
+
+   Encrypt the nsec, park the blob anywhere, decrypt it on Google login — fine.
+   But what is the decryption key? She types nothing, so it has to come out of
+   the login itself. The only durable thing a Google login yields is the `sub`
+   claim, and `sub` is an IDENTIFIER, NOT A SECRET: stable, account-level, and
+   the same value handed to every app she authorizes. Deriving the key from it
+   would mean anyone who learns her Google user ID can open her vault. That is
+   worse than Google holding the key.
+
+   So the key cannot live in the token. It lives with the OPRF servers, which
+   apply their secret only on proof of a fresh login (see oprf.js). Google then
+   holds a blob it genuinely cannot open, and no amount of knowing `sub` helps.
+
+   WHAT THIS STILL DOES NOT DO, STATED PLAINLY
+   Google issues the proof. It can mint an ID token for any of its own users,
+   present that to the OPRF servers, and obtain the key. No arrangement of
+   storage or encryption changes this: any lock whose only key is "can prove you
+   are her to Google" is a lock Google can open.
+
+   That is not a reason to refuse the feature — it is a reason to label it
+   honestly. What the OPRF does buy is the difference between Google *having*
+   the key and Google having to *go and take* it: a deliberate, targeted act
+   that mints a token for a named user and leaves a record on two independent
+   third-party servers. Passive access becomes an active attack.
+
+   And for anyone who wants that gap closed, vaultKeysFromSocial takes an
+   optional PIN, which Google does not know and cannot mint, with the OPRF
+   servers rate-limiting guesses.
+════════════════════════════════════════════ */
+
+/* Provider config. Empty by default: a redirect URI must be pre-registered per
+   origin, so a self-hosted copy cannot use this app's client IDs. Fill these in
+   with your own and the buttons appear; leave them and they stay hidden rather
+   than offering something that will fail on redirect. */
+const SOCIAL_PROVIDERS={
+  google:{
+    label:'Google',
+    clientId:'',                                    // e.g. '1234-abc.apps.googleusercontent.com'
+    authUrl:'https://accounts.google.com/o/oauth2/v2/auth',
+    scope:'openid',
+    issuer:'https://accounts.google.com',
+  },
+};
+function socialAvailable(p){ return !!(SOCIAL_PROVIDERS[p] && SOCIAL_PROVIDERS[p].clientId); }
+function socialAnyAvailable(){ return Object.keys(SOCIAL_PROVIDERS).some(socialAvailable); }
+
+function _socialRandHex(n){
+  const b=new Uint8Array(n); crypto.getRandomValues(b);
+  return bytesToHex(b);
+}
+
+/* Read a JWT's payload WITHOUT verifying it. Safe here, and deliberately so:
+   nothing on the client trusts this token. It is forwarded to the OPRF servers,
+   which do verify it. If a user feeds us a bogus token they derive a different
+   key and open nothing — they cannot reach anyone else's vault. */
+function socialPeekClaims(jwt){
+  try{
+    const part=String(jwt).split('.')[1];
+    const b64=part.replace(/-/g,'+').replace(/_/g,'/');
+    const pad=b64+'='.repeat((4-b64.length%4)%4);
+    return JSON.parse(new TextDecoder().decode(_unb64(pad)));
+  }catch(_){ return null; }
+}
+
+/* The OAuth leg, as a popup.
+   A popup rather than a full-page redirect because a redirect would throw away
+   in-progress state, and rather than an iframe because the CSP sets
+   frame-src 'none' (and Google refuses to be framed regardless). */
+function socialSignIn(provider){
+  return new Promise((resolve,reject)=>{
+    const cfg=SOCIAL_PROVIDERS[provider];
+    if(!cfg || !cfg.clientId){ reject(new Error('social-unconfigured')); return; }
+
+    const nonce=_socialRandHex(16), state=_socialRandHex(16);
+    const redirect=location.origin+location.pathname;
+    const url=cfg.authUrl
+      +'?client_id='+encodeURIComponent(cfg.clientId)
+      +'&redirect_uri='+encodeURIComponent(redirect)
+      +'&response_type=id_token'
+      +'&scope='+encodeURIComponent(cfg.scope)
+      +'&nonce='+nonce
+      +'&state='+state
+      +'&prompt=select_account'
+      +'&response_mode=fragment';
+
+    const win=window.open(url,'moments-signin','width=480,height=640,noopener=no,noreferrer=no');
+    if(!win){ reject(new Error('social-popup-blocked')); return; }
+
+    let done=false;
+    const cleanup=()=>{
+      window.removeEventListener('message',onMsg);
+      clearInterval(poll);
+    };
+    const onMsg=ev=>{
+      if(ev.origin!==location.origin) return;             // only our own callback page
+      const d=ev.data;
+      if(!d || d.type!=='moments-oauth') return;
+      if(d.state!==state) return;                         // CSRF / crossed-wires guard
+      done=true; cleanup();
+      try{ win.close(); }catch(_){}
+      if(d.error || !d.id_token){ reject(new Error('social-denied')); return; }
+      const claims=socialPeekClaims(d.id_token);
+      if(!claims || claims.nonce!==nonce || !claims.sub || claims.iss!==cfg.issuer){
+        reject(new Error('social-bad-token')); return;
+      }
+      resolve({ provider, sub:String(claims.sub), idToken:d.id_token });
+    };
+    window.addEventListener('message',onMsg);
+
+    // A closed popup is the only signal we get when someone cancels.
+    const poll=setInterval(()=>{
+      if(done) return;
+      let closed=false; try{ closed=win.closed; }catch(_){ closed=true; }
+      if(closed){ cleanup(); reject(new Error('social-cancelled')); }
+    },500);
+
+    setTimeout(()=>{ if(!done){ cleanup(); try{ win.close(); }catch(_){} reject(new Error('social-timeout')); } },180000);
+  });
+}
+
+/* Runs in the popup when Google redirects back to this same file: hand the
+   fragment to the opener and close. Must run before the app boots — there is no
+   app to show in a 480px popup. */
+function socialMaybeHandleCallback(){
+  try{
+    if(!window.opener || window.opener===window) return false;
+    const frag=(location.hash||'').replace(/^#/,'');
+    if(!frag || !/(^|&)(id_token|error)=/.test(frag)) return false;
+    const q=new URLSearchParams(frag);
+    window.opener.postMessage({
+      type:'moments-oauth',
+      state:q.get('state')||'',
+      id_token:q.get('id_token')||'',
+      error:q.get('error')||'',
+    }, location.origin);
+    // Clear the token out of the address bar before anything else can read it.
+    try{ history.replaceState(null,'',location.pathname); }catch(_){}
+    document.documentElement.innerHTML='<p style="font:16px system-ui;padding:24px">Signing you in…</p>';
+    setTimeout(()=>{ try{ window.close(); }catch(_){} },200);
+    return true;
+  }catch(_){ return false; }
+}
 /* ==== src/oprf.js ==== */
 /* ════════════════════════════════════════════
    OPRF — what makes a 6-digit PIN safe
@@ -2133,7 +2291,7 @@ function oprfRandomBlind(){
 /* One OPRF round against one server. Returns the unblinded point's compressed
    bytes. The caller never sends anything derived from the PIN in the clear;
    `tag` is an opaque per-account value used only for rate limiting. */
-async function oprfEvaluate(url, tag, point, timeoutMs){
+async function oprfEvaluate(url, tag, point, timeoutMs, proof){
   const C=_oprfCurve(), n=C.CURVE.n;
   const r=oprfRandomBlind();
   const blinded=point.multiply(r);
@@ -2145,7 +2303,12 @@ async function oprfEvaluate(url, tag, point, timeoutMs){
     res=await fetch(url.replace(/\/+$/,'')+'/evaluate', {
       method:'POST',
       headers:{'content-type':'application/json'},
-      body:JSON.stringify({ v:1, tag:tag, blinded:blinded.toHex(true) }),
+      // `proof` is a fresh ID token for a social enrollment. The server needs it
+      // because that enrollment's tag derives from a public identifier, so a
+      // tag alone proves nothing about who is asking.
+      body:JSON.stringify(proof
+        ? { v:1, tag:tag, blinded:blinded.toHex(true), social:true, proof:proof }
+        : { v:1, tag:tag, blinded:blinded.toHex(true) }),
       signal:ctl.signal,
       // No cookies, no credentials: the server must not be able to build a
       // profile across requests beyond the rate-limit tag it is given.
@@ -2158,6 +2321,7 @@ async function oprfEvaluate(url, tag, point, timeoutMs){
   }finally{ clearTimeout(timer); }
 
   if(res.status===429) throw new Error('oprf-rate-limited');
+  if(res.status===401) throw new Error('oprf-proof-rejected');
   if(!res.ok) throw new Error('oprf-server-error');
   let body;
   try{ body=await res.json(); }catch(_){ throw new Error('oprf-bad-response'); }
@@ -2179,11 +2343,11 @@ async function oprfEvaluate(url, tag, point, timeoutMs){
    root secret. Order is fixed by the server list so the root is reproducible,
    and every server's output is required — a partial result must never silently
    produce a weaker key. */
-async function oprfRoot(servers, tag, pinInput){
+async function oprfRoot(servers, tag, input, proof){
   if(!Array.isArray(servers) || servers.length<1) throw new Error('oprf-no-servers');
-  const point=await oprfHashToCurve(OPRF_DOMAIN, pinInput);
+  const point=await oprfHashToCurve(OPRF_DOMAIN, input);
   const parts=[];
-  for(const url of servers) parts.push(await oprfEvaluate(url, tag, point));
+  for(const url of servers) parts.push(await oprfEvaluate(url, tag, point, undefined, proof));
   return await sha256(concatBytes(strToBytes(OPRF_DOMAIN+':root:'), ...parts));
 }
 /* ==== src/vault.js ==== */
@@ -2368,6 +2532,27 @@ function vaultPinStrength(pin){
   // A repeated short block (e.g. 454545, 123123) is barely better than the block itself.
   if(/^(\d{2})\1{2}$/.test(p)||/^(\d{3})\1$/.test(p)) return { ok:false, why:'That is a short pattern repeated.' };
   return { ok:true, why:'' };
+}
+
+/* ── Social factor ──
+   The tag MUST match what the server recomputes from the verified token, or
+   the proof could be paired with someone else's tag. */
+async function vaultSocialTag(issuer, sub){
+  return bytesToHex(await sha256(strToBytes('moments:oprf:social:v1:'+issuer+':'+sub)));
+}
+
+/* `pin` is optional. Without it, the vault is reachable by anyone who can
+   authenticate as this user to the provider — which includes the provider.
+   With it, the provider would additionally have to guess a PIN that the OPRF
+   servers rate-limit. */
+async function vaultKeysFromSocial(ident, pin){
+  if(!vaultPinAvailable()) throw new Error('pin-unavailable');
+  if(!ident || !ident.sub || !ident.idToken) throw new Error('social-bad-token');
+  const issuer=(SOCIAL_PROVIDERS[ident.provider]||{}).issuer||'';
+  const extra=String(pin||'').replace(/\D/g,'');
+  const input=await sha256(strToBytes('moments:social:v1:'+issuer+':'+ident.sub+':'+extra));
+  const root=await oprfRoot(VAULT_OPRF_SERVERS, await vaultSocialTag(issuer, ident.sub), input, ident.idToken);
+  return vaultKeysFromRoot(root, 'social');
 }
 
 /* A passphrase is the only factor an attacker can guess at, so refuse the ones
@@ -2560,7 +2745,13 @@ function vaultErrText(err){
   if(m==='oprf-rate-limited') return 'Too many PIN attempts for that handle. Wait a while and try again — this is the limit that keeps a short PIN safe.';
   if(m==='oprf-unreachable'||m==='oprf-timeout') return "Couldn't reach the PIN servers. Check your connection, or use a recovery code.";
   if(m==='oprf-server-error'||m==='oprf-bad-response') return 'A PIN server answered incorrectly. Try again, or use a recovery code.';
-  if(m==='oprf-no-servers') return 'PIN sign-in needs two independent servers configured.';
+  if(m==='oprf-no-servers') return 'This sign-in method needs two independent servers configured.';
+  if(m==='oprf-proof-rejected') return 'That sign-in could not be verified. Try signing in again.';
+  if(m==='social-unconfigured') return 'This copy of Moments has no social sign-in configured.';
+  if(m==='social-popup-blocked') return 'Your browser blocked the sign-in window. Allow pop-ups for this site and try again.';
+  if(m==='social-cancelled') return 'Sign-in cancelled. Nothing was changed.';
+  if(m==='social-denied') return "That sign-in didn't complete. Try again, or use another method.";
+  if(m==='social-bad-token'||m==='social-timeout') return 'That sign-in could not be completed. Try again, or use another method.';
   if(m==='oprf-unavailable'||m==='oprf-h2c-failed') return "This browser can't do the PIN calculation. Use a recovery code instead.";
   return 'Something went wrong. '+(m||'Please try again.');
 }
@@ -2611,6 +2802,77 @@ async function signupPasskey(){
   }finally{
     if(btn){ btn.disabled=false; setLabel('⚡ Create with Face ID / Fingerprint'); }
   }
+}
+
+/* Signup with a social account: no key shown, no code to save, no passphrase.
+   A recovery code is still enrolled and offered, because a provider account can
+   be lost or closed — but it is not forced, which is the whole point. */
+async function signupSocial(provider){
+  const btn=document.getElementById('btn-social-'+provider);
+  const label=(SOCIAL_PROVIDERS[provider]||{}).label||provider;
+  const setLabel=t=>{ if(btn) btn.textContent=t; };
+  if(btn) btn.disabled=true;
+  vaultMsg('social-err','');
+  try{
+    setLabel('Waiting for '+label+'…');
+    const ident=await socialSignIn(provider);
+    setLabel('Setting up your account…');
+    const ek=await vaultKeysFromSocial(ident, '');
+
+    // Already enrolled? Then this is a sign-in, not a signup.
+    const existing=await vaultReadEnrollment(ek);
+    if(existing){ vaultAdopt(existing); return; }
+
+    const keys=nostrGenerate();
+    await vaultEnroll(keys.nsec, 'moments', ek);
+    const code=vaultGenRecoveryCode();
+    let codeOk=true;
+    try{ await vaultEnroll(keys.nsec, 'moments', await vaultKeysFromCode(code)); }
+    catch(_){ codeOk=false; }
+
+    _keyGeneratedHere=true;
+    _nsec=keys.nsec; _npub=keys.npub;
+    const dec=bech32Decode(_nsec); _sk=dec?dec.bytes:null;
+    _vaultCreated=true;
+    _vaultRecoveryCode=codeOk?code:'';
+    _vaultCodeSaved=false;
+    const nsecEl=document.getElementById('show-nsec');
+    if(nsecEl){ nsecEl.textContent=_nsec; nsecEl.style.filter='blur(5px)'; }
+    if(codeOk) showRecoveryCodeStep(); else toNameStep();
+  }catch(err){
+    vaultMsg('social-err', vaultErrText(err), true);
+  }finally{
+    if(btn){ btn.disabled=false; setLabel('Continue with '+label); }
+  }
+}
+
+async function loginSocial(provider){
+  const btn=document.getElementById('btn-social-login-'+provider);
+  const label=(SOCIAL_PROVIDERS[provider]||{}).label||provider;
+  const setLabel=t=>{ if(btn) btn.textContent=t; };
+  if(btn) btn.disabled=true;
+  vaultMsg('social-login-err','');
+  try{
+    setLabel('Waiting for '+label+'…');
+    const ident=await socialSignIn(provider);
+    setLabel('Finding your account…');
+    await vaultWaitForRelay(6000);
+    const obj=await vaultReadEnrollment(await vaultKeysFromSocial(ident, ''));
+    if(!obj){
+      vaultMsg('social-login-err', "That "+label+" account isn't linked to a Moments account yet. Create one, or use another way in.", true);
+      return;
+    }
+    vaultAdopt(obj);
+  }catch(err){
+    vaultMsg('social-login-err', vaultErrText(err), true);
+  }finally{
+    if(btn){ btn.disabled=false; setLabel('Continue with '+label); }
+  }
+}
+
+async function addSocialFactor(provider, pin){
+  const ident=await socialSignIn(provider);
+  await vaultEnroll(_nsec, _keyGeneratedHere?'moments':'imported', await vaultKeysFromSocial(ident, pin||''));
 }
 
 function showRecoveryCodeStep(){
@@ -2750,9 +3012,10 @@ async function addCodeFactor(){
 const LOGIN_METHODS=['code','pin','phrase','nsec'];
 function pickLogin(method){
   if(!LOGIN_METHODS.includes(method)) return;
-  const pk=document.getElementById('btn-passkey-login');
-  if(pk) pk.style.display='none';
-  vaultMsg('passkey-login-err','');
+  ['btn-passkey-login','social-login-or','btn-social-login-google'].forEach(id=>{
+    const el=document.getElementById(id); if(el) el.style.display='none';
+  });
+  vaultMsg('passkey-login-err',''); vaultMsg('social-login-err','');
   const ch=document.getElementById('login-chooser'); if(ch) ch.style.display='none';
   LOGIN_METHODS.forEach(m=>{
     const el=document.getElementById('lm-'+m);
@@ -2774,7 +3037,12 @@ function backToChooser(){
   const ch=document.getElementById('login-chooser'); if(ch) ch.style.display='';
   const pk=document.getElementById('btn-passkey-login');
   if(pk && vaultSupported()) pk.style.display='';
-  ['login-code-err','login-pin-err','login-phrase-err','passkey-login-err'].forEach(id=>vaultMsg(id,''));
+  if(socialAnyAvailable() && vaultPinAvailable()){
+    ['social-login-or','btn-social-login-google'].forEach(id=>{
+      const el=document.getElementById(id); if(el) el.style.display='';
+    });
+  }
+  ['login-code-err','login-pin-err','login-phrase-err','passkey-login-err','social-login-err'].forEach(id=>vaultMsg(id,''));
 }
 
 /* Reveal the passkey paths only where they can actually work; everywhere else
@@ -2782,6 +3050,18 @@ function backToChooser(){
 function vaultInitUi(){
   if(vaultPinAvailable()){
     const el=document.getElementById('pick-pin'); if(el) el.style.display='';
+  }
+  // Social needs BOTH a configured provider and the OPRF servers: without the
+  // servers the key would have to come from the token itself, which is public.
+  if(socialAnyAvailable() && vaultPinAvailable()){
+    Object.keys(SOCIAL_PROVIDERS).filter(socialAvailable).forEach(p=>{
+      ['btn-social-'+p,'btn-social-login-'+p].forEach(id=>{
+        const el=document.getElementById(id); if(el) el.style.display='';
+      });
+    });
+    ['social-or','social-login-or'].forEach(id=>{
+      const el=document.getElementById(id); if(el) el.style.display='';
+    });
   }
   if(!vaultSupported()) return;
   ['btn-passkey','passkey-or','btn-passkey-login','login-chooser-or'].forEach(id=>{
@@ -8767,6 +9047,8 @@ registerActions({
   loginPhrase:       ()=>loginPhrase(),
   loginPin:          ()=>loginPin(),
   pickLogin:         m=>pickLogin(m),
+  signupSocial:      p=>signupSocial(p),
+  loginSocial:       p=>loginSocial(p),
   backToChooser:     ()=>backToChooser(),
   copyRecoveryCode:  (a,el)=>copyRecoveryCode(el),
   downloadRecoveryCode: ()=>downloadRecoveryCode(),
@@ -9294,8 +9576,18 @@ async function installApp(){
   const b=document.getElementById('install-btn'); if(b) b.style.display='none';
   try{ if(typeof A!=='undefined' && A.showSettings) renderApp(); }catch(_){}
 }
-/* ── Reveal the passkey sign-in paths where the platform supports them ── */
-vaultInitUi();
+/* ── OAuth popup callback ──
+   When the provider redirects back into the popup, this file is what loads
+   there. Hand the fragment to the opener, then skip the app's boot: there is
+   nothing to show in a 480px window and relay sockets would open for nothing.
+
+   Guarding the individual boot statements rather than wrapping a region,
+   because wrapping puts top-level `let` declarations inside a block where the
+   functions above them can no longer see them. */
+const _isOAuthPopup = socialMaybeHandleCallback();
+
+/* ── Reveal the sign-in paths the platform and config support ── */
+if(!_isOAuthPopup) vaultInitUi();
 
 (function iosInstallHint(){
   try{
@@ -9322,10 +9614,10 @@ let _pendingJoin=null, _pendingPw=null;
 })();
 
 /* ── Delegated event handling (CSP: replaces inline on*= handlers) ── */
-initDelegation();
+if(!_isOAuthPopup) initDelegation();
 
 /* ── Stay logged in: restore the saved identity, or show the landing page ── */
-autoLogin().then(loggedIn=>{
+if(!_isOAuthPopup) autoLogin().then(loggedIn=>{
   if(_pendingJoin){
     // Show the invite banner on the landing page
     const banner=document.getElementById('invite-banner');
@@ -9344,6 +9636,7 @@ autoLogin().then(loggedIn=>{
   // Don't auto-open the modal — let the user read the invite banner first
   // and tap "Join the network →" when they're ready
 });
+
 </script>
 </body>
 </html>

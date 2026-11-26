@@ -66,10 +66,13 @@ async function pairRoot(servers, identA, identB, pin = '') {
   const [x, y] = order(identA, identB);
   const input = await sha256(strToBytes(`moments:social-pair:v1:${x.iss}:${x.sub}|${y.iss}:${y.sub}:${pin}`));
   const point = await oprfHashToCurve(OPRF_DOMAIN, input);
-  const parts = [
-    await oprfEvaluate(servers[0], await tagOf(x), point, undefined, x.idToken),
-    await oprfEvaluate(servers[1], await tagOf(y), point, undefined, y.idToken),
-  ];
+  // Mirrors the client: EVERY leg goes to EVERY server, so reconstructing the
+  // root requires unanimous collusion rather than any two operators.
+  const parts = [];
+  for (const ident of [x, y]) {
+    const tag = await tagOf(ident);
+    for (const url of servers) parts.push(await oprfEvaluate(url, tag, point, undefined, ident.idToken));
+  }
   return bytesToHex(await sha256(concatBytes(strToBytes(OPRF_DOMAIN + ':root:'), ...parts)));
 }
 const tagOf = async i => bytesToHex(await sha256(strToBytes('moments:oprf:social:v1:' + i.iss + ':' + i.sub)));
@@ -126,11 +129,13 @@ test('one leg alone yields nothing — a single provider is not half the key', a
     const g = google.mint(VICTIM_G);
     const input = await sha256(strToBytes(`moments:social-pair:v1:${GOOGLE_ISS}:${VICTIM_G}|${MS_ISS}:${VICTIM_M}:`));
     const point = await oprfHashToCurve(OPRF_DOMAIN, input);
-    const legA = await oprfEvaluate(urls[0], await tagOf(g), point, undefined, g.idToken);
-    const halfOnly = bytesToHex(await sha256(concatBytes(strToBytes(OPRF_DOMAIN + ':root:'), legA)));
-    assert.notEqual(halfOnly, real);
-    // And it cannot stand in for the missing leg by reusing its own twice.
-    const doubled = bytesToHex(await sha256(concatBytes(strToBytes(OPRF_DOMAIN + ':root:'), legA, legA)));
+    const tagG = await tagOf(g);
+    const legs = [];
+    for (const url of urls) legs.push(await oprfEvaluate(url, tagG, point, undefined, g.idToken));
+    const halfOnly = bytesToHex(await sha256(concatBytes(strToBytes(OPRF_DOMAIN + ':root:'), ...legs)));
+    assert.notEqual(halfOnly, real, 'Google holding its own leg from every server is still not the key');
+    // Nor can it stand in for the missing leg by repeating its own.
+    const doubled = bytesToHex(await sha256(concatBytes(strToBytes(OPRF_DOMAIN + ':root:'), ...legs, ...legs)));
     assert.notEqual(doubled, real);
   });
 });

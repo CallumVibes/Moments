@@ -62,7 +62,7 @@ const VAULT_PBKDF2_ITERS=600000;
    These must be run by different parties. Two endpoints on one provider's
    infrastructure are one operator wearing two hats, and a PIN is then only as
    strong as that provider's goodwill. */
-const VAULT_OPRF_SERVERS=[];   // e.g. ['https://oprf-a.example','https://oprf-b.example']
+const VAULT_OPRF_SERVERS=MOMENTS_CONFIG.oprfServers;
 function vaultPinAvailable(){ return VAULT_OPRF_SERVERS.length>=2; }
 
 function _vaultRand(n){ const b=new Uint8Array(n); crypto.getRandomValues(b); return b; }
@@ -227,11 +227,18 @@ async function vaultKeysFromSocialPair(identA, identB, pin){
   const extra=String(pin||'').replace(/\D/g,'');
   const input=await sha256(strToBytes('moments:social-pair:v1:'+x.iss+':'+x.sub+'|'+y.iss+':'+y.sub+':'+extra));
   const point=await oprfHashToCurve(OPRF_DOMAIN, input);
-  // Each server is addressed under a DIFFERENT provider's tag and proof.
-  const parts=[
-    await oprfEvaluate(VAULT_OPRF_SERVERS[0], await vaultSocialTag(x.iss,x.sub), point, undefined, x.idToken),
-    await oprfEvaluate(VAULT_OPRF_SERVERS[1], await vaultSocialTag(y.iss,y.sub), point, undefined, y.idToken),
-  ];
+  /* Every leg goes to EVERY configured server. Sending one leg to one server
+     would mean two colluding operators could reconstruct the root; requiring
+     all of them means collusion has to be unanimous. Each (leg, server) pair
+     uses that leg's own provider tag and proof, so a server still only answers
+     for an identity the caller actually proved. */
+  const parts=[];
+  for(const ident of [x,y]){
+    const tag=await vaultSocialTag(ident.iss, ident.sub);
+    for(const url of VAULT_OPRF_SERVERS){
+      parts.push(await oprfEvaluate(url, tag, point, undefined, ident.idToken));
+    }
+  }
   const root=await sha256(concatBytes(strToBytes(OPRF_DOMAIN+':root:'), ...parts));
   return vaultKeysFromRoot(root, 'social-pair');
 }
@@ -498,8 +505,21 @@ async function signupSocial(provider){
   try{
     setLabel('Waiting for '+label+'…');
     const ident=await socialSignIn(provider);
-    setLabel('Setting up your account…');
-    const ek=await vaultKeysFromSocial(ident, '');
+
+    /* Default to the two-provider pair. A single-provider vault is reachable
+       by the provider that issues the credential, so new accounts are not put
+       in that mode unless an operator has explicitly allowed it. */
+    let ek;
+    if(socialPairAvailable() && !socialSingleAllowed()){
+      const other=SOCIAL_PAIR.find(p=>p!==provider);
+      setLabel('Now confirm with '+((SOCIAL_PROVIDERS[other]||{}).label||other)+'…');
+      const identB=await socialSignIn(other);
+      setLabel('Setting up your account…');
+      ek=await vaultKeysFromSocialPair(ident, identB);
+    } else {
+      setLabel('Setting up your account…');
+      ek=await vaultKeysFromSocial(ident, '');
+    }
 
     // Already enrolled? Then this is a sign-in, not a signup.
     const existing=await vaultReadEnrollment(ek);
@@ -564,8 +584,10 @@ async function loginSocial(provider){
     const ident=await socialSignIn(provider);
     setLabel('Finding your account…');
     await vaultWaitForRelay(6000);
-    const obj=await vaultReadEnrollment(await vaultKeysFromSocial(ident, ''));
-    if(obj){ vaultAdopt(obj); return; }
+    if(socialSingleAllowed()){
+      const obj=await vaultReadEnrollment(await vaultKeysFromSocial(ident, ''));
+      if(obj){ vaultAdopt(obj); return; }
+    }
     // No single-provider vault. It may be a two-provider account, which needs
     // the other leg before the key can be formed at all.
     if(socialPairAvailable()){
@@ -576,7 +598,7 @@ async function loginSocial(provider){
         sb.textContent='Continue with '+((SOCIAL_PROVIDERS[other]||{}).label||other);
         sb.style.display='';
       }
-      vaultMsg('social-login-err', 'One more tap: this account is protected by two providers, so no single company can reach your key.');
+      vaultMsg('social-login-err', 'One more tap: your account is protected by two providers, so no single company can reach your key.');
       return;
     }
     vaultMsg('social-login-err', "That "+label+" account isn't linked to a Moments account yet. Create one, or use another way in.", true);
@@ -790,6 +812,11 @@ function vaultInitUi(){
     ['social-or','social-login-or'].forEach(id=>{
       const el=document.getElementById(id); if(el) el.style.display='';
     });
+    // Say up front that signup takes a second tap, rather than surprising
+    // someone with another provider's window mid-flow.
+    if(socialPairAvailable() && !socialSingleAllowed()){
+      const n=document.getElementById('social-pair-note'); if(n) n.style.display='';
+    }
   }
   if(!vaultSupported()) return;
   ['btn-passkey','passkey-or','btn-passkey-login','login-chooser-or'].forEach(id=>{

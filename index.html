@@ -39,7 +39,17 @@
        custom relays and members' media lives on arbitrary Blossom hosts. style-src keeps
        'unsafe-inline' (the whole UI is inline styles; styles can't execute JS).
        worker-src 'self' pre-clears the v0.9 service worker. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-EG/PrNGpGKEObq9rQ2xt/3cF829Kyvb7YrIGvheMX/E='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-3rr2001voqeoZYqylpCpAnZNfjJrzc3An7yIr1LoHzg='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
+  <!-- Deployment config. Editing this one line is the whole setup: no code
+       change, no rebuild, no hunting through the bundle. Operators fill in
+       their OAuth client IDs and the URLs of two OPRF servers run by DIFFERENT
+       operators. Left empty, every server-backed sign-in path stays hidden
+       rather than offering something that cannot work.
+         allowSingleProvider: false keeps new accounts in the two-provider mode,
+         the only one a single provider cannot open. Set it true only if you
+         have decided that one-tap Google is worth Google being able to reach
+         your users' keys. -->
+  <meta name="moments-config" content='{"oprfServers":[],"providers":{"google":"","microsoft":""},"allowSingleProvider":false}'/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -287,6 +297,7 @@
         <span>Your <strong>moment key</strong> is your account. We'll show it to you next — save it somewhere safe, like a password manager.</span>
       </div>
       <button class="btn-primary" id="btn-social-google" data-act="signupSocial" data-a="google" style="display:none">Continue with Google</button>
+      <p id="social-pair-note" style="display:none;font-size:.74rem;color:var(--muted);text-align:center;margin:-6px 0 10px;line-height:1.5">You'll confirm with a second account too, so no single company can reach your key.</p>
       <div class="field-error" id="social-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
       <div class="divider" id="social-or" style="display:none">or</div>
       <button class="btn-primary" id="btn-passkey" data-act="signupPasskey" style="display:none">⚡ Create with Face ID / Fingerprint</button>
@@ -2096,10 +2107,33 @@ async function completeSignup(){
    origin, so a self-hosted copy cannot use this app's client IDs. Fill these in
    with your own and the buttons appear; leave them and they stay hidden rather
    than offering something that will fail on redirect. */
+/* Read deployment config from the <meta name="moments-config"> tag, so turning
+   these features on is a one-line edit rather than a source change. Parsed
+   defensively: a malformed tag must leave the app working with everything that
+   needs config simply switched off. */
+const MOMENTS_CONFIG=(()=>{
+  const empty={ oprfServers:[], providers:{}, allowSingleProvider:false };
+  try{
+    const el=document.querySelector('meta[name="moments-config"]');
+    if(!el) return empty;
+    const raw=JSON.parse(el.getAttribute('content')||'{}');
+    const urls=(Array.isArray(raw.oprfServers)?raw.oprfServers:[])
+      // Only https, and no trailing slash, so a misconfigured http endpoint
+      // cannot silently carry proofs in the clear.
+      .filter(u=>typeof u==='string' && /^https:\/\/[^\s]+$/i.test(u))
+      .map(u=>u.replace(/\/+$/,''));
+    return {
+      oprfServers:urls,
+      providers:(raw.providers&&typeof raw.providers==='object')?raw.providers:{},
+      allowSingleProvider:raw.allowSingleProvider===true,
+    };
+  }catch(_){ return empty; }
+})();
+
 const SOCIAL_PROVIDERS={
   google:{
     label:'Google',
-    clientId:'',                                    // e.g. '1234-abc.apps.googleusercontent.com'
+    clientId:MOMENTS_CONFIG.providers.google||'',
     authUrl:'https://accounts.google.com/o/oauth2/v2/auth',
     scope:'openid',
     issuerTest:i=>i==='https://accounts.google.com',
@@ -2107,7 +2141,7 @@ const SOCIAL_PROVIDERS={
   // Microsoft's `iss` carries the tenant GUID, so it is matched by shape.
   microsoft:{
     label:'Microsoft',
-    clientId:'',
+    clientId:MOMENTS_CONFIG.providers.microsoft||'',
     authUrl:'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
     scope:'openid',
     issuerTest:i=>/^https:\/\/login\.microsoftonline\.com\/[0-9a-f-]{36}\/v2\.0$/i.test(i),
@@ -2116,6 +2150,11 @@ const SOCIAL_PROVIDERS={
 /* The pair used to lock any single provider out. Both must be configured. */
 const SOCIAL_PAIR=['google','microsoft'];
 function socialPairAvailable(){ return SOCIAL_PAIR.every(socialAvailable); }
+
+/* Single-provider social is OFF unless an operator explicitly turns it on,
+   because that mode is reachable by the provider that issues the credential.
+   The default is the two-provider mode, which no single provider can open. */
+function socialSingleAllowed(){ return MOMENTS_CONFIG.allowSingleProvider===true; }
 function socialAvailable(p){ return !!(SOCIAL_PROVIDERS[p] && SOCIAL_PROVIDERS[p].clientId); }
 function socialAnyAvailable(){ return Object.keys(SOCIAL_PROVIDERS).some(socialAvailable); }
 
@@ -2427,7 +2466,7 @@ const VAULT_PBKDF2_ITERS=600000;
    These must be run by different parties. Two endpoints on one provider's
    infrastructure are one operator wearing two hats, and a PIN is then only as
    strong as that provider's goodwill. */
-const VAULT_OPRF_SERVERS=[];   // e.g. ['https://oprf-a.example','https://oprf-b.example']
+const VAULT_OPRF_SERVERS=MOMENTS_CONFIG.oprfServers;
 function vaultPinAvailable(){ return VAULT_OPRF_SERVERS.length>=2; }
 
 function _vaultRand(n){ const b=new Uint8Array(n); crypto.getRandomValues(b); return b; }
@@ -2592,11 +2631,18 @@ async function vaultKeysFromSocialPair(identA, identB, pin){
   const extra=String(pin||'').replace(/\D/g,'');
   const input=await sha256(strToBytes('moments:social-pair:v1:'+x.iss+':'+x.sub+'|'+y.iss+':'+y.sub+':'+extra));
   const point=await oprfHashToCurve(OPRF_DOMAIN, input);
-  // Each server is addressed under a DIFFERENT provider's tag and proof.
-  const parts=[
-    await oprfEvaluate(VAULT_OPRF_SERVERS[0], await vaultSocialTag(x.iss,x.sub), point, undefined, x.idToken),
-    await oprfEvaluate(VAULT_OPRF_SERVERS[1], await vaultSocialTag(y.iss,y.sub), point, undefined, y.idToken),
-  ];
+  /* Every leg goes to EVERY configured server. Sending one leg to one server
+     would mean two colluding operators could reconstruct the root; requiring
+     all of them means collusion has to be unanimous. Each (leg, server) pair
+     uses that leg's own provider tag and proof, so a server still only answers
+     for an identity the caller actually proved. */
+  const parts=[];
+  for(const ident of [x,y]){
+    const tag=await vaultSocialTag(ident.iss, ident.sub);
+    for(const url of VAULT_OPRF_SERVERS){
+      parts.push(await oprfEvaluate(url, tag, point, undefined, ident.idToken));
+    }
+  }
   const root=await sha256(concatBytes(strToBytes(OPRF_DOMAIN+':root:'), ...parts));
   return vaultKeysFromRoot(root, 'social-pair');
 }
@@ -2863,8 +2909,21 @@ async function signupSocial(provider){
   try{
     setLabel('Waiting for '+label+'…');
     const ident=await socialSignIn(provider);
-    setLabel('Setting up your account…');
-    const ek=await vaultKeysFromSocial(ident, '');
+
+    /* Default to the two-provider pair. A single-provider vault is reachable
+       by the provider that issues the credential, so new accounts are not put
+       in that mode unless an operator has explicitly allowed it. */
+    let ek;
+    if(socialPairAvailable() && !socialSingleAllowed()){
+      const other=SOCIAL_PAIR.find(p=>p!==provider);
+      setLabel('Now confirm with '+((SOCIAL_PROVIDERS[other]||{}).label||other)+'…');
+      const identB=await socialSignIn(other);
+      setLabel('Setting up your account…');
+      ek=await vaultKeysFromSocialPair(ident, identB);
+    } else {
+      setLabel('Setting up your account…');
+      ek=await vaultKeysFromSocial(ident, '');
+    }
 
     // Already enrolled? Then this is a sign-in, not a signup.
     const existing=await vaultReadEnrollment(ek);
@@ -2929,8 +2988,10 @@ async function loginSocial(provider){
     const ident=await socialSignIn(provider);
     setLabel('Finding your account…');
     await vaultWaitForRelay(6000);
-    const obj=await vaultReadEnrollment(await vaultKeysFromSocial(ident, ''));
-    if(obj){ vaultAdopt(obj); return; }
+    if(socialSingleAllowed()){
+      const obj=await vaultReadEnrollment(await vaultKeysFromSocial(ident, ''));
+      if(obj){ vaultAdopt(obj); return; }
+    }
     // No single-provider vault. It may be a two-provider account, which needs
     // the other leg before the key can be formed at all.
     if(socialPairAvailable()){
@@ -2941,7 +3002,7 @@ async function loginSocial(provider){
         sb.textContent='Continue with '+((SOCIAL_PROVIDERS[other]||{}).label||other);
         sb.style.display='';
       }
-      vaultMsg('social-login-err', 'One more tap: this account is protected by two providers, so no single company can reach your key.');
+      vaultMsg('social-login-err', 'One more tap: your account is protected by two providers, so no single company can reach your key.');
       return;
     }
     vaultMsg('social-login-err', "That "+label+" account isn't linked to a Moments account yet. Create one, or use another way in.", true);
@@ -3155,6 +3216,11 @@ function vaultInitUi(){
     ['social-or','social-login-or'].forEach(id=>{
       const el=document.getElementById(id); if(el) el.style.display='';
     });
+    // Say up front that signup takes a second tap, rather than surprising
+    // someone with another provider's window mid-flow.
+    if(socialPairAvailable() && !socialSingleAllowed()){
+      const n=document.getElementById('social-pair-note'); if(n) n.style.display='';
+    }
   }
   if(!vaultSupported()) return;
   ['btn-passkey','passkey-or','btn-passkey-login','login-chooser-or'].forEach(id=>{

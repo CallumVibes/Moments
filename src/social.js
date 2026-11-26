@@ -41,10 +41,33 @@
    origin, so a self-hosted copy cannot use this app's client IDs. Fill these in
    with your own and the buttons appear; leave them and they stay hidden rather
    than offering something that will fail on redirect. */
+/* Read deployment config from the <meta name="moments-config"> tag, so turning
+   these features on is a one-line edit rather than a source change. Parsed
+   defensively: a malformed tag must leave the app working with everything that
+   needs config simply switched off. */
+const MOMENTS_CONFIG=(()=>{
+  const empty={ oprfServers:[], providers:{}, allowSingleProvider:false };
+  try{
+    const el=document.querySelector('meta[name="moments-config"]');
+    if(!el) return empty;
+    const raw=JSON.parse(el.getAttribute('content')||'{}');
+    const urls=(Array.isArray(raw.oprfServers)?raw.oprfServers:[])
+      // Only https, and no trailing slash, so a misconfigured http endpoint
+      // cannot silently carry proofs in the clear.
+      .filter(u=>typeof u==='string' && /^https:\/\/[^\s]+$/i.test(u))
+      .map(u=>u.replace(/\/+$/,''));
+    return {
+      oprfServers:urls,
+      providers:(raw.providers&&typeof raw.providers==='object')?raw.providers:{},
+      allowSingleProvider:raw.allowSingleProvider===true,
+    };
+  }catch(_){ return empty; }
+})();
+
 const SOCIAL_PROVIDERS={
   google:{
     label:'Google',
-    clientId:'',                                    // e.g. '1234-abc.apps.googleusercontent.com'
+    clientId:MOMENTS_CONFIG.providers.google||'',
     authUrl:'https://accounts.google.com/o/oauth2/v2/auth',
     scope:'openid',
     issuerTest:i=>i==='https://accounts.google.com',
@@ -52,7 +75,7 @@ const SOCIAL_PROVIDERS={
   // Microsoft's `iss` carries the tenant GUID, so it is matched by shape.
   microsoft:{
     label:'Microsoft',
-    clientId:'',
+    clientId:MOMENTS_CONFIG.providers.microsoft||'',
     authUrl:'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
     scope:'openid',
     issuerTest:i=>/^https:\/\/login\.microsoftonline\.com\/[0-9a-f-]{36}\/v2\.0$/i.test(i),
@@ -61,6 +84,11 @@ const SOCIAL_PROVIDERS={
 /* The pair used to lock any single provider out. Both must be configured. */
 const SOCIAL_PAIR=['google','microsoft'];
 function socialPairAvailable(){ return SOCIAL_PAIR.every(socialAvailable); }
+
+/* Single-provider social is OFF unless an operator explicitly turns it on,
+   because that mode is reachable by the provider that issues the credential.
+   The default is the two-provider mode, which no single provider can open. */
+function socialSingleAllowed(){ return MOMENTS_CONFIG.allowSingleProvider===true; }
 function socialAvailable(p){ return !!(SOCIAL_PROVIDERS[p] && SOCIAL_PROVIDERS[p].clientId); }
 function socialAnyAvailable(){ return Object.keys(SOCIAL_PROVIDERS).some(socialAvailable); }
 

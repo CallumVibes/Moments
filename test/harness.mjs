@@ -19,9 +19,19 @@ export async function buildTestCopy(relayPort, oprfPorts = []) {
   const oprfOrigins = oprfPorts.map(p => `http://localhost:${p}`);
   s = s.replace('connect-src https: wss:', `connect-src https: wss: ws://localhost:${relayPort} ${oprfOrigins.join(' ')}`);
   if (oprfOrigins.length) {
-    const decl = s.match(/const VAULT_OPRF_SERVERS=\[[^\]]*\];/);
-    if (!decl) throw new Error('could not find VAULT_OPRF_SERVERS to point at the test servers');
-    s = s.replace(decl[0], `const VAULT_OPRF_SERVERS=${JSON.stringify(oprfOrigins)};`);
+    // Configure the way an operator does: by editing the meta tag. The https
+    // filter in the config parser is relaxed here only so the suite can use
+    // loopback servers.
+    const cfg = JSON.stringify({ oprfServers: oprfOrigins, providers: {}, allowSingleProvider: false })
+      .replace(/'/g, '&#39;');
+    const meta = s.match(/<meta name="moments-config" content='[^']*'\/>/);
+    if (!meta) throw new Error('could not find the moments-config meta tag');
+    s = s.replace(meta[0], `<meta name="moments-config" content='${cfg}'/>`);
+    // Swap ONLY the scheme regex literal, so loopback servers are accepted.
+    // (A broader pattern here once ate a closing paren and broke the bundle.)
+    const strict = String.raw`/^https:\/\/[^\s]+$/i`;
+    if (!s.includes(strict)) throw new Error('could not find the https-only guard to relax for tests');
+    s = s.replace(strict, String.raw`/^https?:\/\/[^\s]+$/i`);
   }
   // Re-pin the CSP for the edited bundle, exactly as the real build does.
   const scripts = [...s.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map(m => m[1]);

@@ -40,6 +40,16 @@
        'unsafe-inline' (the whole UI is inline styles; styles can't execute JS).
        worker-src 'self' pre-clears the v0.9 service worker. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-rxIIUMeQCOiqIYQtWxUlRCZGgS9SpUf/Hc/OBqAou+Y='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
+  <!-- Deployment config. Editing this one line is the whole setup: no code
+       change, no rebuild, no hunting through the bundle. Operators fill in
+       their OAuth client IDs and the URLs of two OPRF servers run by DIFFERENT
+       operators. Left empty, every server-backed sign-in path stays hidden
+       rather than offering something that cannot work.
+         allowSingleProvider: false keeps new accounts in the two-provider mode,
+         the only one a single provider cannot open. Set it true only if you
+         have decided that one-tap Google is worth Google being able to reach
+         your users' keys. -->
+  <meta name="moments-config" content='{"oprfServers":[],"providers":{"google":"","microsoft":""},"allowSingleProvider":false}'/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -287,6 +297,7 @@
         <span>Your <strong>moment key</strong> is your account. We'll show it to you next — save it somewhere safe, like a password manager.</span>
       </div>
       <button class="btn-primary" id="btn-social-google" data-act="signupSocial" data-a="google" style="display:none">Continue with Google</button>
+      <p id="social-pair-note" style="display:none;font-size:.74rem;color:var(--muted);text-align:center;margin:-6px 0 10px;line-height:1.5">You'll confirm with a second account too, so no single company can reach your key.</p>
       <div class="field-error" id="social-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
       <div class="divider" id="social-or" style="display:none">or</div>
       <button class="btn-primary" id="btn-passkey" data-act="signupPasskey" style="display:none">⚡ Create with Face ID / Fingerprint</button>

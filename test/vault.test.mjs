@@ -8,7 +8,12 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
 const src = await readFile(new URL('../src/vault.js', import.meta.url), 'utf8');
-const ctx = vm.createContext({ crypto: globalThis.crypto, window: {}, location: {}, navigator: {}, document: {} });
+// vault.js reads deployment config that social.js defines; in the browser the
+// two are concatenated into one script, so supply it here.
+const ctx = vm.createContext({
+  crypto: globalThis.crypto, window: {}, location: {}, navigator: {}, document: {},
+  MOMENTS_CONFIG: { oprfServers: [], providers: {}, allowSingleProvider: false },
+});
 vm.runInContext(src + '\n;globalThis.__api={vaultGenRecoveryCode,vaultNormalizeCode,vaultNormalizeHandle,vaultPhraseStrength,VAULT_CODE_ALPHABET};', ctx);
 const { vaultGenRecoveryCode, vaultNormalizeCode, vaultNormalizeHandle, vaultPhraseStrength, VAULT_CODE_ALPHABET } = ctx.__api;
 

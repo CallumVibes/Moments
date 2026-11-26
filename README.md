@@ -53,8 +53,8 @@ none of them involves an account on anybody's server.
 
 | | What you hold | Works on a new device | Notes |
 |---|---|---|---|
-| **Google + Microsoft** | Nothing at all | Always | Two taps. **No single company can reach your key** |
-| **Continue with Google** | Nothing at all | Always | One tap. Google *could* reach your key — see below |
+| **Google + Microsoft** | Nothing at all | Always | Two taps. **No single company can reach your key.** The default |
+| **Continue with Google** | Nothing at all | Always | One tap, but Google *could* reach your key. Off unless an operator enables it |
 | **Passkey** | Face ID / fingerprint | Only if your passkey syncs *and* carries its PRF secret | One tap. Not guaranteed — see below |
 | **Handle + PIN** | 6+ digits | Always, while the PIN servers are up | Needs two OPRF servers — see below |
 | **Recovery code** | 26 characters, ~125 bits | Always | Generated at signup; save it |
@@ -137,6 +137,27 @@ one company able to mint both halves.
 **A PIN can be added on top of either mode**, which also defeats a provider
 that mints a token, since it does not know the PIN and the OPRF servers
 rate-limit guesses.
+
+This is the default: new social accounts are enrolled as a pair, and
+single-provider sign-in has to be switched on deliberately
+(`allowSingleProvider`), because that mode is reachable by the provider.
+
+### Turning it on
+
+Everything is off until configured, and configuring it is one line — the
+`moments-config` meta tag at the top of `index.html`:
+
+```html
+<meta name="moments-config" content='{
+  "oprfServers": ["https://oprf-a.example", "https://oprf-b.example"],
+  "providers": {"google": "...apps.googleusercontent.com", "microsoft": "..."},
+  "allowSingleProvider": false
+}'/>
+```
+
+Only `https` endpoints are accepted, so a misconfigured plaintext endpoint
+cannot silently carry proofs in the clear. The two OPRF servers must be run by
+**different operators** — see [server/README.md](server/README.md).
 
 For most people — someone who would otherwise lose the account outright — a key
 protected by their Google account, with its 2FA and recovery flows, is far
@@ -240,6 +261,12 @@ Moments uses real cryptography, but it makes deliberate tradeoffs in favor of si
   Google" alone, Google can obtain your key if it chooses to, because it issues
   the only credential involved. Linking a second provider removes this, and so
   does adding a PIN. The non-social factors involve neither party.
+- **Unanimous OPRF collusion still breaks a social pair.** Each leg is sent to
+  every configured server, so reconstructing a key takes *all* the operators
+  rather than any two — but if every one of them colludes, they learn both
+  `sub` values from the proofs and can derive the key. Closing that needs
+  something no server ever sees, which means a PIN. This is a real limit of
+  "no secret to remember, works on a brand-new device", not an oversight.
 - **OPRF keys are per-account.** A server derives its scalar from its master
   secret *and* the account's tag, so it is never an oracle that will apply one
   global key to any point it is handed. Without this, anyone holding a valid

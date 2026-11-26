@@ -39,7 +39,7 @@
        custom relays and members' media lives on arbitrary Blossom hosts. style-src keeps
        'unsafe-inline' (the whole UI is inline styles; styles can't execute JS).
        worker-src 'self' pre-clears the v0.9 service worker. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-3rr2001voqeoZYqylpCpAnZNfjJrzc3An7yIr1LoHzg='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-TdneohPkFSWWniwiAzOXYzzHhf8f+LMJiF4MnWqfhBo='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
   <!-- Deployment config. Editing this one line is the whole setup: no code
        change, no rebuild, no hunting through the bundle. Operators fill in
        their OAuth client IDs and the URLs of two OPRF servers run by DIFFERENT
@@ -2124,6 +2124,9 @@ const MOMENTS_CONFIG=(()=>{
       .map(u=>u.replace(/\/+$/,''));
     return {
       oprfServers:urls,
+      // A provider is either a bare client-id string, or an object that also
+      // overrides authUrl/issuer — needed to point at a self-hosted OIDC
+      // provider, and to exercise the real flow in tests.
       providers:(raw.providers&&typeof raw.providers==='object')?raw.providers:{},
       allowSingleProvider:raw.allowSingleProvider===true,
     };
@@ -2133,7 +2136,7 @@ const MOMENTS_CONFIG=(()=>{
 const SOCIAL_PROVIDERS={
   google:{
     label:'Google',
-    clientId:MOMENTS_CONFIG.providers.google||'',
+    clientId:'',
     authUrl:'https://accounts.google.com/o/oauth2/v2/auth',
     scope:'openid',
     issuerTest:i=>i==='https://accounts.google.com',
@@ -2141,7 +2144,7 @@ const SOCIAL_PROVIDERS={
   // Microsoft's `iss` carries the tenant GUID, so it is matched by shape.
   microsoft:{
     label:'Microsoft',
-    clientId:MOMENTS_CONFIG.providers.microsoft||'',
+    clientId:'',
     authUrl:'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
     scope:'openid',
     issuerTest:i=>/^https:\/\/login\.microsoftonline\.com\/[0-9a-f-]{36}\/v2\.0$/i.test(i),
@@ -2155,6 +2158,24 @@ function socialPairAvailable(){ return SOCIAL_PAIR.every(socialAvailable); }
    because that mode is reachable by the provider that issues the credential.
    The default is the two-provider mode, which no single provider can open. */
 function socialSingleAllowed(){ return MOMENTS_CONFIG.allowSingleProvider===true; }
+/* Fold any per-provider overrides from the config over the built-in defaults.
+   An `issuer` override replaces the issuer test with an exact match, so a
+   deployment pointing at its own OIDC provider still pins exactly one issuer
+   rather than loosening the check. */
+(function applyProviderOverrides(){
+  for(const [name,raw] of Object.entries(MOMENTS_CONFIG.providers||{})){
+    const base=SOCIAL_PROVIDERS[name]; if(!base) continue;
+    if(typeof raw==='string'){ base.clientId=raw; continue; }
+    if(!raw || typeof raw!=='object') continue;
+    if(typeof raw.clientId==='string') base.clientId=raw.clientId;
+    if(typeof raw.authUrl==='string') base.authUrl=raw.authUrl;
+    if(typeof raw.issuer==='string'){
+      const want=raw.issuer;
+      base.issuerTest=i=>i===want;
+    }
+  }
+})();
+
 function socialAvailable(p){ return !!(SOCIAL_PROVIDERS[p] && SOCIAL_PROVIDERS[p].clientId); }
 function socialAnyAvailable(){ return Object.keys(SOCIAL_PROVIDERS).some(socialAvailable); }
 

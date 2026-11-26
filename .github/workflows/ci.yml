@@ -30,3 +30,6 @@ jobs:
       # Spins up two OPRF servers itself, so PIN enrollment and recovery are
       # exercised against real HTTP and real rate limiting.
       - run: npm run test:e2e
+      # A genuine OIDC sign-in in a real browser: real popup, real redirect,
+      # real JWKS verification, two real OPRF servers, a real relay.
+      - run: npm run test:login

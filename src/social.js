@@ -58,6 +58,9 @@ const MOMENTS_CONFIG=(()=>{
       .map(u=>u.replace(/\/+$/,''));
     return {
       oprfServers:urls,
+      // A provider is either a bare client-id string, or an object that also
+      // overrides authUrl/issuer — needed to point at a self-hosted OIDC
+      // provider, and to exercise the real flow in tests.
       providers:(raw.providers&&typeof raw.providers==='object')?raw.providers:{},
       allowSingleProvider:raw.allowSingleProvider===true,
     };
@@ -67,7 +70,7 @@ const MOMENTS_CONFIG=(()=>{
 const SOCIAL_PROVIDERS={
   google:{
     label:'Google',
-    clientId:MOMENTS_CONFIG.providers.google||'',
+    clientId:'',
     authUrl:'https://accounts.google.com/o/oauth2/v2/auth',
     scope:'openid',
     issuerTest:i=>i==='https://accounts.google.com',
@@ -75,7 +78,7 @@ const SOCIAL_PROVIDERS={
   // Microsoft's `iss` carries the tenant GUID, so it is matched by shape.
   microsoft:{
     label:'Microsoft',
-    clientId:MOMENTS_CONFIG.providers.microsoft||'',
+    clientId:'',
     authUrl:'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
     scope:'openid',
     issuerTest:i=>/^https:\/\/login\.microsoftonline\.com\/[0-9a-f-]{36}\/v2\.0$/i.test(i),
@@ -89,6 +92,24 @@ function socialPairAvailable(){ return SOCIAL_PAIR.every(socialAvailable); }
    because that mode is reachable by the provider that issues the credential.
    The default is the two-provider mode, which no single provider can open. */
 function socialSingleAllowed(){ return MOMENTS_CONFIG.allowSingleProvider===true; }
+/* Fold any per-provider overrides from the config over the built-in defaults.
+   An `issuer` override replaces the issuer test with an exact match, so a
+   deployment pointing at its own OIDC provider still pins exactly one issuer
+   rather than loosening the check. */
+(function applyProviderOverrides(){
+  for(const [name,raw] of Object.entries(MOMENTS_CONFIG.providers||{})){
+    const base=SOCIAL_PROVIDERS[name]; if(!base) continue;
+    if(typeof raw==='string'){ base.clientId=raw; continue; }
+    if(!raw || typeof raw!=='object') continue;
+    if(typeof raw.clientId==='string') base.clientId=raw.clientId;
+    if(typeof raw.authUrl==='string') base.authUrl=raw.authUrl;
+    if(typeof raw.issuer==='string'){
+      const want=raw.issuer;
+      base.issuerTest=i=>i===want;
+    }
+  }
+})();
+
 function socialAvailable(p){ return !!(SOCIAL_PROVIDERS[p] && SOCIAL_PROVIDERS[p].clientId); }
 function socialAnyAvailable(){ return Object.keys(SOCIAL_PROVIDERS).some(socialAvailable); }
 

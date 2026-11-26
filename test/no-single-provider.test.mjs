@@ -167,3 +167,62 @@ test('a relay holding every byte of the vault learns nothing', async () => {
     assert.notEqual(fromPublicOnly, root);
   });
 });
+
+/* ── The boundary, demonstrated rather than asserted ──
+ *
+ * Under "the user supplies no secret" + "recovery works on a brand-new device
+ * with no prior state", the key must be a deterministic function of the
+ * provider identities and public data. The OPRF operators collectively hold
+ * every key, so they can evaluate any input offline, without a proof and
+ * without the rate limiter — they ARE the oracle. Therefore a unanimous
+ * coalition can always derive the key.
+ *
+ * That is a property of the requirements, not of this implementation, so it is
+ * worth showing concretely: the coalition succeeds, and the only thing that
+ * stops it is the user supplying something no server ever sees.
+ */
+const OPRF_KEYS = ['a1'.repeat(32), 'b2'.repeat(32)];
+
+// What a coalition of all operators can compute alone, with no proof at all.
+async function coalitionRoot(identA, identB, pin = '') {
+  const { createHash } = await import('node:crypto');
+  const [x, y] = order(identA, identB);
+  const input = await sha256(strToBytes(`moments:social-pair:v1:${x.iss}:${x.sub}|${y.iss}:${y.sub}:${pin}`));
+  const point = await oprfHashToCurve(OPRF_DOMAIN, input);
+  const keyForTag = (master, tag) => {
+    for (let i = 0; i < 256; i++) {
+      const h = createHash('sha256').update('moments:oprf:tagkey:v1:').update(master).update(':').update(tag).update(Buffer.from([i])).digest();
+      const v = BigInt('0x' + h.toString('hex'));
+      if (v > 1n && v < secp256k1.CURVE.n) return v;
+    }
+  };
+  const parts = [];
+  for (const ident of [x, y]) {
+    const tag = await tagOf(ident);
+    for (const master of OPRF_KEYS) parts.push(point.multiply(keyForTag(master, tag)).toRawBytes(true));
+  }
+  return bytesToHex(await sha256(concatBytes(strToBytes(OPRF_DOMAIN + ':root:'), ...parts)));
+}
+
+test('BOUNDARY: a unanimous coalition of OPRF operators CAN derive the key', async () => {
+  await withServers(async urls => {
+    const real = await pairRoot(urls, google.mint(VICTIM_G), microsoft.mint(VICTIM_M));
+    const bySideChannel = await coalitionRoot({ iss: GOOGLE_ISS, sub: VICTIM_G }, { iss: MS_ISS, sub: VICTIM_M });
+    assert.equal(bySideChannel, real,
+      'this is expected: holding every OPRF key means being the oracle, so no proof is needed');
+  });
+});
+
+test('BOUNDARY: a PIN the servers never see defeats even that coalition', async () => {
+  await withServers(async urls => {
+    const withPin = await pairRoot(urls, google.mint(VICTIM_G), microsoft.mint(VICTIM_M), '739104');
+    // The coalition knows both identities and every key, but not the PIN.
+    const guesses = ['', '000000', '123456', '739105', '111111'];
+    for (const g of guesses) {
+      const attempt = await coalitionRoot({ iss: GOOGLE_ISS, sub: VICTIM_G }, { iss: MS_ISS, sub: VICTIM_M }, g);
+      assert.notEqual(attempt, withPin, `coalition must not derive the key from guess ${JSON.stringify(g)}`);
+    }
+    // And the right PIN does reproduce it, so the factor genuinely works.
+    assert.equal(await coalitionRoot({ iss: GOOGLE_ISS, sub: VICTIM_G }, { iss: MS_ISS, sub: VICTIM_M }, '739104'), withPin);
+  });
+});

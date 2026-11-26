@@ -142,6 +142,22 @@ This is the default: new social accounts are enrolled as a pair, and
 single-provider sign-in has to be switched on deliberately
 (`allowSingleProvider`), because that mode is reachable by the provider.
 
+### Has this actually been run?
+
+Yes, end to end, in a real browser — see `test/live-login.e2e.mjs`, which runs
+in CI. A real OIDC provider performs a real popup navigation and redirect, the
+app really postMessages the token back to its opener, two real OPRF servers
+really fetch the JWKS and verify the signature, and the vault really goes to a
+real relay. The user side is **two clicks and nothing typed**. Then a
+brand-new browser profile, two clicks again, and the same identity comes back.
+
+The one thing not real is the issuer's domain: signing in as an actual Google
+user needs Google-registered OAuth credentials and a human at a consent
+screen. `test/live-providers.test.mjs` covers what can be checked against the
+real Google and Microsoft endpoints without those — their live issuer strings,
+the JWKS URLs derived from them, and that every published key imports through
+the same code path the verifier uses.
+
 ### Turning it on
 
 Everything is off until configured, and configuring it is one line — the
@@ -261,12 +277,16 @@ Moments uses real cryptography, but it makes deliberate tradeoffs in favor of si
   Google" alone, Google can obtain your key if it chooses to, because it issues
   the only credential involved. Linking a second provider removes this, and so
   does adding a PIN. The non-social factors involve neither party.
-- **Unanimous OPRF collusion still breaks a social pair.** Each leg is sent to
-  every configured server, so reconstructing a key takes *all* the operators
-  rather than any two — but if every one of them colludes, they learn both
-  `sub` values from the proofs and can derive the key. Closing that needs
-  something no server ever sees, which means a PIN. This is a real limit of
-  "no secret to remember, works on a brand-new device", not an oversight.
+- **Unanimous OPRF collusion breaks a social pair, and always will.** Each leg
+  goes to every configured server, so it takes *all* the operators rather than
+  any two. But the limit is not fixable by better engineering. If the user
+  supplies no secret and recovery must work on a brand-new device, the key is
+  by definition a function of the provider identities and public data — and the
+  operators collectively hold every OPRF key, so they can evaluate any input
+  offline, with no proof and no rate limit. They *are* the oracle.
+  `test/no-single-provider.test.mjs` demonstrates the coalition succeeding,
+  rather than leaving it as a caveat, and demonstrates the only thing that
+  stops it: a PIN the servers never see.
 - **OPRF keys are per-account.** A server derives its scalar from its master
   secret *and* the account's tag, so it is never an oracle that will apply one
   global key to any point it is handed. Without this, anyone holding a valid

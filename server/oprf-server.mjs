@@ -110,12 +110,21 @@ const ISSUERS = [
   { test: i => /^https:\/\/login\.microsoftonline\.com\/[0-9a-f-]{36}\/v2\.0$/i.test(i),
     jwks: i => i.replace(/\/v2\.0$/, '') + '/discovery/v2.0/keys' },
 ];
-function issuerCfg(iss) { return ISSUERS.find(c => c.test(iss)) || null; }
+/* Extra issuers a deployment trusts, beyond the built-ins. Set per server
+ * instance, never globally, so one deployment's choice cannot widen another's.
+ * Each entry pins an exact issuer string and its JWKS URL. */
+function issuerCfg(iss, extra) {
+  const all = (extra || []).concat(ISSUERS);
+  return all.find(c => c.test(iss)) || null;
+}
+export function makeExtraIssuer(issuer, jwksUrl) {
+  return { test: i => i === issuer, jwks: () => jwksUrl };
+}
 
 function b64urlToBuf(s) { return Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64'); }
 
-async function fetchJwks(issuer, fetchImpl) {
-  const cfg = issuerCfg(issuer);
+async function fetchJwks(issuer, fetchImpl, extra) {
+  const cfg = issuerCfg(issuer, extra);
   if (!cfg) throw new Error('unknown-issuer');
   const hit = jwksCache.get(issuer);
   if (hit && Date.now() - hit.at < JWKS_TTL_MS) return hit.keys;
@@ -131,7 +140,7 @@ async function fetchJwks(issuer, fetchImpl) {
 /* Verifies signature, issuer, audience, expiry and freshness, then returns the
  * claims. Audience must match a configured client id: a token minted for some
  * other app must not unlock anything here. */
-export async function verifyIdToken(jwt, { audiences, now = Date.now(), fetchImpl, maxAgeMs = 10 * 60 * 1000 } = {}) {
+export async function verifyIdToken(jwt, { audiences, now = Date.now(), fetchImpl, maxAgeMs = 10 * 60 * 1000, extraIssuers } = {}) {
   const parts = String(jwt).split('.');
   if (parts.length !== 3) throw new Error('bad-jwt');
   let header, claims;
@@ -141,7 +150,7 @@ export async function verifyIdToken(jwt, { audiences, now = Date.now(), fetchImp
   } catch { throw new Error('bad-jwt'); }
   if (header.alg !== 'RS256') throw new Error('bad-alg');       // never accept "none", never HS*
   if (!claims.sub || !claims.iss) throw new Error('bad-claims');
-  if (!issuerCfg(claims.iss)) throw new Error('unknown-issuer');
+  if (!issuerCfg(claims.iss, extraIssuers)) throw new Error('unknown-issuer');
 
   const auds = [].concat(claims.aud || []);
   if (!audiences || !audiences.length) throw new Error('no-audience-configured');
@@ -154,7 +163,7 @@ export async function verifyIdToken(jwt, { audiences, now = Date.now(), fetchImp
   if (!iatMs || now - iatMs > maxAgeMs) throw new Error('stale');
   if (iatMs - now > 5 * 60 * 1000) throw new Error('future');
 
-  const keys = await fetchJwks(claims.iss, fetchImpl);
+  const keys = await fetchJwks(claims.iss, fetchImpl, extraIssuers);
   const jwk = keys.find(k => k.kid === header.kid) || null;
   if (!jwk) throw new Error('unknown-kid');
   const pub = createPublicKey({ key: jwk, format: 'jwk' });
@@ -239,6 +248,7 @@ export function createServer(opts = {}) {
   const audiences = opts.audiences
     || String(process.env.OPRF_AUDIENCES || '').split(',').map(s => s.trim()).filter(Boolean);
   const fetchImpl = opts.fetchImpl;
+  const extraIssuers = opts.extraIssuers || [];
   const nowFn = opts.now || (() => Date.now());
   const srv = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') { res.writeHead(204, CORS); return res.end(); }
@@ -272,7 +282,7 @@ export function createServer(opts = {}) {
     if (typeof body.proof === 'string' && body.proof) {
       let claims;
       try {
-        claims = await verifyIdToken(body.proof, { audiences, now: nowFn(), fetchImpl });
+        claims = await verifyIdToken(body.proof, { audiences, now: nowFn(), fetchImpl, extraIssuers });
       } catch (e) {
         return json(res, 401, { error: 'bad-proof', detail: String(e.message) });
       }

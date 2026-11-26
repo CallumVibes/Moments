@@ -39,7 +39,7 @@
        custom relays and members' media lives on arbitrary Blossom hosts. style-src keeps
        'unsafe-inline' (the whole UI is inline styles; styles can't execute JS).
        worker-src 'self' pre-clears the v0.9 service worker. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-sx12fU+GsVEExPxDOUb+uHuzz4SXjVMGknrG93SKjWc='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'sha256-pBw28MuB4efXFQ0qF8E+KJPqwEN7fJmgW+VvuXCQAi8=' 'sha256-rxIIUMeQCOiqIYQtWxUlRCZGgS9SpUf/Hc/OBqAou+Y='; style-src 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' blob: data: https:; media-src blob: data:; connect-src https: wss:; manifest-src blob:; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <title>Moment's — Your Network Only</title>
   <meta name="theme-color" content="#0F0F14"/>
@@ -276,6 +276,9 @@
         <span class="warn-icon">🔑</span>
         <span>Your <strong>moment key</strong> is your account. We'll show it to you next — save it somewhere safe, like a password manager.</span>
       </div>
+      <button class="btn-primary" id="btn-passkey" data-act="signupPasskey" style="display:none">⚡ Create with Face ID / Fingerprint</button>
+      <div class="field-error" id="passkey-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
+      <div class="divider" id="passkey-or" style="display:none">or save a key yourself</div>
       <button class="btn-primary" id="btn-gen" data-act="generateKeys">Generate My Keys →</button>
       <p class="modal-switch">Already have a key? <a data-act="switchModal" data-a="signup" data-b="login">Log in</a></p>
     </div>
@@ -329,6 +332,9 @@
     <p class="modal-sub">Log in with your moment key or upload your key file.</p>
 
     <div id="login-body">
+      <button class="btn-primary" id="btn-passkey-login" data-act="loginPasskey" style="display:none">⚡ Sign in with Face ID / Fingerprint</button>
+      <div class="field-error" id="passkey-login-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
+      <div class="divider" id="passkey-login-or" style="display:none">or use your moment key</div>
       <div class="field">
         <label>Paste your moment key</label>
         <input type="password" id="login-nsec" placeholder="nsec1…" autocomplete="off" spellcheck="false"/>
@@ -473,14 +479,18 @@ async function schnorrVerify(pubHex, msg32, sigHex){ return MomentsCrypto.schnor
 async function verifyEvent(ev){ return MomentsCrypto.verifyEvent(ev); }
 
 // Build a signed Nostr event
-async function makeNostrEvent(kind, tags, content){
-  if(!_sk) throw new Error('no key');
-  const pubkey=bytesToHex(getPubKey(_sk));
+// skOverride lets a caller sign with a key other than the logged-in identity.
+// The passkey vault needs this: its event is signed by a key derived from the
+// passkey, so the vault can never be linked to the npub it restores.
+async function makeNostrEvent(kind, tags, content, skOverride){
+  const sk=skOverride||_sk;
+  if(!sk) throw new Error('no key');
+  const pubkey=bytesToHex(getPubKey(sk));
   const created_at=Math.floor(Date.now()/1000);
   const serial=JSON.stringify([0, pubkey, created_at, kind, tags, content]);
   const idBytes=await sha256(strToBytes(serial));
   const id=bytesToHex(idBytes);
-  const sig=await schnorrSign(idBytes, _sk);
+  const sig=await schnorrSign(idBytes, sk);
   return { id, pubkey, created_at, kind, tags, content, sig };
 }
 
@@ -1929,13 +1939,324 @@ async function completeSignup(){
   if(err) err.style.display='none';
   _pendingName=name;
   persistSession(_nsec);
+  // NOT setting keyBackedUp for a vault-only account, deliberately. The vault is
+  // verified on the device that made it, but PRF output is not guaranteed by any
+  // vendor documentation to be identical after a passkey syncs to a second
+  // device, and there are field reports of it differing across one ecosystem
+  // (iPhone -> Mac). Until a second, independent recovery factor is enrolled,
+  // "you have a backup" is a promise this app cannot keep, so the nudge stays.
+  const vaultBacked=false;
   setStep(4); // success
   setTimeout(async ()=>{
     closeModal('signup');
     await enterApp(_npub);
-    if(A){ A.profile.name=_pendingName; syncMe(); saveData(); renderApp(); }
+    if(A){ A.profile.name=_pendingName; if(vaultBacked) A.profile.keyBackedUp=true; syncMe(); saveData(); renderApp(); }
     _pendingName='';
   }, 1500);
+}
+
+/* ════════════════════════════════════════════
+   PASSKEY VAULT — "never lose your key"
+
+   The problem: an nsec is the whole account, and most people will not save a
+   63-character secret. Telling them harder doesn't work.
+
+   The fix, without adding a server: wrap the nsec in a key that lives inside a
+   passkey, and park the ciphertext on the relays the app already talks to.
+
+     passkey PRF secret ──HKDF──┬──> vaultSk   (secp256k1, LOCATES the vault)
+                                └──> wrapKey   (AES-256-GCM, OPENS the vault)
+
+   The vault is a NIP-78 replaceable event (kind 30078) signed by vaultSk. The
+   user's real identity key never signs it and never appears in it in the clear.
+   Relays hold an opaque blob under an opaque pubkey; they cannot link it to the
+   npub it restores, and cannot open it.
+
+   Why this and not "sign in with Google": the recovery path a normal person
+   already has IS their platform account — iCloud Keychain on iPhone, Google
+   Password Manager on Android sync passkeys for them with no extra step. So a
+   passkey rides exactly the durability people want from social login, while the
+   wrapping key stays on their devices. No OAuth client, no redirect URI (which
+   would break self-hosted copies), nobody in the middle holding the key.
+
+   Replaceable events are deliberate: relays keep the latest one per
+   (pubkey, kind, d-tag) and are expected to retain it, unlike ordinary notes,
+   which get pruned — see the durability warning in the README.
+════════════════════════════════════════════ */
+const VAULT_KIND=30078;              // NIP-78 app-specific replaceable event
+const VAULT_D='moments:vault:v1';    // d-tag — one vault per identity
+const VAULT_PRF_SALT='moments:vault:prf:v1';
+
+// PRF output is only reliably delivered on an assertion, not on creation —
+// creation-time eval is inconsistent across platform authenticators. So every
+// path here does create-then-assert rather than trusting create's extension
+// results. Cheap (one extra biometric prompt at signup), and it also proves the
+// credential can actually be read back before we rely on it.
+function vaultSupported(){
+  try{
+    if(!(window.PublicKeyCredential && navigator.credentials
+         && typeof navigator.credentials.create==='function'
+         && window.isSecureContext)) return false;
+    const h=location.hostname;
+    if(!h) return false;                       // file:// — rp.id would be empty
+    // An rp.id must be a registrable domain, never a bare IP literal. A
+    // self-hosted copy reached at https://192.168.1.5 would otherwise show the
+    // button and then fail with SecurityError at the worst moment.
+    if(/^\[?[0-9a-f:]+\]?$/i.test(h) && h!=='localhost') return false;   // IPv6
+    if(/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return false;                   // IPv4
+    return true;
+  }catch(_){ return false; }
+}
+
+function _vaultRand(n){ const b=new Uint8Array(n); crypto.getRandomValues(b); return b; }
+
+// Create a discoverable (resident) passkey. Discoverable matters: on a new
+// device there is no username to type, so the authenticator must be able to
+// offer the credential unprompted.
+async function vaultCreatePasskey(label){
+  const name=(label&&label.trim())||'Moment’s';
+  const cred=await navigator.credentials.create({
+    publicKey:{
+      rp:{ name:'Moment’s', id:location.hostname },
+      user:{ id:_vaultRand(16), name:name, displayName:name },
+      challenge:_vaultRand(32),
+      pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],
+      authenticatorSelection:{ residentKey:'required', requireResidentKey:true, userVerification:'required' },
+      extensions:{ prf:{} },
+      timeout:120000,
+    }
+  });
+  if(!cred) throw new Error('passkey-cancelled');
+  return cred;
+}
+
+// Evaluate the PRF and return 32 bytes. Pass a credential id to target the
+// passkey we just made; omit it on login so the authenticator offers whichever
+// Moments passkey the user has.
+async function vaultPrfSecret(credId){
+  const pk={
+    challenge:_vaultRand(32),
+    rpId:location.hostname,
+    userVerification:'required',
+    extensions:{ prf:{ eval:{ first:strToBytes(VAULT_PRF_SALT) } } },
+    timeout:120000,
+  };
+  if(credId) pk.allowCredentials=[{type:'public-key',id:credId}];
+  const assertion=await navigator.credentials.get({publicKey:pk});
+  if(!assertion) throw new Error('passkey-cancelled');
+  let out=null;
+  try{ out=assertion.getClientExtensionResults().prf.results.first; }catch(_){ out=null; }
+  if(!out) throw new Error('prf-unsupported');
+  const bytes=new Uint8Array(out);
+  if(bytes.length<32) throw new Error('prf-unsupported');
+  return bytes.slice(0,32);
+}
+
+// Split the PRF secret into a locator keypair and a wrapping key. Separate
+// HKDF salts keep them independent: a relay that somehow learned vaultSk still
+// learns nothing about wrapKey.
+async function vaultDerive(prfBytes){
+  const base=await crypto.subtle.importKey('raw', prfBytes, 'HKDF', false, ['deriveKey','deriveBits']);
+  const wrapKey=await crypto.subtle.deriveKey(
+    {name:'HKDF',hash:'SHA-256',salt:strToBytes('moments-vault-wrap'),info:strToBytes('vault-wrap-key')},
+    base, {name:'AES-GCM',length:256}, false, ['encrypt','decrypt']);
+  // 32 HKDF bytes are a valid secp256k1 scalar with overwhelming probability;
+  // re-derive under a fresh info string in the (astronomically unlikely) case
+  // they aren't, rather than failing the user's signup.
+  let sk=null, pubHex=null;
+  for(let i=0;i<4 && !sk;i++){
+    const bits=await crypto.subtle.deriveBits(
+      {name:'HKDF',hash:'SHA-256',salt:strToBytes('moments-vault-sk'),info:strToBytes('vault-signing-key'+(i?':'+i:''))},
+      base, 256);
+    const cand=new Uint8Array(bits);
+    try{ pubHex=bytesToHex(getPubKey(cand)); sk=cand; }catch(_){ sk=null; }
+  }
+  if(!sk) throw new Error('vault-derive-failed');
+  return { vaultSk:sk, vaultPub:pubHex, wrapKey };
+}
+
+// Give the relay pool a moment to come up before a read or write. Without this
+// a vault write silently lands in Relay's offline queue and the user is told
+// they have a backup they don't yet have.
+function vaultWaitForRelay(ms){
+  return new Promise(resolve=>{
+    try{ Relay.connect(); }catch(_){}
+    if(Relay.isConnected()){ resolve(true); return; }
+    const started=Date.now();
+    const t=setInterval(()=>{
+      if(Relay.isConnected()){ clearInterval(t); resolve(true); }
+      else if(Date.now()-started>ms){ clearInterval(t); resolve(false); }
+    }, 150);
+  });
+}
+
+// Encrypt the nsec and publish it as the vault. `origin` rides along so a
+// restore can rebuild _keyGeneratedHere — provenance can't be recovered from an
+// nsec, and NIP-62 vanish must never be offered for a key the user imported.
+// Read the vault straight back and confirm it yields the same nsec. This is not
+// paranoia about our own AES: it catches the case where the PRF secret this
+// device returns does not reproduce the one we just encrypted under, and the
+// case where a relay accepted the event and dropped it. Without this check the
+// app would promise a backup it cannot open. Reuses the derived key, so it
+// costs no extra biometric prompt.
+async function vaultVerify(nsec, derived){
+  const got=await vaultOpen(derived);
+  return !!(got && got.nsec===nsec);
+}
+
+async function vaultStore(nsec, origin, derived){
+  const iv=_vaultRand(12);
+  const payload=JSON.stringify({ v:1, nsec:nsec, origin:origin==='moments'?'moments':'imported' });
+  const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv}, derived.wrapKey, strToBytes(payload)));
+  const content=_b64(concatBytes(iv, ct));
+  const ev=await makeNostrEvent(VAULT_KIND, [['d',VAULT_D]], content, derived.vaultSk);
+  const online=await vaultWaitForRelay(6000);
+  const sent=Relay.publish(ev);
+  // Queued-but-not-sent still counts as a failure to the caller: we must not
+  // claim a durable backup exists until a relay has actually taken it.
+  return { ok:!!(online&&sent), event:ev };
+}
+
+// Find the vault for this pubkey. Reads are hostile input: every candidate is
+// signature-checked before we try to decrypt it, so a lying relay can at worst
+// waste our time, never feed us someone else's blob.
+function vaultFetch(pubHex, timeoutMs){
+  const limit=typeof timeoutMs==='number'?timeoutMs:9000;
+  return new Promise(resolve=>{
+    const subId='vault-'+Math.random().toString(36).slice(2,10);
+    let best=null, grace=null, settled=false;
+    const finish=()=>{
+      if(settled) return; settled=true;
+      if(grace) clearTimeout(grace);
+      clearTimeout(hard);
+      try{ Relay.unsubscribe(subId); }catch(_){}
+      resolve(best);
+    };
+    const hard=setTimeout(finish, limit);
+    Relay.subscribe(subId, [{authors:[pubHex], kinds:[VAULT_KIND], '#d':[VAULT_D], limit:4}],
+      ev=>{
+        if(!ev || ev.kind!==VAULT_KIND || ev.pubkey!==pubHex) return;
+        if(!best || (ev.created_at||0)>(best.created_at||0)) best=ev;
+        // Don't block on the slowest relay once we have a plausible answer, but
+        // do wait briefly in case a faster relay is serving a stale copy.
+        if(!grace) grace=setTimeout(finish, 1500);
+      },
+      null);
+  });
+}
+
+async function vaultOpen(derived){
+  const ev=await vaultFetch(derived.vaultPub);
+  if(!ev) return null;
+  if(!(await verifyEvent(ev))) return null;
+  let packed;
+  try{ packed=_unb64(ev.content); }catch(_){ return null; }
+  if(packed.length<13) return null;
+  let pt;
+  try{
+    pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:packed.slice(0,12)}, derived.wrapKey, packed.slice(12));
+  }catch(_){ return null; }   // wrong key, or a blob that isn't ours
+  let obj;
+  try{ obj=JSON.parse(new TextDecoder().decode(new Uint8Array(pt))); }catch(_){ return null; }
+  if(!obj || typeof obj.nsec!=='string' || !nsecToNpub(obj.nsec)) return null;
+  return obj;
+}
+
+/* ── Passkey signup ──
+   Generates the identity, locks a copy in the vault, and skips the
+   "write down your key" step entirely. The key is still downloadable later
+   from Settings for anyone who wants a paper copy. */
+let _vaultCreated=false;
+function vaultMsg(id, text, bad){
+  const el=document.getElementById(id);
+  if(!el) return;
+  el.textContent=text||'';
+  el.style.display=text?'block':'none';
+  el.style.color=bad?'var(--red,#f87171)':'var(--muted)';
+}
+function vaultErrText(err){
+  const m=(err&&err.message)||'';
+  if(m==='prf-unsupported') return "This device's passkeys can't store a backup key. Use the key-file option below instead.";
+  if(m==='passkey-cancelled' || (err&&(err.name==='NotAllowedError'||err.name==='AbortError'))) return 'Passkey cancelled. Nothing was changed.';
+  if(err&&err.name==='InvalidStateError') return 'A Moments passkey already exists on this device — try "Sign in" instead.';
+  if(err&&err.name==='NotSupportedError') return "This browser can't create the right kind of passkey. Use the key-file option below.";
+  if(err&&err.name==='SecurityError') return 'Passkeys need a proper domain name (not an IP address) over HTTPS. Use the key-file option below.';
+  if(m==='vault-publish-failed') return "Couldn't reach the relays to save your backup. Check your connection and try again.";
+  if(m==='vault-verify-failed') return "Your backup saved but couldn't be read back, so it isn't trustworthy. Use the key-file option below instead.";
+  return 'Something went wrong setting up your passkey. '+(m||'Please try again.');
+}
+
+async function signupPasskey(){
+  const btn=document.getElementById('btn-passkey');
+  if(btn){ btn.disabled=true; btn.textContent='Waiting for your passkey…'; }
+  vaultMsg('passkey-err','');
+  try{
+    const keys=nostrGenerate();
+    const cred=await vaultCreatePasskey('Moment’s');
+    if(btn) btn.textContent='Saving your backup…';
+    const prf=await vaultPrfSecret(cred.rawId);
+    const derived=await vaultDerive(prf);
+    const res=await vaultStore(keys.nsec, 'moments', derived);
+    if(!res.ok) throw new Error('vault-publish-failed');
+    if(btn) btn.textContent='Checking your backup…';
+    if(!(await vaultVerify(keys.nsec, derived))) throw new Error('vault-verify-failed');
+    // Only now adopt the identity — a half-made account with no backup is
+    // exactly the failure this feature exists to prevent.
+    _keyGeneratedHere=true;
+    _nsec=keys.nsec; _npub=keys.npub;
+    const dec=bech32Decode(_nsec); _sk=dec?dec.bytes:null;
+    _vaultCreated=true;
+    const nsecEl=document.getElementById('show-nsec');
+    if(nsecEl){ nsecEl.textContent=_nsec; nsecEl.style.filter='blur(5px)'; }
+    toNameStep();
+  }catch(err){
+    vaultMsg('passkey-err', vaultErrText(err), true);
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='⚡ Create with Face ID / Fingerprint'; }
+  }
+}
+
+/* ── Passkey login ──
+   No username, no nsec: the authenticator offers the passkey, the PRF unlocks
+   the vault, the vault hands back the identity. */
+async function loginPasskey(){
+  const btn=document.getElementById('btn-passkey-login');
+  if(btn){ btn.disabled=true; btn.textContent='Waiting for your passkey…'; }
+  vaultMsg('passkey-login-err','');
+  try{
+    const prf=await vaultPrfSecret(null);
+    if(btn) btn.textContent='Finding your backup…';
+    await vaultWaitForRelay(6000);
+    const derived=await vaultDerive(prf);
+    const obj=await vaultOpen(derived);
+    if(!obj){
+      vaultMsg('passkey-login-err', "That passkey works, but no backup turned up on the relays. If you have your moment key or key file, use those below.", true);
+      return;
+    }
+    const npub=nsecToNpub(obj.nsec);
+    const dec=bech32Decode(obj.nsec);
+    _npub=npub; _nsec=obj.nsec; _sk=dec?dec.bytes:null;
+    _keyGeneratedHere=(obj.origin==='moments');   // missing/unknown => imported
+    persistSession(obj.nsec);
+    showLoginSuccess();
+  }catch(err){
+    vaultMsg('passkey-login-err', vaultErrText(err), true);
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='⚡ Sign in with Face ID / Fingerprint'; }
+  }
+}
+
+// Reveal the passkey paths only where they can actually work. Everywhere else
+// the existing generate/paste flow is left exactly as it was.
+function vaultInitUi(){
+  if(!vaultSupported()) return;
+  ['btn-passkey','passkey-or','btn-passkey-login','passkey-login-or'].forEach(id=>{
+    const el=document.getElementById(id); if(el) el.style.display='';
+  });
+  // With a one-tap path available, generating a key to copy down by hand is the
+  // fallback, not the headline.
+  const gen=document.getElementById('btn-gen');
+  if(gen){ gen.className='btn-ghost'; gen.textContent='Generate a key I save myself'; }
 }
 
 /* ── Login ── */
@@ -7907,6 +8228,8 @@ registerActions({
   overlayClick:      (id,el,ev)=>overlayClick(ev,id),
   toggleLandingTheme:()=>toggleLandingTheme(),
   generateKeys:      ()=>generateKeys(),
+  signupPasskey:     ()=>signupPasskey(),
+  loginPasskey:      ()=>loginPasskey(),
   toggleBlur:        el=>{ el.style.filter=el.style.filter?'':'blur(5px)'; },
   doCopy:            (id,el)=>doCopy(id,el),
   downloadFile:      ()=>downloadFile(),
@@ -8431,6 +8754,9 @@ async function installApp(){
   const b=document.getElementById('install-btn'); if(b) b.style.display='none';
   try{ if(typeof A!=='undefined' && A.showSettings) renderApp(); }catch(_){}
 }
+/* ── Reveal the passkey sign-in paths where the platform supports them ── */
+vaultInitUi();
+
 (function iosInstallHint(){
   try{
     const ua=navigator.userAgent||'';

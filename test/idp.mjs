@@ -19,6 +19,7 @@ export async function startIdp({ port = 0, label = 'idp', subject = 'user-1' } =
   const kid = label + '-key';
   const jwk = { ...publicKey.export({ format: 'jwk' }), kid, alg: 'RS256', use: 'sig' };
   let currentSubject = subject;
+  let hasSession = true;      // whether prompt=none can be answered silently
   const seen = [];
 
   const srv = http.createServer((req, res) => {
@@ -33,8 +34,14 @@ export async function startIdp({ port = 0, label = 'idp', subject = 'user-1' } =
       const state = q.get('state') || '';
       const nonce = q.get('nonce') || '';
       const aud = q.get('client_id') || '';
-      seen.push({ aud, nonce, state, redirect, responseType: q.get('response_type') });
+      seen.push({ aud, nonce, state, redirect, responseType: q.get('response_type'), prompt: q.get('prompt') });
       if (!redirect) { res.writeHead(400); return res.end('missing redirect_uri'); }
+      // prompt=none must answer from an existing session or refuse without UI,
+      // exactly as Google and Microsoft do.
+      if (q.get('prompt') === 'none' && !hasSession) {
+        res.writeHead(302, { location: `${redirect}#error=login_required&state=${encodeURIComponent(state)}` });
+        return res.end();
+      }
       const now = Math.floor(Date.now() / 1000);
       const iss = `http://localhost:${srv.address().port}`;
       const h = b64u(JSON.stringify({ alg: 'RS256', kid, typ: 'JWT' }));
@@ -56,6 +63,8 @@ export async function startIdp({ port = 0, label = 'idp', subject = 'user-1' } =
     jwksUrl: `http://localhost:${p}/jwks`,
     requests: () => seen,
     setSubject: s => { currentSubject = s; },
+    setHasSession: v => { hasSession = !!v; },
+    promptsSeen: () => seen.map(r => r.prompt),
     close: () => srv.close(),
   };
 }

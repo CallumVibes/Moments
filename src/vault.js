@@ -438,6 +438,7 @@ function vaultErrText(err){
   if(m==='social-unconfigured') return 'This copy of Moments has no social sign-in configured.';
   if(m==='social-popup-blocked') return 'Your browser blocked the sign-in window. Allow pop-ups for this site and try again.';
   if(m==='social-cancelled') return 'Sign-in cancelled. Nothing was changed.';
+  if(m==='social-needs-interaction') return 'That account needs you to sign in. Try again and complete the provider\'s window.';
   if(m==='social-denied') return "That sign-in didn't complete. Try again, or use another method.";
   if(m==='social-bad-token'||m==='social-timeout') return 'That sign-in could not be completed. Try again, or use another method.';
   if(m==='social-same-provider') return 'Link two different providers — two accounts at the same company would not protect you from it.';
@@ -512,8 +513,9 @@ async function signupSocial(provider){
     let ek;
     if(socialPairAvailable() && !socialSingleAllowed()){
       const other=SOCIAL_PAIR.find(p=>p!==provider);
-      setLabel('Now confirm with '+((SOCIAL_PROVIDERS[other]||{}).label||other)+'…');
-      const identB=await socialSignIn(other);
+      setLabel('Confirming with '+((SOCIAL_PROVIDERS[other]||{}).label||other)+'…');
+      // Usually resolves from an existing session without a second tap.
+      const identB=await socialSignInQuiet(other);
       setLabel('Setting up your account…');
       ek=await vaultKeysFromSocialPair(ident, identB);
     } else {
@@ -558,7 +560,7 @@ async function loginSocialPair(){
   vaultMsg('social-login-err','');
   try{
     if(!_socialPending) throw new Error('social-bad-token');
-    const identB=await socialSignIn(second);
+    const identB=await socialSignInQuiet(second);
     const obj=await vaultReadEnrollment(await vaultKeysFromSocialPair(_socialPending, identB));
     if(!obj){
       vaultMsg('social-login-err', "Those two accounts aren't linked to a Moments account. Try another way in.", true);
@@ -580,8 +582,8 @@ async function loginSocial(provider){
   if(btn) btn.disabled=true;
   vaultMsg('social-login-err','');
   try{
-    setLabel('Waiting for '+label+'…');
-    const ident=await socialSignIn(provider);
+    setLabel('Signing in with '+label+'…');
+    const ident=await socialSignInQuiet(provider);
     setLabel('Finding your account…');
     await vaultWaitForRelay(6000);
     if(socialSingleAllowed()){
@@ -589,13 +591,27 @@ async function loginSocial(provider){
       if(obj){ vaultAdopt(obj); return; }
     }
     // No single-provider vault. It may be a two-provider account, which needs
-    // the other leg before the key can be formed at all.
+    // the other leg before the key can be formed at all. Try that leg silently
+    // first — if the person already has a session there, signing in stays a
+    // single tap and they never see the second provider at all.
     if(socialPairAvailable()){
       _socialPending=ident;
       const other=SOCIAL_PAIR.find(p=>p!==provider);
+      const otherLabel=(SOCIAL_PROVIDERS[other]||{}).label||other;
+      setLabel('Confirming with '+otherLabel+'…');
+      try{
+        const identB=await socialSignIn(other,{silent:true});
+        const paired=await vaultReadEnrollment(await vaultKeysFromSocialPair(ident, identB));
+        if(paired){ _socialPending=null; vaultAdopt(paired); return; }
+        vaultMsg('social-login-err', "Those accounts aren't linked to a Moments account. Try another way in.", true);
+        return;
+      }catch(err){
+        if((err&&err.message)!=='social-needs-interaction') throw err;
+        // Needs a real sign-in at the second provider — ask for it.
+      }
       const sb=document.getElementById('btn-social-second');
       if(sb){
-        sb.textContent='Continue with '+((SOCIAL_PROVIDERS[other]||{}).label||other);
+        sb.textContent='Continue with '+otherLabel;
         sb.style.display='';
       }
       vaultMsg('social-login-err', 'One more tap: your account is protected by two providers, so no single company can reach your key.');

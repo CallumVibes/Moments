@@ -53,7 +53,7 @@ none of them involves an account on anybody's server.
 
 | | What you hold | Works on a new device | Notes |
 |---|---|---|---|
-| **Google + Microsoft** | Nothing at all | Always | Two taps. **No single company can reach your key.** The default |
+| **Google + Microsoft** | Nothing at all | Always | Usually **one tap**. **No single company can reach your key.** The default |
 | **Continue with Google** | Nothing at all | Always | One tap, but Google *could* reach your key. Off unless an operator enables it |
 | **Passkey** | Face ID / fingerprint | Only if your passkey syncs *and* carries its PRF secret | One tap. Not guaranteed — see below |
 | **Handle + PIN** | 6+ digits | Always, while the PIN servers are up | Needs two OPRF servers — see below |
@@ -125,8 +125,12 @@ the first server; it cannot satisfy the second, so the root is never formed.
 Microsoft is in the same position. Neither company — nor one OPRF operator, nor
 a relay — can reach the key.
 
-This costs the user nothing to remember: two taps, no secrets, no backups, and
-it works on a brand-new device with nothing saved. It is the recommended mode,
+This costs the user nothing to remember, and usually nothing extra to do: the
+second provider is asked with `prompt=none` first, so if the person already has
+a session there it resolves silently and they never see it. Signing in is one
+tap, no secrets, no backups, and it works on a brand-new device with nothing
+saved. Only when the second provider has no session does it ask for a second
+tap, and the suite covers both paths. It is the recommended mode,
 and it is what `test/no-single-provider.test.mjs` exists to prove — that suite
 plays Google at full strength (minting tokens for any user, knowing both public
 `sub` values, reaching both servers) and asserts it still cannot derive the key.
@@ -148,8 +152,10 @@ Yes, end to end, in a real browser — see `test/live-login.e2e.mjs`, which runs
 in CI. A real OIDC provider performs a real popup navigation and redirect, the
 app really postMessages the token back to its opener, two real OPRF servers
 really fetch the JWKS and verify the signature, and the vault really goes to a
-real relay. The user side is **two clicks and nothing typed**. Then a
-brand-new browser profile, two clicks again, and the same identity comes back.
+real relay. The user side is **one click and nothing typed**. Then a brand-new browser
+profile, **one click**, and the same identity comes back — asserted exactly, as
+a click count. With the second provider's session removed, the suite also
+covers the fallback asking for the extra tap.
 
 The one thing not real is the issuer's domain: signing in as an actual Google
 user needs Google-registered OAuth credentials and a human at a consent
@@ -174,6 +180,18 @@ Everything is off until configured, and configuring it is one line — the
 Only `https` endpoints are accepted, so a misconfigured plaintext endpoint
 cannot silently carry proofs in the clear. The two OPRF servers must be run by
 **different operators** — see [server/README.md](server/README.md).
+
+Check a deployment before trusting it, and get the tag to paste:
+
+```sh
+npm run doctor -- https://oprf-a.example https://oprf-b.example   --google=...apps.googleusercontent.com --microsoft=...
+```
+
+It verifies the running servers rather than assuming: that they are reachable,
+that they **hold different keys** (identical output means one operator holds
+both halves), that keys are per-account rather than a global oracle, that
+unproven social requests are refused, and that CORS will not block the browser.
+It refuses to print a config if any of that fails.
 
 For most people — someone who would otherwise lose the account outright — a key
 protected by their Google account, with its 2FA and recovery flows, is far

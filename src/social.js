@@ -135,7 +135,13 @@ function socialPeekClaims(jwt){
    A popup rather than a full-page redirect because a redirect would throw away
    in-progress state, and rather than an iframe because the CSP sets
    frame-src 'none' (and Google refuses to be framed regardless). */
-function socialSignIn(provider){
+/* `silent` sends prompt=none: the provider answers from an existing session or
+   refuses outright, never showing UI. It is what keeps the two-provider mode
+   from costing two taps — the second leg, and a returning user's first leg,
+   usually resolve without the person doing anything. A refusal is expected and
+   simply falls back to the visible flow. */
+function socialSignIn(provider, opts){
+  const silent=!!(opts&&opts.silent);
   return new Promise((resolve,reject)=>{
     const cfg=SOCIAL_PROVIDERS[provider];
     if(!cfg || !cfg.clientId){ reject(new Error('social-unconfigured')); return; }
@@ -149,10 +155,13 @@ function socialSignIn(provider){
       +'&scope='+encodeURIComponent(cfg.scope)
       +'&nonce='+nonce
       +'&state='+state
-      +'&prompt=select_account'
+      +'&prompt='+(silent?'none':'select_account')
       +'&response_mode=fragment';
 
-    const win=window.open(url,'moments-signin','width=480,height=640,noopener=no,noreferrer=no');
+    // A silent attempt still needs a browsing context, and frame-src 'none'
+    // rules out an iframe, so it uses a popup too — one that the provider
+    // redirects straight back out of, typically within a few hundred ms.
+    const win=window.open(url,'moments-signin'+(silent?'-silent':''),'width=480,height=640,noopener=no,noreferrer=no');
     if(!win){ reject(new Error('social-popup-blocked')); return; }
 
     let done=false;
@@ -167,7 +176,12 @@ function socialSignIn(provider){
       if(d.state!==state) return;                         // CSRF / crossed-wires guard
       done=true; cleanup();
       try{ win.close(); }catch(_){}
-      if(d.error || !d.id_token){ reject(new Error('social-denied')); return; }
+      if(d.error || !d.id_token){
+        // login_required / interaction_required / consent_required all mean
+        // "ask the person", not "something broke".
+        reject(new Error(silent ? 'social-needs-interaction' : 'social-denied'));
+        return;
+      }
       const claims=socialPeekClaims(d.id_token);
       if(!claims || claims.nonce!==nonce || !claims.sub || !cfg.issuerTest(String(claims.iss||''))){
         reject(new Error('social-bad-token')); return;
@@ -180,16 +194,31 @@ function socialSignIn(provider){
     const poll=setInterval(()=>{
       if(done) return;
       let closed=false; try{ closed=win.closed; }catch(_){ closed=true; }
-      if(closed){ cleanup(); reject(new Error('social-cancelled')); }
+      if(closed){ cleanup(); reject(new Error(silent?'social-needs-interaction':'social-cancelled')); }
     },500);
 
-    setTimeout(()=>{ if(!done){ cleanup(); try{ win.close(); }catch(_){} reject(new Error('social-timeout')); } },180000);
+    // A silent attempt must not leave the person staring at a popup: give it a
+    // few seconds, then fall back to asking properly.
+    setTimeout(()=>{
+      if(done) return;
+      cleanup(); try{ win.close(); }catch(_){}
+      reject(new Error(silent ? 'social-needs-interaction' : 'social-timeout'));
+    }, silent ? 6000 : 180000);
   });
 }
 
 /* Runs in the popup when Google redirects back to this same file: hand the
    fragment to the opener and close. Must run before the app boots — there is no
    app to show in a 480px popup. */
+/* Try without bothering the person first, then ask. */
+async function socialSignInQuiet(provider){
+  try{ return await socialSignIn(provider,{silent:true}); }
+  catch(err){
+    if((err&&err.message)!=='social-needs-interaction') throw err;
+    return await socialSignIn(provider);
+  }
+}
+
 function socialMaybeHandleCallback(){
   try{
     if(!window.opener || window.opener===window) return false;

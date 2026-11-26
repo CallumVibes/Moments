@@ -112,21 +112,47 @@ const stored = relay.stored().filter(e => e.kind === 30078);
 ok('the vault is on the relay as ciphertext only',
    stored.length >= 1 && !stored.some(e => e.content.includes('nsec1')));
 
-console.log('\n-- a brand-new device: two clicks, identity returns --');
+ok('the second provider was reached WITHOUT a second tap (prompt=none)',
+   idpB.promptsSeen().includes('none'), 'prompts seen at beta: ' + JSON.stringify(idpB.promptsSeen()));
+
+console.log('\n-- a brand-new device: identity returns --');
 const B = await freshProfile();
 ok('starts logged out', await B.page.evaluate(() => !_nsec));
 await B.page.evaluate(() => openModal('login'));
 await B.page.waitForTimeout(200);
+let clicks = 1;
 await B.page.click('#btn-social-login-google');
-// First leg finds no single-provider vault, so the second tap is offered.
-await B.page.waitForSelector('#btn-social-second:visible', { timeout: 60000 }).catch(() => {});
-ok('after the first tap the second account is requested', await B.page.isVisible('#btn-social-second'));
-await B.page.click('#btn-social-second');
+// The second leg should resolve silently from the existing session, so the
+// person never sees it and never taps again.
+await B.page.waitForFunction(() => !!window._nsec
+    || (document.getElementById('btn-social-second') || {}).offsetParent
+    || (document.getElementById('social-login-err') || {}).textContent,
+  { timeout: 60000 }).catch(() => {});
+if (await B.page.isVisible('#btn-social-second')) { await B.page.click('#btn-social-second'); clicks++; }
 await B.page.waitForFunction(() => !!window._nsec || (document.getElementById('social-login-err') || {}).textContent,
   { timeout: 60000 }).catch(() => {});
 const lErr = await B.page.evaluate(() => (document.getElementById('social-login-err') || {}).textContent || '');
 ok('SIGNED IN on a new device and recovered the SAME nsec',
    await B.page.evaluate(() => _nsec) === nsecA, lErr);
+ok('SIGN-IN COST EXACTLY ONE CLICK AND NO TYPING', clicks === 1, clicks + ' click(s)');
+
+console.log('\n-- fallback: no existing session at the second provider --');
+idpB.setHasSession(false);
+const D = await freshProfile();
+await D.page.evaluate(() => openModal('login'));
+await D.page.click('#btn-social-login-google');
+await D.page.waitForSelector('#btn-social-second:visible', { timeout: 60000 }).catch(() => {});
+ok('with no session there, the second tap IS asked for', await D.page.isVisible('#btn-social-second'));
+await D.page.click('#btn-social-second');
+await D.page.waitForFunction(() => !!window._nsec || (document.getElementById('social-login-err') || {}).textContent,
+  { timeout: 60000 }).catch(() => {});
+ok('a refused silent attempt falls back to the visible flow and still signs in',
+   await D.page.evaluate(() => _nsec) === nsecA,
+   await D.page.evaluate(() => (document.getElementById('social-login-err') || {}).textContent || ''));
+ok('the fallback asked the provider properly, not silently',
+   idpB.promptsSeen().filter(p => p === 'select_account').length >= 1,
+   JSON.stringify(idpB.promptsSeen()));
+idpB.setHasSession(true);
 ok('no uncaught errors anywhere in the flow', A.errs.length === 0 && B.errs.length === 0,
    (A.errs[0] || B.errs[0] || ''));
 
@@ -135,10 +161,16 @@ idpA.setSubject('alpha-user-2'); idpB.setSubject('beta-user-2');
 const C = await freshProfile();
 await C.page.evaluate(() => openModal('login'));
 await C.page.click('#btn-social-login-google');
-await C.page.waitForSelector('#btn-social-second:visible', { timeout: 60000 }).catch(() => {});
-await C.page.click('#btn-social-second');
-await C.page.waitForFunction(() => !!window._nsec || (document.getElementById('social-login-err') || {}).textContent,
+// Same single-click path as above; the button only appears if silent fails.
+await C.page.waitForFunction(() => !!window._nsec
+    || (document.getElementById('btn-social-second') || {}).offsetParent
+    || (document.getElementById('social-login-err') || {}).textContent,
   { timeout: 60000 }).catch(() => {});
+if (await C.page.isVisible('#btn-social-second')) {
+  await C.page.click('#btn-social-second');
+  await C.page.waitForFunction(() => !!window._nsec || (document.getElementById('social-login-err') || {}).textContent,
+    { timeout: 60000 }).catch(() => {});
+}
 ok('another user does not land in the first user\'s account', await C.page.evaluate(() => _nsec) !== nsecA);
 
 console.log('\n' + (fails.length ? `FAILED: ${fails.length} — ${fails.join(' | ')}` : 'ALL CHECKS PASSED'));

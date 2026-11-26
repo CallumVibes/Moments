@@ -181,6 +181,9 @@ Only `https` endpoints are accepted, so a misconfigured plaintext endpoint
 cannot silently carry proofs in the clear. The two OPRF servers must be run by
 **different operators** — see [server/README.md](server/README.md).
 
+Step-by-step, including the OAuth console settings and how to confirm it with
+a real account: **[SETUP.md](SETUP.md)**.
+
 Check a deployment before trusting it, and get the tag to paste:
 
 ```sh

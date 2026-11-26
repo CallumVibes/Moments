@@ -1,0 +1,35 @@
+# Two OPRF servers, for local testing of a real two-server setup.
+#
+# WARNING — this file is NOT a production deployment. Both services run on one
+# host under one operator, which is exactly the arrangement the design warns
+# against: an operator holding both keys can brute-force every PIN and, with a
+# provider's cooperation, reach a social vault. In production the two servers
+# belong to DIFFERENT operators, ideally in different jurisdictions.
+#
+#   OPRF_KEY_A=$(node server/oprf-server.mjs --genkey) \
+#   OPRF_KEY_B=$(node server/oprf-server.mjs --genkey) \
+#   docker compose -f server/compose.yml up --build
+#
+# Then check it, from the repository root:
+#   npm run doctor -- http://127.0.0.1:8787 http://127.0.0.1:8788 --insecure
+
+services:
+  oprf-a:
+    build: { context: .., dockerfile: server/Dockerfile }
+    ports: ["8787:8787"]
+    environment:
+      OPRF_KEY: ${OPRF_KEY_A:?set OPRF_KEY_A - generate with: node server/oprf-server.mjs --genkey}
+      OPRF_AUDIENCES: ${OPRF_AUDIENCES:-}
+      OPRF_ORIGIN: ${OPRF_ORIGIN:-*}
+    restart: unless-stopped
+
+  oprf-b:
+    build: { context: .., dockerfile: server/Dockerfile }
+    ports: ["8788:8787"]
+    environment:
+      # MUST differ from oprf-a. Sharing a key makes the two servers one
+      # operator wearing two hats, and `npm run doctor` will fail you for it.
+      OPRF_KEY: ${OPRF_KEY_B:?set OPRF_KEY_B - and it must differ from OPRF_KEY_A}
+      OPRF_AUDIENCES: ${OPRF_AUDIENCES:-}
+      OPRF_ORIGIN: ${OPRF_ORIGIN:-*}
+    restart: unless-stopped

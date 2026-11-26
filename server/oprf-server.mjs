@@ -58,6 +58,35 @@ function loadKey(keyHex) {
   return k;
 }
 
+/* ── Per-tag keys ──
+ *
+ * The server must NOT apply one global scalar to whatever point it is handed.
+ * With a global key it is an oracle for arbitrary inputs, and the proof check
+ * only gates *access*, not *which point* gets evaluated. An attacker holding
+ * any valid account of their own could then blind a victim's point, present
+ * their own tag and their own proof, and recover the victim's OPRF output —
+ * which fully breaks social enrollment, because `sub` is public. The same hole
+ * lets an attacker sidestep a victim's PIN rate limit by spending their own.
+ *
+ * Deriving the scalar from (master, tag) binds each evaluation to the account
+ * the caller proved. An attacker's request is answered under the attacker's
+ * key, which is useless against anyone else's vault.
+ *
+ * Consequence to be aware of when operating this: the master secret and the
+ * tag together define every account's key, so the master still must never
+ * change or be lost.
+ */
+export function keyForTag(master, tag) {
+  for (let i = 0; i < 256; i++) {
+    const h = createHash('sha256')
+      .update('moments:oprf:tagkey:v1:').update(master).update(':').update(tag).update(Buffer.from([i]))
+      .digest();
+    const v = BigInt('0x' + h.toString('hex'));
+    if (v > 1n && v < N) return v;      // rejection-sample rather than reduce, to avoid modulo bias
+  }
+  throw new Error('key-derivation-failed');
+}
+
 /* ── Social proof verification ──
  *
  * A social enrollment's OPRF input is derived from the provider's `sub`, and
@@ -73,18 +102,24 @@ function loadKey(keyHex) {
 const JWKS_TTL_MS = 60 * 60 * 1000;
 const jwksCache = new Map();   // issuer -> { at, keys }
 
-const ISSUERS = {
-  'https://accounts.google.com': { jwks: 'https://www.googleapis.com/oauth2/v3/certs' },
-};
+/* Issuers whose ID tokens count as proof. Microsoft's `iss` carries the
+ * tenant GUID, so issuers are matched by predicate rather than by equality. */
+const ISSUERS = [
+  { test: i => i === 'https://accounts.google.com',
+    jwks: () => 'https://www.googleapis.com/oauth2/v3/certs' },
+  { test: i => /^https:\/\/login\.microsoftonline\.com\/[0-9a-f-]{36}\/v2\.0$/i.test(i),
+    jwks: i => i.replace(/\/v2\.0$/, '') + '/discovery/v2.0/keys' },
+];
+function issuerCfg(iss) { return ISSUERS.find(c => c.test(iss)) || null; }
 
 function b64urlToBuf(s) { return Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64'); }
 
 async function fetchJwks(issuer, fetchImpl) {
-  const cfg = ISSUERS[issuer];
+  const cfg = issuerCfg(issuer);
   if (!cfg) throw new Error('unknown-issuer');
   const hit = jwksCache.get(issuer);
   if (hit && Date.now() - hit.at < JWKS_TTL_MS) return hit.keys;
-  const res = await (fetchImpl || fetch)(cfg.jwks);
+  const res = await (fetchImpl || fetch)(cfg.jwks(issuer));
   if (!res.ok) throw new Error('jwks-fetch-failed');
   const body = await res.json();
   const keys = body && Array.isArray(body.keys) ? body.keys : [];
@@ -106,7 +141,7 @@ export async function verifyIdToken(jwt, { audiences, now = Date.now(), fetchImp
   } catch { throw new Error('bad-jwt'); }
   if (header.alg !== 'RS256') throw new Error('bad-alg');       // never accept "none", never HS*
   if (!claims.sub || !claims.iss) throw new Error('bad-claims');
-  if (!ISSUERS[claims.iss]) throw new Error('unknown-issuer');
+  if (!issuerCfg(claims.iss)) throw new Error('unknown-issuer');
 
   const auds = [].concat(claims.aud || []);
   if (!audiences || !audiences.length) throw new Error('no-audience-configured');
@@ -195,7 +230,8 @@ function readBody(req, cap = 4096) {
 }
 
 export function createServer(opts = {}) {
-  const K = loadKey(opts.key || process.env.OPRF_KEY || '');
+  const masterHex = (opts.key || process.env.OPRF_KEY || '').toLowerCase();
+  loadKey(masterHex);                    // validate up front, at construction
   const LIMITS = opts.limits || defaultLimits();
   const rateLimit = makeLimiter(LIMITS);
   // Client IDs whose ID tokens this server will accept as proof. Without any,
@@ -252,7 +288,8 @@ export function createServer(opts = {}) {
                             { 'retry-after': String(rl.retryAfter) });
 
     try {
-      return json(res, 200, { v: 1, evaluated: P.multiply(K).toHex(true) });
+      // Per-tag key, never a global scalar. See keyForTag().
+      return json(res, 200, { v: 1, evaluated: P.multiply(keyForTag(masterHex, tag.toLowerCase())).toHex(true) });
     } catch {
       return json(res, 500, { error: 'eval-failed' });
     }

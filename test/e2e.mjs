@@ -267,6 +267,27 @@ await I.page.evaluate(() => openModal('login'));
 ok('passkey button hidden where passkeys are unusable',
    await I.page.evaluate(() => vaultSupported()) ? true : !(await I.page.isVisible('#btn-passkey-login')));
 
+// ── Two-provider binding: client-side rules ─────────────────────────────────
+section('two-provider pair');
+ok('two accounts at the SAME provider are refused before any network call',
+   await B.page.evaluate(async () => {
+     const mk = (iss, sub) => ({ provider: 'google', iss, sub, idToken: 'x.y.z' });
+     try {
+       await vaultKeysFromSocialPair(mk('https://accounts.google.com', 'a'),
+                                     mk('https://accounts.google.com', 'b'));
+       return false;
+     } catch (e) { return e.message === 'social-same-provider'; }
+   }));
+ok('an incomplete identity is refused', await B.page.evaluate(async () => {
+   try { await vaultKeysFromSocialPair({ iss: 'a', sub: '1' }, { iss: 'b', sub: '2', idToken: 't' }); return false; }
+   catch (e) { return e.message === 'social-bad-token'; }
+}));
+ok('the pair ordering rule is tap-order independent', await B.page.evaluate(() => {
+   const a = { iss: 'https://zzz', sub: '1' }, b = { iss: 'https://aaa', sub: '2' };
+   const o1 = _socialOrder(a, b).map(i => i.iss).join(','), o2 = _socialOrder(b, a).map(i => i.iss).join(',');
+   return o1 === o2;
+}));
+
 // ── The login screen offers one choice, not five forms ──────────────────────
 section('login screen shape');
 const P = await device({ prf: true });

@@ -8,7 +8,7 @@ import { readFile } from 'node:fs/promises';
 import { webcrypto, createHash } from 'node:crypto';
 import vm from 'node:vm';
 import { secp256k1 } from '../server/vendor-secp256k1.mjs';
-import { createServer } from '../server/oprf-server.mjs';
+import { createServer, keyForTag } from '../server/oprf-server.mjs';
 
 // Load oprf.js with the handful of app globals it leans on.
 const src = await readFile(new URL('../src/oprf.js', import.meta.url), 'utf8');
@@ -160,16 +160,43 @@ const post = (base, body) => fetch(base + '/evaluate', {
 });
 const validPoint = ProjectivePoint.BASE.multiply(12345n).toHex(true);
 
-test('server evaluates a well-formed request', async () => {
+test('server evaluates a well-formed request under the TAG\'s key', async () => {
   await withServer(async base => {
-    const r = await post(base, { v: 1, tag: 'c'.repeat(64), blinded: validPoint });
+    const tag = 'c'.repeat(64);
+    const r = await post(base, { v: 1, tag, blinded: validPoint });
     assert.equal(r.status, 200);
     const b = await r.json();
     assert.match(b.evaluated, /^0[23][0-9a-f]{64}$/);
-    // and it really is k*P
-    const k = BigInt('0x' + 'ab'.repeat(32));
-    assert.equal(b.evaluated, ProjectivePoint.fromHex(validPoint).multiply(k).toHex(true));
+    assert.equal(b.evaluated, ProjectivePoint.fromHex(validPoint).multiply(keyForTag('ab'.repeat(32), tag)).toHex(true));
   });
+});
+
+test('REGRESSION: the server is not an oracle — each tag gets its own key', async () => {
+  // With one global scalar, anyone holding a valid account of their own could
+  // blind a VICTIM's point, present their OWN tag and proof, and recover the
+  // victim's OPRF output. Since a social `sub` is public, that broke social
+  // enrollment outright, and let a PIN's rate limit be spent from another tag.
+  await withServer(async base => {
+    const mine = await (await post(base, { tag: 'a'.repeat(64), blinded: validPoint })).json();
+    const theirs = await (await post(base, { tag: 'b'.repeat(64), blinded: validPoint })).json();
+    assert.notEqual(mine.evaluated, theirs.evaluated,
+      'the same point under two tags must not produce the same output');
+  });
+});
+
+test('per-tag keys are deterministic, in range, and spread', () => {
+  const master = 'ab'.repeat(32);
+  const a = keyForTag(master, 'a'.repeat(64));
+  assert.equal(a, keyForTag(master, 'a'.repeat(64)), 'same inputs, same key');
+  assert.notEqual(a, keyForTag(master, 'b'.repeat(64)), 'different tag, different key');
+  assert.notEqual(a, keyForTag('cd'.repeat(32), 'a'.repeat(64)), 'different master, different key');
+  const seen = new Set();
+  for (let i = 0; i < 300; i++) {
+    const k = keyForTag(master, String(i).padStart(64, '0'));
+    assert.ok(k > 1n && k < CURVE.n, 'scalar out of range');
+    seen.add(k.toString());
+  }
+  assert.equal(seen.size, 300);
 });
 
 test('a bad key is refused at construction, not at request time', () => {

@@ -14,6 +14,22 @@ question: given a curve point `B`, what is `k·B`? The client blinds its point
 with a fresh random scalar first, so `B` is uniformly random: the server learns
 nothing about the PIN and cannot link two requests for the same one.
 
+## Keys are per-account, never global
+
+The server does **not** apply one global scalar to whatever point it is handed.
+It derives the scalar from its master secret and the request's tag.
+
+This is load-bearing. With a global key the server is an oracle for arbitrary
+inputs, and the proof check only gates *access*, not *which point* is
+evaluated. An attacker holding any valid account of their own could blind a
+victim's point, present their own tag and their own proof, and recover the
+victim's output — which breaks social enrollment outright, because `sub` is
+public, and lets a victim's PIN rate limit be sidestepped by spending the
+attacker's own budget.
+
+The master secret and the tag together define every account's key, so the
+master still must never change or be lost.
+
 ## Run two of them, under different operators
 
 **This is a security requirement, not a deployment preference.**
@@ -46,6 +62,13 @@ What this cannot defend against, by construction: **the identity provider
 itself**, which can mint a token for any of its users. That is inherent to
 social sign-in. The app says so plainly rather than implying otherwise, and
 offers an optional PIN on top for users who want the gap closed.
+
+Both Google and Microsoft are supported as issuers (Microsoft's `iss` carries a
+tenant GUID, so issuers are matched by shape rather than equality). Linking two
+*different* providers is the mode in which no single company can reach a user's
+key: each server is addressed under a different provider's tag and will only
+answer on a proof matching it, so a provider that can mint one half still
+cannot obtain the other.
 
 Set `OPRF_AUDIENCES` to the client IDs you accept. With none set, every social
 request is refused rather than evaluated unproven.

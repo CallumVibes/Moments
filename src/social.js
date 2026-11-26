@@ -47,9 +47,20 @@ const SOCIAL_PROVIDERS={
     clientId:'',                                    // e.g. '1234-abc.apps.googleusercontent.com'
     authUrl:'https://accounts.google.com/o/oauth2/v2/auth',
     scope:'openid',
-    issuer:'https://accounts.google.com',
+    issuerTest:i=>i==='https://accounts.google.com',
+  },
+  // Microsoft's `iss` carries the tenant GUID, so it is matched by shape.
+  microsoft:{
+    label:'Microsoft',
+    clientId:'',
+    authUrl:'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+    scope:'openid',
+    issuerTest:i=>/^https:\/\/login\.microsoftonline\.com\/[0-9a-f-]{36}\/v2\.0$/i.test(i),
   },
 };
+/* The pair used to lock any single provider out. Both must be configured. */
+const SOCIAL_PAIR=['google','microsoft'];
+function socialPairAvailable(){ return SOCIAL_PAIR.every(socialAvailable); }
 function socialAvailable(p){ return !!(SOCIAL_PROVIDERS[p] && SOCIAL_PROVIDERS[p].clientId); }
 function socialAnyAvailable(){ return Object.keys(SOCIAL_PROVIDERS).some(socialAvailable); }
 
@@ -109,10 +120,10 @@ function socialSignIn(provider){
       try{ win.close(); }catch(_){}
       if(d.error || !d.id_token){ reject(new Error('social-denied')); return; }
       const claims=socialPeekClaims(d.id_token);
-      if(!claims || claims.nonce!==nonce || !claims.sub || claims.iss!==cfg.issuer){
+      if(!claims || claims.nonce!==nonce || !claims.sub || !cfg.issuerTest(String(claims.iss||''))){
         reject(new Error('social-bad-token')); return;
       }
-      resolve({ provider, sub:String(claims.sub), idToken:d.id_token });
+      resolve({ provider, sub:String(claims.sub), iss:String(claims.iss), idToken:d.id_token });
     };
     window.addEventListener('message',onMsg);
 

@@ -194,12 +194,46 @@ async function vaultSocialTag(issuer, sub){
    servers rate-limit. */
 async function vaultKeysFromSocial(ident, pin){
   if(!vaultPinAvailable()) throw new Error('pin-unavailable');
-  if(!ident || !ident.sub || !ident.idToken) throw new Error('social-bad-token');
-  const issuer=(SOCIAL_PROVIDERS[ident.provider]||{}).issuer||'';
+  if(!ident || !ident.sub || !ident.idToken || !ident.iss) throw new Error('social-bad-token');
   const extra=String(pin||'').replace(/\D/g,'');
-  const input=await sha256(strToBytes('moments:social:v1:'+issuer+':'+ident.sub+':'+extra));
-  const root=await oprfRoot(VAULT_OPRF_SERVERS, await vaultSocialTag(issuer, ident.sub), input, ident.idToken);
+  const input=await sha256(strToBytes('moments:social:v1:'+ident.iss+':'+ident.sub+':'+extra));
+  const root=await oprfRoot(VAULT_OPRF_SERVERS, await vaultSocialTag(ident.iss, ident.sub), input, ident.idToken);
   return vaultKeysFromRoot(root, 'social');
+}
+
+/* ── Two providers: the mode where NO single company can reach the key ──
+   One provider can always mint a token for its own user, so a single-provider
+   vault is reachable by that provider. Binding two independent issuers removes
+   that: each OPRF server is asked under a different provider's tag, and will
+   only answer on a proof matching THAT tag. Google can mint a Google token and
+   satisfy the first; it cannot mint a Microsoft one, so the second never
+   answers, and the root is never formed.
+
+   This is what makes "Google never sees the nsec" true in the strong sense,
+   and it still costs the user nothing to remember — two taps, no secrets.
+
+   Both inputs carry both identities, so neither server can derive the root
+   from what it alone sees, and the pair cannot be split apart. */
+function _socialOrder(a,b){
+  // Fixed order, so the derivation does not depend on which the user taps
+  // first; the key must be identical either way.
+  return (a.iss+':'+a.sub) <= (b.iss+':'+b.sub) ? [a,b] : [b,a];
+}
+async function vaultKeysFromSocialPair(identA, identB, pin){
+  if(VAULT_OPRF_SERVERS.length<2) throw new Error('oprf-no-servers');
+  for(const i of [identA,identB]) if(!i||!i.sub||!i.iss||!i.idToken) throw new Error('social-bad-token');
+  if(identA.iss===identB.iss) throw new Error('social-same-provider');
+  const [x,y]=_socialOrder(identA,identB);
+  const extra=String(pin||'').replace(/\D/g,'');
+  const input=await sha256(strToBytes('moments:social-pair:v1:'+x.iss+':'+x.sub+'|'+y.iss+':'+y.sub+':'+extra));
+  const point=await oprfHashToCurve(OPRF_DOMAIN, input);
+  // Each server is addressed under a DIFFERENT provider's tag and proof.
+  const parts=[
+    await oprfEvaluate(VAULT_OPRF_SERVERS[0], await vaultSocialTag(x.iss,x.sub), point, undefined, x.idToken),
+    await oprfEvaluate(VAULT_OPRF_SERVERS[1], await vaultSocialTag(y.iss,y.sub), point, undefined, y.idToken),
+  ];
+  const root=await sha256(concatBytes(strToBytes(OPRF_DOMAIN+':root:'), ...parts));
+  return vaultKeysFromRoot(root, 'social-pair');
 }
 
 /* A passphrase is the only factor an attacker can guess at, so refuse the ones
@@ -399,6 +433,7 @@ function vaultErrText(err){
   if(m==='social-cancelled') return 'Sign-in cancelled. Nothing was changed.';
   if(m==='social-denied') return "That sign-in didn't complete. Try again, or use another method.";
   if(m==='social-bad-token'||m==='social-timeout') return 'That sign-in could not be completed. Try again, or use another method.';
+  if(m==='social-same-provider') return 'Link two different providers — two accounts at the same company would not protect you from it.';
   if(m==='oprf-unavailable'||m==='oprf-h2c-failed') return "This browser can't do the PIN calculation. Use a recovery code instead.";
   return 'Something went wrong. '+(m||'Please try again.');
 }
@@ -493,6 +528,31 @@ async function signupSocial(provider){
   }
 }
 
+let _socialPending=null;   // first leg of a two-provider sign-in
+
+async function loginSocialPair(){
+  const btn=document.getElementById('btn-social-second');
+  const second=SOCIAL_PAIR.find(p=>!_socialPending || p!==_socialPending.provider);
+  const label=(SOCIAL_PROVIDERS[second]||{}).label||second;
+  if(btn){ btn.disabled=true; btn.textContent='Waiting for '+label+'…'; }
+  vaultMsg('social-login-err','');
+  try{
+    if(!_socialPending) throw new Error('social-bad-token');
+    const identB=await socialSignIn(second);
+    const obj=await vaultReadEnrollment(await vaultKeysFromSocialPair(_socialPending, identB));
+    if(!obj){
+      vaultMsg('social-login-err', "Those two accounts aren't linked to a Moments account. Try another way in.", true);
+      return;
+    }
+    _socialPending=null;
+    vaultAdopt(obj);
+  }catch(err){
+    vaultMsg('social-login-err', vaultErrText(err), true);
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='Continue with '+label; }
+  }
+}
+
 async function loginSocial(provider){
   const btn=document.getElementById('btn-social-login-'+provider);
   const label=(SOCIAL_PROVIDERS[provider]||{}).label||provider;
@@ -505,11 +565,21 @@ async function loginSocial(provider){
     setLabel('Finding your account…');
     await vaultWaitForRelay(6000);
     const obj=await vaultReadEnrollment(await vaultKeysFromSocial(ident, ''));
-    if(!obj){
-      vaultMsg('social-login-err', "That "+label+" account isn't linked to a Moments account yet. Create one, or use another way in.", true);
+    if(obj){ vaultAdopt(obj); return; }
+    // No single-provider vault. It may be a two-provider account, which needs
+    // the other leg before the key can be formed at all.
+    if(socialPairAvailable()){
+      _socialPending=ident;
+      const other=SOCIAL_PAIR.find(p=>p!==provider);
+      const sb=document.getElementById('btn-social-second');
+      if(sb){
+        sb.textContent='Continue with '+((SOCIAL_PROVIDERS[other]||{}).label||other);
+        sb.style.display='';
+      }
+      vaultMsg('social-login-err', 'One more tap: this account is protected by two providers, so no single company can reach your key.');
       return;
     }
-    vaultAdopt(obj);
+    vaultMsg('social-login-err', "That "+label+" account isn't linked to a Moments account yet. Create one, or use another way in.", true);
   }catch(err){
     vaultMsg('social-login-err', vaultErrText(err), true);
   }finally{
@@ -520,6 +590,15 @@ async function loginSocial(provider){
 async function addSocialFactor(provider, pin){
   const ident=await socialSignIn(provider);
   await vaultEnroll(_nsec, _keyGeneratedHere?'moments':'imported', await vaultKeysFromSocial(ident, pin||''));
+}
+
+/* Enroll the two-provider factor from an unlocked session. This is the one
+   that no single provider can open. */
+async function addSocialPairFactor(pin){
+  if(!socialPairAvailable()) throw new Error('social-unconfigured');
+  const a=await socialSignIn(SOCIAL_PAIR[0]);
+  const b=await socialSignIn(SOCIAL_PAIR[1]);
+  await vaultEnroll(_nsec, _keyGeneratedHere?'moments':'imported', await vaultKeysFromSocialPair(a, b, pin||''));
 }
 
 function showRecoveryCodeStep(){
@@ -659,7 +738,7 @@ async function addCodeFactor(){
 const LOGIN_METHODS=['code','pin','phrase','nsec'];
 function pickLogin(method){
   if(!LOGIN_METHODS.includes(method)) return;
-  ['btn-passkey-login','social-login-or','btn-social-login-google'].forEach(id=>{
+  ['btn-passkey-login','social-login-or','btn-social-login-google','btn-social-second'].forEach(id=>{
     const el=document.getElementById(id); if(el) el.style.display='none';
   });
   vaultMsg('passkey-login-err',''); vaultMsg('social-login-err','');
@@ -681,6 +760,8 @@ function backToChooser(){
   LOGIN_METHODS.forEach(m=>{
     const el=document.getElementById('lm-'+m); if(el) el.style.display='none';
   });
+  _socialPending=null;
+  const sb=document.getElementById('btn-social-second'); if(sb) sb.style.display='none';
   const ch=document.getElementById('login-chooser'); if(ch) ch.style.display='';
   const pk=document.getElementById('btn-passkey-login');
   if(pk && vaultSupported()) pk.style.display='';

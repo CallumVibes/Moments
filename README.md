@@ -53,7 +53,8 @@ none of them involves an account on anybody's server.
 
 | | What you hold | Works on a new device | Notes |
 |---|---|---|---|
-| **Continue with Google** | Nothing at all | Always | Easiest by far. Google *could* reach your key — see below |
+| **Google + Microsoft** | Nothing at all | Always | Two taps. **No single company can reach your key** |
+| **Continue with Google** | Nothing at all | Always | One tap. Google *could* reach your key — see below |
 | **Passkey** | Face ID / fingerprint | Only if your passkey syncs *and* carries its PRF secret | One tap. Not guaranteed — see below |
 | **Handle + PIN** | 6+ digits | Always, while the PIN servers are up | Needs two OPRF servers — see below |
 | **Recovery code** | 26 characters, ~125 bits | Always | Generated at signup; save it |
@@ -107,9 +108,35 @@ token for a named user and leaves a record on two independent third-party
 servers. Passive access becomes an active attack. That is a real improvement,
 and it is not the same as end-to-end encryption. Moments does not claim it is.
 
-**If you want that gap closed**, add a PIN to the social factor. Google can
-mint the token but does not know the PIN, and the OPRF servers rate-limit
-guesses. Then it takes Google *and* a successful guess.
+### Closing the gap completely: link two providers
+
+A provider can always mint a token for its own user. It cannot mint another
+company's signature. So linking **two independent providers** removes the
+problem entirely:
+
+```
+root = KDF( OPRF_A(both identities, proved to Google)
+          ‖ OPRF_B(both identities, proved to Microsoft) )
+```
+
+Each OPRF server is addressed under a *different* provider's tag, and answers
+only on a proof matching that tag. Google can mint a Google token and satisfy
+the first server; it cannot satisfy the second, so the root is never formed.
+Microsoft is in the same position. Neither company — nor one OPRF operator, nor
+a relay — can reach the key.
+
+This costs the user nothing to remember: two taps, no secrets, no backups, and
+it works on a brand-new device with nothing saved. It is the recommended mode,
+and it is what `test/no-single-provider.test.mjs` exists to prove — that suite
+plays Google at full strength (minting tokens for any user, knowing both public
+`sub` values, reaching both servers) and asserts it still cannot derive the key.
+
+Two accounts at the *same* provider are refused, since that would leave that
+one company able to mint both halves.
+
+**A PIN can be added on top of either mode**, which also defeats a provider
+that mints a token, since it does not know the PIN and the OPRF servers
+rate-limit guesses.
 
 For most people — someone who would otherwise lose the account outright — a key
 protected by their Google account, with its 2FA and recovery flows, is far
@@ -209,11 +236,16 @@ Moments uses real cryptography, but it makes deliberate tradeoffs in favor of si
 - **Password handling.** Network passwords are never carried in invite URLs, and ownership of a network's password is locked to its verified original signer.
 - **Metadata.** Relays can see the opaque network tag, event timing, and sizes of encrypted blobs, even though they cannot read content.
 - **A recovery factor is a credential.** Anyone holding your recovery code — or your handle and PIN, or handle and passphrase — can take over the account, and you cannot revoke a factor remotely. Enroll only what you can keep private.
-- **Social sign-in trusts the provider.** With "Continue with Google", Google
-  can obtain your key if it chooses to, because it issues the only credential
-  involved. The two OPRF operators colluding could too, since a login reveals
-  your `sub` to them. Adding a PIN closes both. The other factors involve
-  neither party.
+- **Single-provider social sign-in trusts that provider.** With "Continue with
+  Google" alone, Google can obtain your key if it chooses to, because it issues
+  the only credential involved. Linking a second provider removes this, and so
+  does adding a PIN. The non-social factors involve neither party.
+- **OPRF keys are per-account.** A server derives its scalar from its master
+  secret *and* the account's tag, so it is never an oracle that will apply one
+  global key to any point it is handed. Without this, anyone holding a valid
+  account of their own could have a victim's input evaluated under their own
+  tag — which would break social sign-in outright, since `sub` is public, and
+  would let a victim's PIN rate limit be bypassed.
 - **PIN servers see a rate-limit tag.** To count attempts, each OPRF server receives an opaque hash of your handle. It never sees your handle, your PIN, or your npub, but it can tell that *some* account is being unlocked, and how often. That is the minimum a lockout requires.
 
 This software is provided "as is", without warranty of any kind (see [LICENSE](LICENSE)). It has not been independently audited. Do not rely on it for high-stakes confidentiality.

@@ -365,6 +365,7 @@
            competing buttons; a person signing in only ever needs one of them. -->
       <button class="btn-primary" id="btn-social-login-google" data-act="loginSocial" data-a="google" style="display:none">Continue with Google</button>
       <div class="field-error" id="social-login-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
+      <button class="btn-primary" id="btn-social-second" data-act="loginSocialPair" style="display:none">Continue with your second account</button>
       <div class="divider" id="social-login-or" style="display:none">or</div>
       <button class="btn-primary" id="btn-passkey-login" data-act="loginPasskey" style="display:none">⚡ Sign in with Face ID / Fingerprint</button>
       <div class="field-error" id="passkey-login-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
@@ -8032,6 +8033,7 @@ registerActions({
   pickLogin:         m=>pickLogin(m),
   signupSocial:      p=>signupSocial(p),
   loginSocial:       p=>loginSocial(p),
+  loginSocialPair:   ()=>loginSocialPair(),
   backToChooser:     ()=>backToChooser(),
   copyRecoveryCode:  (a,el)=>copyRecoveryCode(el),
   downloadRecoveryCode: ()=>downloadRecoveryCode(),

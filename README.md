@@ -54,6 +54,7 @@ none of them involves an account on anybody's server.
 | | What you hold | Works on a new device | Notes |
 |---|---|---|---|
 | **Passkey** | Face ID / fingerprint | Only if your passkey syncs *and* carries its PRF secret | One tap. Not guaranteed — see below |
+| **Handle + PIN** | 6+ digits | Always, while the PIN servers are up | Needs two OPRF servers — see below |
 | **Recovery code** | 26 characters, ~125 bits | Always | Generated at signup; save it |
 | **Handle + passphrase** | Something you remember | Always | Salted with your handle |
 | **Moment key (nsec)** | The raw key | Always | The original path, unchanged |
@@ -91,6 +92,54 @@ possible thing instead: a passkey your phone already syncs, or a code.
 nowhere to store a blob at all. Google Drive's app-data folder would work, but
 its redirect URIs are per-host, which would silently break every self-hosted
 copy.)
+
+### How a 6-digit PIN can possibly be safe
+
+A PIN has about 20 bits of entropy, and no amount of local stretching fixes
+that — anyone holding the ciphertext just tries all million. A PIN is safe only
+if guessing requires asking someone who can refuse.
+
+So the PIN is stretched by an **Oblivious PRF**. Your device maps the PIN to a
+curve point, blinds it with a fresh random scalar, and asks a server to apply
+its secret key:
+
+```
+you:     P = hash_to_curve(pin)      B = r·P      ← r random, fresh each time
+server:  E = k·B                                  ← k never leaves the server
+you:     N = r⁻¹·E = k·P                          ← your stretched PIN
+```
+
+The server sees only `B`, a uniformly random point. It cannot learn your PIN,
+cannot link two of your requests, and cannot compute the answer for a PIN it was
+not asked about. Guessing now means making a request per guess — and the server
+rate-limits those, which is what makes 20 bits enough.
+
+**This needs two servers run by different operators.** One operator alone could
+brute-force every PIN: knowing `k`, it could derive each candidate's locator
+itself and fetch the blob from a public relay, offline and unthrottled. Folding
+two independent keys together removes that:
+
+```
+root = KDF(k_A·P ‖ k_B·P)
+```
+
+Neither operator alone can compute the root. **The safety of a PIN therefore
+rests on those two operators not colluding** — and two endpoints on one
+provider's infrastructure are one operator wearing two hats. If no two servers
+are configured, Moments hides the PIN option entirely rather than offering a
+weaker version of it. See [server/README.md](server/README.md).
+
+The trade-offs, stated plainly:
+
+- **A PIN adds a liveness dependency** the other factors do not have. If either
+  server is down you cannot unlock with a PIN; if either loses its key, every
+  PIN enrollment is dead.
+- **A known handle can be locked out on purpose.** Rate limiting has to count
+  attempts against something, and that something is derived from your handle —
+  which is guessable. Anyone can spend your attempt budget and keep your PIN
+  unlock unavailable until the window decays.
+
+Both are reasons a PIN is never your only recovery factor.
 
 ### The passkey caveat, stated plainly
 
@@ -130,6 +179,8 @@ Moments uses real cryptography, but it makes deliberate tradeoffs in favor of si
 - **Durability is not guaranteed.** Media lives on free, public Blossom servers and Nostr relays, which may prune or drop old data at any time. Moments is not a backup or an archive. Keep your own copies of anything you care about.
 - **Password handling.** Network passwords are never carried in invite URLs, and ownership of a network's password is locked to its verified original signer.
 - **Metadata.** Relays can see the opaque network tag, event timing, and sizes of encrypted blobs, even though they cannot read content.
+- **A recovery factor is a credential.** Anyone holding your recovery code — or your handle and PIN, or handle and passphrase — can take over the account, and you cannot revoke a factor remotely. Enroll only what you can keep private.
+- **PIN servers see a rate-limit tag.** To count attempts, each OPRF server receives an opaque hash of your handle. It never sees your handle, your PIN, or your npub, but it can tell that *some* account is being unlocked, and how often. That is the minimum a lockout requires.
 
 This software is provided "as is", without warranty of any kind (see [LICENSE](LICENSE)). It has not been independently audited. Do not rely on it for high-stakes confidentiality.
 
@@ -138,7 +189,8 @@ This software is provided "as is", without warranty of any kind (see [LICENSE](L
 ## Tech notes
 
 - Pure client-side JavaScript, no framework, no build-time dependency resolution — libraries are bundled inline directly in `index.html`, which is assembled from `src/` by `scripts/build.mjs` (a ~60-line Node script with no dependencies).
-- Recovery factors use PBKDF2-SHA256 (600k iterations) for passphrases, HKDF-SHA256 for key separation, and the WebAuthn `prf` extension for passkeys.
+- Recovery factors use PBKDF2-SHA256 (600k iterations) for passphrases, HKDF-SHA256 for key separation, the WebAuthn `prf` extension for passkeys, and a two-server secp256k1 OPRF for PINs.
+- The OPRF hashes to the curve by try-and-increment on the audited library's own point decompression, rather than a hand-rolled SSWU map. The vendored `@noble/curves` bundle carries exactly one modification: its export object additionally exposes the curve object, so the point arithmetic the OPRF needs is reachable. No library logic is changed.
 - Cryptography uses the audited [`@noble/curves`](https://github.com/paulmillr/noble-curves), [`@noble/hashes`](https://github.com/paulmillr/noble-hashes), and [`@scure/base`](https://github.com/paulmillr/scure-base) libraries for secp256k1/Schnorr signing, hashing, and encoding, alongside the Web Crypto API for AES-256-GCM and HKDF.
 - QR generation and scanning are built in (scanning uses `jsQR`, loaded on demand).
 - Designed mobile-first and tested on real Android devices (Pixel, Samsung; Brave and Chrome); installable as a PWA via "Add to Home Screen".

@@ -11,12 +11,18 @@ import { extname, join } from 'node:path';
 const root = new URL('..', import.meta.url).pathname;
 const OUT = join(root, 'test/.tmp');
 
-export async function buildTestCopy(relayPort) {
+export async function buildTestCopy(relayPort, oprfPorts = []) {
   let s = await readFile(join(root, 'index.html'), 'utf8');
   const relays = s.match(/const DEFAULT_RELAYS=\[[^\]]*\];/);
   if (!relays) throw new Error('could not find DEFAULT_RELAYS to redirect');
   s = s.replace(relays[0], `const DEFAULT_RELAYS=['ws://localhost:${relayPort}'];`);
-  s = s.replace('connect-src https: wss:', `connect-src https: wss: ws://localhost:${relayPort}`);
+  const oprfOrigins = oprfPorts.map(p => `http://localhost:${p}`);
+  s = s.replace('connect-src https: wss:', `connect-src https: wss: ws://localhost:${relayPort} ${oprfOrigins.join(' ')}`);
+  if (oprfOrigins.length) {
+    const decl = s.match(/const VAULT_OPRF_SERVERS=\[[^\]]*\];/);
+    if (!decl) throw new Error('could not find VAULT_OPRF_SERVERS to point at the test servers');
+    s = s.replace(decl[0], `const VAULT_OPRF_SERVERS=${JSON.stringify(oprfOrigins)};`);
+  }
   // Re-pin the CSP for the edited bundle, exactly as the real build does.
   const scripts = [...s.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map(m => m[1]);
   const hashes = scripts.map(x => `'sha256-${createHash('sha256').update(x, 'utf8').digest('base64')}'`);

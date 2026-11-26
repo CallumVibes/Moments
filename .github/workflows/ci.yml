@@ -27,4 +27,6 @@ jobs:
           node-version: '22'
       - run: npm install
       - run: npx playwright install --with-deps chromium
+      # Spins up two OPRF servers itself, so PIN enrollment and recovery are
+      # exercised against real HTTP and real rate limiting.
       - run: npm run test:e2e

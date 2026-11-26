@@ -54,6 +54,17 @@ const VAULT_PRF_SALT='moments:vault:prf:v1';
 // tolerate for a once-in-a-while unlock rather than as low as feels snappy.
 const VAULT_PBKDF2_ITERS=600000;
 
+/* OPRF servers that stretch a PIN. TWO independent operators is the security
+   requirement, not a nicety: one operator alone could grind every PIN offline,
+   because it could derive each candidate's locator itself and fetch the blob
+   from a public relay. See src/oprf.js.
+
+   These must be run by different parties. Two endpoints on one provider's
+   infrastructure are one operator wearing two hats, and a PIN is then only as
+   strong as that provider's goodwill. */
+const VAULT_OPRF_SERVERS=[];   // e.g. ['https://oprf-a.example','https://oprf-b.example']
+function vaultPinAvailable(){ return VAULT_OPRF_SERVERS.length>=2; }
+
 function _vaultRand(n){ const b=new Uint8Array(n); crypto.getRandomValues(b); return b; }
 
 /* ── Factor-independent key material ──
@@ -127,6 +138,47 @@ async function vaultKeysFromPhrase(handle, phrase){
   // user of the app. It is public, not secret — it only has to be unique-ish.
   const root=await vaultPbkdf2(String(phrase), 'moments:phrase:v1:'+h, VAULT_PBKDF2_ITERS);
   return vaultKeysFromRoot(root, 'phrase');
+}
+
+/* ── PIN factor ──
+   The rate-limit tag is the ONLY thing an OPRF server learns about who is
+   asking: an opaque hash of the handle, with a domain separator so it cannot
+   be correlated with anything else derived from the same handle. The server
+   needs something to count attempts against, and this is the least it can be
+   given while still allowing a lockout. */
+async function vaultPinTag(handle){
+  const h=vaultNormalizeHandle(handle);
+  if(!h) throw new Error('handle-required');
+  return bytesToHex(await sha256(strToBytes('moments:oprf:rl:v1:'+h)));
+}
+
+async function vaultKeysFromPin(handle, pin){
+  if(!vaultPinAvailable()) throw new Error('pin-unavailable');
+  const h=vaultNormalizeHandle(handle);
+  const norm=String(pin||'').replace(/\D/g,'');
+  if(norm.length<6) throw new Error('pin-too-short');
+  // The handle goes into the hashed input as well as the tag, so the same PIN
+  // chosen by two people maps to two different curve points and therefore two
+  // unrelated OPRF outputs.
+  const input=await sha256(strToBytes('moments:pin:v1:'+h+':'+norm));
+  const root=await oprfRoot(VAULT_OPRF_SERVERS, await vaultPinTag(h), input);
+  return vaultKeysFromRoot(root, 'pin');
+}
+
+/* A PIN's safety comes from the servers refusing guesses, not from its own
+   entropy — but the handful of PINs that everyone picks would still fall to a
+   few attempts inside any sane rate limit, so block those outright. */
+function vaultPinStrength(pin){
+  const p=String(pin||'').replace(/\D/g,'');
+  if(p.length<6) return { ok:false, why:'Use at least 6 digits.' };
+  if(/^(\d)\1+$/.test(p)) return { ok:false, why:'That is the same digit repeated.' };
+  const asc='01234567890', desc='09876543210';
+  if(asc.includes(p)||desc.includes(p)) return { ok:false, why:'That is a run of consecutive digits.' };
+  if(['123456','654321','111111','000000','123123','121212','112233','696969','159753'].includes(p))
+    return { ok:false, why:'That is one of the most commonly chosen PINs.' };
+  // A repeated short block (e.g. 454545, 123123) is barely better than the block itself.
+  if(/^(\d{2})\1{2}$/.test(p)||/^(\d{3})\1$/.test(p)) return { ok:false, why:'That is a short pattern repeated.' };
+  return { ok:true, why:'' };
 }
 
 /* A passphrase is the only factor an attacker can guess at, so refuse the ones
@@ -313,7 +365,14 @@ function vaultErrText(err){
   if(m==='vault-publish-failed') return "Couldn't reach the relays to save your backup. Check your connection and try again.";
   if(m==='vault-verify-failed') return "Your backup saved but couldn't be read back, so it isn't trustworthy. Try a recovery code instead.";
   if(m==='code-too-short') return 'That recovery code looks incomplete.';
-  if(m==='handle-required') return 'Enter the handle you chose when you set up your passphrase.';
+  if(m==='handle-required') return 'Enter the handle you chose when you set this up.';
+  if(m==='pin-unavailable') return 'PIN sign-in is not configured on this copy of Moments.';
+  if(m==='pin-too-short') return 'Enter at least 6 digits.';
+  if(m==='oprf-rate-limited') return 'Too many PIN attempts for that handle. Wait a while and try again — this is the limit that keeps a short PIN safe.';
+  if(m==='oprf-unreachable'||m==='oprf-timeout') return "Couldn't reach the PIN servers. Check your connection, or use a recovery code.";
+  if(m==='oprf-server-error'||m==='oprf-bad-response') return 'A PIN server answered incorrectly. Try again, or use a recovery code.';
+  if(m==='oprf-no-servers') return 'PIN sign-in needs two independent servers configured.';
+  if(m==='oprf-unavailable'||m==='oprf-h2c-failed') return "This browser can't do the PIN calculation. Use a recovery code instead.";
   return 'Something went wrong. '+(m||'Please try again.');
 }
 
@@ -435,6 +494,22 @@ async function loginRecoveryCode(){
   }finally{ if(btn) btn.disabled=false; }
 }
 
+async function loginPin(){
+  const h=document.getElementById('login-pin-handle'), pin=document.getElementById('login-pin');
+  const btn=document.getElementById('btn-pin-login');
+  if(btn){ btn.disabled=true; btn.textContent='Checking…'; }
+  vaultMsg('login-pin-err','');
+  try{
+    await vaultWaitForRelay(6000);
+    const obj=await vaultReadEnrollment(await vaultKeysFromPin(h?h.value:'', pin?pin.value:''));
+    if(!obj){ vaultMsg('login-pin-err','No account found for that handle and PIN.', true); return; }
+    if(pin) pin.value='';
+    vaultAdopt(obj);
+  }catch(err){
+    vaultMsg('login-pin-err', vaultErrText(err), true);
+  }finally{ if(btn){ btn.disabled=false; btn.textContent='Unlock \u2192'; } }
+}
+
 async function loginPhrase(){
   const h=document.getElementById('login-handle'), p=document.getElementById('login-phrase');
   const btn=document.getElementById('btn-phrase-login');
@@ -468,17 +543,59 @@ async function addPhraseFactor(handle, phrase){
   if(!s.ok) throw new Error(s.why);
   await vaultEnroll(_nsec, _keyGeneratedHere?'moments':'imported', await vaultKeysFromPhrase(handle, phrase));
 }
+async function addPinFactor(handle, pin){
+  const s=vaultPinStrength(pin);
+  if(!s.ok) throw new Error(s.why);
+  if(!vaultNormalizeHandle(handle)) throw new Error('handle-required');
+  await vaultEnroll(_nsec, _keyGeneratedHere?'moments':'imported', await vaultKeysFromPin(handle, pin));
+}
 async function addCodeFactor(){
   const code=vaultGenRecoveryCode();
   await vaultEnroll(_nsec, _keyGeneratedHere?'moments':'imported', await vaultKeysFromCode(code));
   return code;
 }
 
+/* ── Login method chooser ──
+   Only one method is on screen at a time. Showing all of them at once made the
+   login modal a wall of five forms with three competing primary buttons. */
+const LOGIN_METHODS=['code','pin','phrase','nsec'];
+function pickLogin(method){
+  if(!LOGIN_METHODS.includes(method)) return;
+  const pk=document.getElementById('btn-passkey-login');
+  if(pk) pk.style.display='none';
+  vaultMsg('passkey-login-err','');
+  const ch=document.getElementById('login-chooser'); if(ch) ch.style.display='none';
+  LOGIN_METHODS.forEach(m=>{
+    const el=document.getElementById('lm-'+m);
+    if(el) el.style.display = m===method ? '' : 'none';
+  });
+  // Focus the first input so a chosen method is immediately usable, but never
+  // on touch, where it springs the keyboard over the form the user just opened.
+  try{
+    if(!matchMedia('(hover: none)').matches){
+      const inp=document.querySelector('#lm-'+method+' input:not([type=file])');
+      if(inp) setTimeout(()=>inp.focus(),60);
+    }
+  }catch(_){}
+}
+function backToChooser(){
+  LOGIN_METHODS.forEach(m=>{
+    const el=document.getElementById('lm-'+m); if(el) el.style.display='none';
+  });
+  const ch=document.getElementById('login-chooser'); if(ch) ch.style.display='';
+  const pk=document.getElementById('btn-passkey-login');
+  if(pk && vaultSupported()) pk.style.display='';
+  ['login-code-err','login-pin-err','login-phrase-err','passkey-login-err'].forEach(id=>vaultMsg(id,''));
+}
+
 /* Reveal the passkey paths only where they can actually work; everywhere else
    the recovery-code and moment-key paths are left exactly as they are. */
 function vaultInitUi(){
+  if(vaultPinAvailable()){
+    const el=document.getElementById('pick-pin'); if(el) el.style.display='';
+  }
   if(!vaultSupported()) return;
-  ['btn-passkey','passkey-or','btn-passkey-login','passkey-login-or'].forEach(id=>{
+  ['btn-passkey','passkey-or','btn-passkey-login','login-chooser-or'].forEach(id=>{
     const el=document.getElementById(id); if(el) el.style.display='';
   });
   // With a one-tap path available, generating a key to copy down by hand is the

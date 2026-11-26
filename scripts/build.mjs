@@ -1,0 +1,51 @@
+#!/usr/bin/env node
+/* Build: assemble index.html from src/ modules, then pin the CSP script hashes.
+ *
+ * The deployment story in the README does not change — the output is still one
+ * self-contained index.html you can drop on any static host. What changes is
+ * that it is no longer the thing you edit by hand.
+ *
+ * The CSP pins a sha256 of the inline bundle, so every source edit invalidates
+ * it. Recomputing that by hand is a footgun: get it wrong and the app loads a
+ * blank page with one console error. This script is the only supported way to
+ * produce index.html.
+ */
+import { readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const INCLUDE = /^([ \t]*)\/\/\s*@include\s+(\S+)\s*$/gm;
+
+async function expand(src, seen = []) {
+  const matches = [...src.matchAll(INCLUDE)];
+  if (!matches.length) return src;
+  let out = '';
+  let last = 0;
+  for (const m of matches) {
+    const [full, indent, rel] = m;
+    if (seen.includes(rel)) throw new Error(`circular @include: ${[...seen, rel].join(' -> ')}`);
+    const body = await expand(await readFile(join(root, rel), 'utf8'), [...seen, rel]);
+    out += src.slice(last, m.index)
+         + `${indent}/* ==== ${rel} ==== */\n`
+         + body.replace(/\n$/, '').split('\n').map(l => (l ? indent + l : l)).join('\n');
+    last = m.index + full.length;
+  }
+  return out + src.slice(last);
+}
+
+const html = await expand(await readFile(join(root, 'src/index.html'), 'utf8'));
+
+// Hash every inline <script> (ones with src= are not covered by a hash).
+const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+if (!scripts.length) throw new Error('no inline scripts found — refusing to write a CSP that allows nothing');
+const hashes = scripts.map(s => `'sha256-${createHash('sha256').update(s, 'utf8').digest('base64')}'`);
+
+const cspRe = /script-src ([^;]*);/;
+if (!cspRe.test(html)) throw new Error('no script-src directive found in the CSP');
+const built = html.replace(cspRe, `script-src ${hashes.join(' ')};`);
+
+await writeFile(join(root, 'index.html'), built);
+console.log(`built index.html  (${(built.length / 1024).toFixed(0)} KB, ${scripts.length} inline script(s) pinned)`);
+for (const h of hashes) console.log('  ' + h);

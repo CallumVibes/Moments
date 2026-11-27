@@ -159,10 +159,17 @@ covers the fallback asking for the extra tap.
 
 The one thing not real is the issuer's domain: signing in as an actual Google
 user needs Google-registered OAuth credentials and a human at a consent
-screen. `test/live-providers.test.mjs` covers what can be checked against the
-real Google and Microsoft endpoints without those — their live issuer strings,
-the JWKS URLs derived from them, and that every published key imports through
-the same code path the verifier uses.
+screen. `test/live-providers.test.mjs` covers everything checkable against the real
+Google and Microsoft endpoints without them: their live discovery documents are
+fetched and every hardcoded value is asserted against them — issuer strings,
+the authorize URLs users are sent to, the JWKS URLs the server derives, that
+`id_token` and `fragment` are still offered (the whole client-side flow depends
+on both), that RS256 is still signed with, and that every published key imports
+through the verifier's own code path. Google's own metadata also confirms the
+fact this design turns on: `subject_types_supported` is `["public"]`, so `sub`
+really is an identifier shared across every app and not a secret. If any of
+that ever changes, the suite fails rather than the integration breaking
+quietly in production.
 
 ### Turning it on
 

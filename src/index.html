@@ -58,8 +58,18 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="Moment's"/>
-  <link href="https://fonts.bunny.net/css2?family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Baloo+2:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
-  <script>try{if(localStorage.getItem('landing-theme')==='light')document.documentElement.classList.add('landing-light');}catch(e){}</script>
+  <!-- Fonts load without blocking the first paint. A plain stylesheet link
+       here stops the browser painting anything until it has been fetched and
+       parsed, over a third-party connection, which on a slow phone is the
+       difference between seeing the page and staring at white. Loaded as a
+       preload and promoted to a stylesheet once it arrives; display=swap means
+       text is readable in a fallback face until then.
+       The rel flip lives in the hashed script below rather than an onload
+       attribute, which the CSP (rightly) forbids. -->
+  <link id="font-css" rel="preload" as="style" href="https://fonts.bunny.net/css2?family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Baloo+2:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap"/>
+  <noscript><link rel="stylesheet" href="https://fonts.bunny.net/css2?family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=Baloo+2:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap"/></noscript>
+  <script>try{if(localStorage.getItem('landing-theme')==='light')document.documentElement.classList.add('landing-light');}catch(e){}
+try{var _fc=document.getElementById('font-css');if(_fc){var _p=function(){_fc.rel='stylesheet'};if(_fc.sheet){_p()}else{_fc.addEventListener('load',_p);_fc.addEventListener('error',_p)}}}catch(e){}</script>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
     :root{--bg:#0F0F14;--surface:#1A1A24;--surfaceHigh:#24243A;--accent:#FF8C42;--accentSoft:#FF8C4218;--accentBorder:#FF8C4240;--warm:#F2C4B0;--text:#FAF8F5;--textDim:rgba(250,248,245,.5);--muted:rgba(255,255,255,.32);--red:#f87171;--green:#FF8C42}
@@ -310,7 +320,7 @@
       <p id="social-pair-note" style="display:none;font-size:.74rem;color:var(--muted);text-align:center;margin:-6px 0 10px;line-height:1.5">You'll confirm with a second account too, so no single company can reach your key.</p>
       <div class="field-error" id="social-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
       <div class="divider" id="social-or" style="display:none">or</div>
-      <button class="btn-primary" id="btn-passkey" data-act="signupPasskey" style="display:none">Continue with Face ID</button>
+      <button class="btn-primary" id="btn-passkey" data-act="signupPasskey" style="display:none">Create with Face ID / Fingerprint</button>
       <div class="field-error" id="passkey-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
       <div class="divider" id="passkey-or" style="display:none">or save a key yourself</div>
       <button class="btn-primary" id="btn-gen" data-act="generateKeys">Generate My Keys →</button>
@@ -387,7 +397,7 @@
       <div class="field-error" id="social-login-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
       <button class="btn-primary" id="btn-social-second" data-act="loginSocialPair" style="display:none">Continue with your second account</button>
       <div class="divider" id="social-login-or" style="display:none">or</div>
-      <button class="btn-primary" id="btn-passkey-login" data-act="loginPasskey" style="display:none">Sign in with Face ID</button>
+      <button class="btn-primary" id="btn-passkey-login" data-act="loginPasskey" style="display:none">Sign in with Face ID / Fingerprint</button>
       <div class="field-error" id="passkey-login-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
 
       <div id="login-chooser">
@@ -396,7 +406,7 @@
           <button class="login-option" data-act="pickLogin" data-a="code"><span class="lo-txt">Recovery code</span><span class="lo-go" aria-hidden="true">›</span></button>
           <button class="login-option" data-act="pickLogin" data-a="pin" id="pick-pin" style="display:none"><span class="lo-txt">Handle + PIN</span><span class="lo-go" aria-hidden="true">›</span></button>
           <button class="login-option" data-act="pickLogin" data-a="phrase"><span class="lo-txt">Handle + passphrase</span><span class="lo-go" aria-hidden="true">›</span></button>
-          <button class="login-option" data-act="pickLogin" data-a="nsec"><span class="lo-txt">Moment key or key file</span><span class="lo-go" aria-hidden="true">›</span></button>
+          <button class="login-option" data-act="pickLogin" data-a="nsec"><span class="lo-txt">Moment key</span><span class="lo-go" aria-hidden="true">›</span></button>
         </div>
       </div>
 

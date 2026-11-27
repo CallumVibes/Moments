@@ -301,7 +301,7 @@ The app still ships as a single self-contained `index.html` — but that file is
 now generated from `src/`. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```sh
-npm run build   # src/ -> index.html (and re-pins the CSP hashes)
+npm run build   # src/ -> index.html (minifies, and re-pins the CSP hashes)
 ```
 
 **Locally:** open `index.html` in a browser. (Some browsers restrict camera or download APIs on `file://`; serving over `http` avoids that — e.g. `python3 -m http.server` then open the printed URL.)

@@ -6,11 +6,25 @@ The app still ships as one self-contained `index.html` you can drop on any
 static host. That file is now **generated**. Edit `src/` and rebuild:
 
 ```sh
-npm run build      # src/ -> index.html, and re-pins the CSP hashes
+npm run build      # src/ -> index.html: minifies, and re-pins the CSP hashes
 npm run check      # verifies index.html matches src/ and the CSP is sound
 npm test           # unit tests (no browser needed)
-npm run test:e2e   # real Chromium against a local relay
+npm run test:all   # everything, including three browser suites
 ```
+
+`npm run build -- --no-minify` produces a readable `index.html` for debugging.
+Don't commit that one — `npm run check` compares against the minified build and
+will fail.
+
+### Why it is minified
+
+Nothing paints until the inline bundle is parsed and compiled, and on a
+mid-range phone that is the single biggest cost in starting the app. Measured
+at 4x CPU throttle: 641 KB -> 441 KB, domInteractive 401 ms -> 321 ms.
+
+Top-level names are deliberately **not** mangled. Buttons are wired through a
+`data-act` string map and the test suites drive real functions by name, so
+renaming globals would break both silently rather than loudly.
 
 Commit both your `src/` change **and** the rebuilt `index.html`. CI fails if
 they disagree.

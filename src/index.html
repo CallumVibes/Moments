@@ -155,13 +155,19 @@
     .key-label{font-family:'Inter',sans-serif;font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;display:block}
     .key-value{color:var(--accent)}
     .nsec-value{color:var(--warm)}
-    /* Login method chooser: quiet, equal-weight options so the screen reads as
-       one choice rather than five stacked forms. */
-    .login-options{display:flex;flex-direction:column;gap:8px;margin-top:4px}
-    .login-option{width:100%;padding:13px 14px;border-radius:12px;cursor:pointer;
-      background:transparent;border:1px solid var(--accentBorder);color:var(--text);
-      font-family:'Inter',sans-serif;font-size:.9rem;font-weight:500;text-align:left}
-    .login-option:hover{background:var(--accentDim)}
+    /* Login method chooser. One grouped list with hairline dividers, not three
+       outlined boxes — empty bordered rectangles read as unfilled input fields,
+       which is exactly what this screen should not look like. */
+    .login-options{margin-top:2px;border:1px solid var(--accentBorder);border-radius:14px;overflow:hidden}
+    /* Inner rules are deliberately fainter than the outer border, so the group
+       reads as one control rather than three stacked ones. */
+    .login-option{display:flex;align-items:center;gap:12px;width:100%;padding:14px 16px;
+      cursor:pointer;background:transparent;border:0;border-bottom:1px solid var(--c-border);
+      color:var(--text);font-family:'Inter',sans-serif;font-size:.9rem;font-weight:500;text-align:left}
+    .login-option:last-child{border-bottom:0}
+    .login-option:hover,.login-option:focus-visible{background:var(--accentDim)}
+    .login-option .lo-txt{flex:1;min-width:0}
+    .login-option .lo-go{color:var(--muted);font-size:1.05rem;line-height:1;flex-shrink:0}
     .login-back{background:none;border:none;color:var(--muted);cursor:pointer;
       font-family:'Inter',sans-serif;font-size:.82rem;padding:2px 0 12px;display:block}
     .login-back:hover{color:var(--text)}
@@ -304,7 +310,7 @@
       <p id="social-pair-note" style="display:none;font-size:.74rem;color:var(--muted);text-align:center;margin:-6px 0 10px;line-height:1.5">You'll confirm with a second account too, so no single company can reach your key.</p>
       <div class="field-error" id="social-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
       <div class="divider" id="social-or" style="display:none">or</div>
-      <button class="btn-primary" id="btn-passkey" data-act="signupPasskey" style="display:none">⚡ Create with Face ID / Fingerprint</button>
+      <button class="btn-primary" id="btn-passkey" data-act="signupPasskey" style="display:none">Continue with Face ID</button>
       <div class="field-error" id="passkey-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
       <div class="divider" id="passkey-or" style="display:none">or save a key yourself</div>
       <button class="btn-primary" id="btn-gen" data-act="generateKeys">Generate My Keys →</button>
@@ -371,8 +377,7 @@
   <div class="modal">
     <button aria-label="Close" class="modal-close" data-act="closeModal" data-a="login">✕</button>
     <span class="modal-logo">Moment's</span>
-    <h2 class="modal-title" style="margin-top:14px">Welcome back</h2>
-    <p class="modal-sub">Use your passkey, or pick another way in.</p>
+    <h2 class="modal-title" style="margin-top:10px;margin-bottom:18px">Welcome back</h2>
 
     <div id="login-body">
       <!-- One primary path, everything else behind a chooser. Stacking every
@@ -382,16 +387,16 @@
       <div class="field-error" id="social-login-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
       <button class="btn-primary" id="btn-social-second" data-act="loginSocialPair" style="display:none">Continue with your second account</button>
       <div class="divider" id="social-login-or" style="display:none">or</div>
-      <button class="btn-primary" id="btn-passkey-login" data-act="loginPasskey" style="display:none">⚡ Sign in with Face ID / Fingerprint</button>
+      <button class="btn-primary" id="btn-passkey-login" data-act="loginPasskey" style="display:none">Sign in with Face ID</button>
       <div class="field-error" id="passkey-login-err" style="display:none;margin:-4px 0 10px;text-align:center"></div>
 
       <div id="login-chooser">
         <div class="divider" id="login-chooser-or" style="display:none">or</div>
         <div class="login-options">
-          <button class="login-option" data-act="pickLogin" data-a="code">Recovery code</button>
-          <button class="login-option" data-act="pickLogin" data-a="pin" id="pick-pin" style="display:none">Handle + PIN</button>
-          <button class="login-option" data-act="pickLogin" data-a="phrase">Handle + passphrase</button>
-          <button class="login-option" data-act="pickLogin" data-a="nsec">Moment key or key file</button>
+          <button class="login-option" data-act="pickLogin" data-a="code"><span class="lo-txt">Recovery code</span><span class="lo-go" aria-hidden="true">›</span></button>
+          <button class="login-option" data-act="pickLogin" data-a="pin" id="pick-pin" style="display:none"><span class="lo-txt">Handle + PIN</span><span class="lo-go" aria-hidden="true">›</span></button>
+          <button class="login-option" data-act="pickLogin" data-a="phrase"><span class="lo-txt">Handle + passphrase</span><span class="lo-go" aria-hidden="true">›</span></button>
+          <button class="login-option" data-act="pickLogin" data-a="nsec"><span class="lo-txt">Moment key or key file</span><span class="lo-go" aria-hidden="true">›</span></button>
         </div>
       </div>
 

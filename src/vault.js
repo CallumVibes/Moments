@@ -790,11 +790,13 @@ function pickLogin(method){
     if(el) el.style.display = m===method ? '' : 'none';
   });
   // Focus the first input so a chosen method is immediately usable, but never
-  // on touch, where it springs the keyboard over the form the user just opened.
+  // on touch, where it springs the keyboard over the form just opened.
+  // Synchronously, not on a timer: a deferred focus can land after the person
+  // (or a test) has already started typing in a different field and snatch it.
   try{
     if(!matchMedia('(hover: none)').matches){
       const inp=document.querySelector('#lm-'+method+' input:not([type=file])');
-      if(inp) setTimeout(()=>inp.focus(),60);
+      if(inp) inp.focus();
     }
   }catch(_){}
 }

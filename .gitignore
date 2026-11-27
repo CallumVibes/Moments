@@ -2,3 +2,4 @@ node_modules/
 *.log
 test/.tmp/
 test/.tmp-login/
+test/.tmp-shipped/

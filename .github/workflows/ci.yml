@@ -29,6 +29,8 @@ jobs:
       - run: npx playwright install --with-deps chromium
       # Spins up two OPRF servers itself, so PIN enrollment and recovery are
       # exercised against real HTTP and real rate limiting.
+      # Proves the committed build works with its config untouched.
+      - run: npm run test:shipped
       - run: npm run test:e2e
       # A genuine OIDC sign-in in a real browser: real popup, real redirect,
       # real JWKS verification, two real OPRF servers, a real relay.

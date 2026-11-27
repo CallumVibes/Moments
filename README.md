@@ -146,6 +146,20 @@ This is the default: new social accounts are enrolled as a pair, and
 single-provider sign-in has to be switched on deliberately
 (`allowSingleProvider`), because that mode is reachable by the provider.
 
+### What works with no setup at all
+
+The passkey path needs **nothing configured** — no OAuth clients, no servers,
+no deployment. It is live in the build as committed: one tap on Face ID or a
+fingerprint, nothing typed, and the nsec leaves the browser only as ciphertext.
+Google is not involved in it at any point, so there is nothing for Google to
+see. `npm run test:shipped` asserts exactly this against the committed file
+with its config untouched, including that the server-backed buttons stay
+hidden and that a recovery code brings the identity back on a fresh profile.
+
+The Google and PIN paths are the ones that need deploying, because they need
+servers to hold key material. Everything below about them is about turning
+those on.
+
 ### Has this actually been run?
 
 Yes, end to end, in a real browser — see `test/live-login.e2e.mjs`, which runs

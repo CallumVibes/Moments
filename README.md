@@ -153,8 +153,16 @@ no deployment. It is live in the build as committed: one tap on Face ID or a
 fingerprint, nothing typed, and the nsec leaves the browser only as ciphertext.
 Google is not involved in it at any point, so there is nothing for Google to
 see. `npm run test:shipped` asserts exactly this against the committed file
-with its config untouched, including that the server-backed buttons stay
-hidden and that a recovery code brings the identity back on a fresh profile.
+with its config untouched: the server-backed buttons stay hidden, signing up
+costs one tap, and then — with the saved session and every cached item deleted
+through the app's own storage layer — **the passkey alone signs the person back
+in**, no code and no key, straight from the relay vault. A recovery code is
+checked separately on a genuinely fresh profile.
+
+The gap that remains is narrow and specific: the passkey test keeps the same
+authenticator, which is what a synced passkey is, but PRF surviving a sync to
+*different hardware* cannot be emulated (Chrome's virtual authenticator exposes
+no PRF material over CDP), so that case still needs real devices.
 
 The Google and PIN paths are the ones that need deploying, because they need
 servers to hold key material. Everything below about them is about turning

@@ -95,7 +95,48 @@ ok('the nsec left the browser only as ciphertext',
 ok('GOOGLE IS NOT INVOLVED AT ALL — no request could have reached it',
    Object.values(parsed.providers || {}).every(v => !v));
 
-console.log('\n-- and it comes back on a brand-new device --');
+/* Passkey-ONLY login, with no recovery code involved.
+ *
+ * The authenticator is kept (that is what a synced passkey is: the same
+ * credential, with its PRF secret, available again) while every trace of local
+ * app state is destroyed — IndexedDB, localStorage, sessionStorage. That is
+ * the real-world loss case this feature exists for: cleared browser data, or a
+ * reinstall. If the identity comes back, it came back from the relay vault,
+ * unlocked by the passkey and nothing else.
+ *
+ * What this still does not cover is PRF surviving a sync to DIFFERENT
+ * hardware. Chrome's virtual authenticator exposes no PRF material over CDP
+ * (getCredentials returns privateKey only), so a synced passkey cannot be
+ * emulated, and that case needs real devices. */
+console.log('\n-- passkey-only login after wiping all local state --');
+// Wipe local state the way losing it really happens: the saved session and
+// every cached blob go, using the app's own storage layer rather than racing
+// IndexedDB deletion against the app's open handle.
+const wiped = await A.page.evaluate(async () => {
+  try { localStorage.clear(); sessionStorage.clear(); } catch (_) {}
+  await persistSession(null);                       // drop the saved identity
+  for (const k of await idbKeys()) {                // and every cached item
+    if (typeof k === 'string') await idbDel(k);
+  }
+  const back = await idbGet(SESSION_KEY);
+  return back == null ? 'empty' : 'STILL THERE';
+});
+ok('the stored session really was destroyed', wiped === 'empty', 'session read back as: ' + wiped);
+await A.page.reload();
+await A.page.waitForTimeout(1200);
+ok('the app starts logged out with nothing stored locally', await A.page.evaluate(() => !_nsec));
+
+await A.page.evaluate(() => openModal('login'));
+await A.page.waitForTimeout(200);
+await A.page.click('#btn-passkey-login');
+await A.page.waitForFunction(() => !!window._nsec || (document.getElementById('passkey-login-err') || {}).textContent,
+  { timeout: 40000 }).catch(() => {});
+const pErr = await A.page.evaluate(() => (document.getElementById('passkey-login-err') || {}).textContent || '');
+ok('LOGGED IN WITH THE PASSKEY ALONE — no code, no key, one tap',
+   await A.page.evaluate(() => _nsec) === nsec, pErr);
+ok('the restored key kept its provenance', await A.page.evaluate(() => _keyGeneratedHere === true));
+
+console.log('\n-- and the recovery code works on a brand-new profile --');
 const B = await device();
 await B.page.evaluate(() => { openModal('login'); pickLogin('code'); });
 await B.page.fill('#login-code', code);

@@ -466,15 +466,19 @@ async function signupPasskey(){
     const prf=await vaultPrfSecret(cred.rawId);
 
     setLabel('Saving your backup…');
-    await vaultEnroll(keys.nsec, 'moments', await vaultKeysFromPrf(prf));
-
-    // Second factor, same identity, independent locator. If this fails the
-    // passkey enrollment still exists, so the account is recoverable — but say
-    // so rather than pretending the setup finished.
+    /* Both enrollments are independent writes to independent locators, so they
+       go out together rather than one after the other. Each is still verified
+       by reading it back. The passkey one must succeed; the recovery code is
+       allowed to fail without losing the account, since the passkey already
+       covers it — but we say so rather than pretend setup finished. */
     const code=vaultGenRecoveryCode();
-    let codeOk=true;
-    try{ await vaultEnroll(keys.nsec, 'moments', await vaultKeysFromCode(code)); }
-    catch(_){ codeOk=false; }
+    const [passkeyEk, codeEk]=await Promise.all([vaultKeysFromPrf(prf), vaultKeysFromCode(code)]);
+    const [passkeyRes, codeRes]=await Promise.allSettled([
+      vaultEnroll(keys.nsec, 'moments', passkeyEk),
+      vaultEnroll(keys.nsec, 'moments', codeEk),
+    ]);
+    if(passkeyRes.status==='rejected') throw passkeyRes.reason;
+    const codeOk=codeRes.status==='fulfilled';
 
     // Only now adopt the identity: a half-made account with no backup is
     // exactly the failure this feature exists to prevent.
@@ -813,6 +817,15 @@ function backToChooser(){
 
 /* Reveal the passkey paths only where they can actually work; everywhere else
    the recovery-code and moment-key paths are left exactly as they are. */
+/* Opening a sign-in screen is a strong signal that a vault read or write is
+   seconds away. Connecting now means the relay sockets are usually already up
+   by the time they are needed, instead of the user waiting on TCP and TLS
+   after they have tapped. Safe to call repeatedly — connect() skips live
+   sockets. */
+function vaultWarmRelays(){
+  try{ Relay.connect(); }catch(_){}
+}
+
 function vaultInitUi(){
   if(vaultPinAvailable()){
     const el=document.getElementById('pick-pin'); if(el) el.style.display='';
@@ -839,7 +852,9 @@ function vaultInitUi(){
     const el=document.getElementById(id); if(el) el.style.display='';
   });
   // With a one-tap path available, generating a key to copy down by hand is the
-  // fallback, not the headline.
+  // fallback, not the headline — so swap which pitch the screen leads with too.
   const gen=document.getElementById('btn-gen');
   if(gen){ gen.className='btn-ghost'; gen.textContent='Generate a key I save myself'; }
+  const pp=document.getElementById('passkey-pitch'); if(pp) pp.style.display='';
+  const kp=document.getElementById('key-pitch'); if(kp) kp.style.display='none';
 }

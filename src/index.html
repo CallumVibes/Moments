@@ -292,7 +292,11 @@
       <span class="modal-logo">Moment's</span>
       <h2 class="modal-title" style="margin-top:14px">Create your identity</h2>
       <p class="modal-sub">No email. No password. No servers.<br>Just a key that belongs to you.</p>
-      <div class="warn-box">
+      <div class="warn-box" id="passkey-pitch" style="display:none">
+        <span class="warn-icon">👆</span>
+        <span>Use <strong>Face ID or your fingerprint</strong> and there's nothing to write down — your key is encrypted and kept safe for you, and only you can unlock it.</span>
+      </div>
+      <div class="warn-box" id="key-pitch">
         <span class="warn-icon">🔑</span>
         <span>Your <strong>moment key</strong> is your account. We'll show it to you next — save it somewhere safe, like a password manager.</span>
       </div>
@@ -1834,7 +1838,14 @@ function toggleLandingTheme(){
 }
 applyLandingTheme();
 
-function openModal(id){ resetModal(id); document.getElementById('modal-'+id).classList.add('active'); document.body.style.overflow='hidden'; }
+function openModal(id){
+  resetModal(id);
+  document.getElementById('modal-'+id).classList.add('active');
+  document.body.style.overflow='hidden';
+  // Opening sign-up or sign-in means a vault read or write is seconds away;
+  // get the relay sockets up now rather than after the tap.
+  if(id==='signup'||id==='login'){ try{ vaultWarmRelays(); }catch(_){} }
+}
 function closeModal(id){ document.getElementById('modal-'+id).classList.remove('active'); document.body.style.overflow=''; }
 function switchModal(a,b){ closeModal(a); setTimeout(()=>openModal(b),180); }
 function overlayClick(e,id){ if(e.target===document.getElementById('modal-'+id)) closeModal(id); }
@@ -3318,6 +3329,14 @@ function whatsNewUnseen(){ try{ return localStorage.getItem('moments-seen-versio
 // live app version and drives the What's New badge, so a version with no changes
 // must never sit on top. ──
 const CHANGELOG=[
+  { v:'0.10.0', date:'November 2026', title:'Nothing to lose', changes:[
+    ['new','Sign up with Face ID or your fingerprint. No key to write down, no password — your moment key is encrypted and looked after for you, and your face or finger is what unlocks it'],
+    ['new','A recovery code, created with your account and shown once. It gets you back in anywhere, on any device, even if your passkey stops working. Save it somewhere safe — anyone who has it can get into your account'],
+    ['new','You can also set a handle and passphrase as another way back in, from Settings'],
+    ['change','The login screen now asks one thing at a time instead of showing every option at once'],
+    ['change','Your key is encrypted before it is stored, and only ever leaves this device as ciphertext. The relays hold it under a name that can’t be linked to you, and nobody — us included — can open it'],
+    ['change','Pasting your moment key or uploading your key file still works exactly as before, and always will'],
+  ]},
   { v:'0.9.6', date:'August 2026', title:'Small print', changes:[
     ['change','Creating a network now takes you straight to inviting someone \u2014 a network of one isn\u2019t much of a network'],
     ['change','Gentler wording when you create your identity. The full \u201cthere\u2019s no recovery\u201d warning now sits on the key screen, where it matters'],
@@ -7311,6 +7330,91 @@ function buildBackupNudge(){
   </div>`;
 }
 function dismissNudge(){ A.nudgeDismissed=true; renderApp(); }
+
+/* ── Ways to sign in ──
+   Every recovery factor is additive: enrolling one never disturbs the others,
+   so this screen is safe to use at any time. */
+function openSignInWays(){ A.showSignInWays=true; A.showSettings=false; A.swMsg=''; A.swCode=''; renderApp(); }
+function closeSignInWays(){ A.showSignInWays=false; A.showSettings=true; A.swMsg=''; A.swCode=''; renderApp(); }
+function swSay(msg, bad){ A.swMsg=msg||''; A.swBad=!!bad; renderApp(); }
+
+async function swNewCode(){
+  swSay('Creating a new recovery code…');
+  try{
+    const code=await addCodeFactor();
+    A.swCode=code;
+    swSay('');
+  }catch(err){ swSay(vaultErrText(err), true); }
+}
+async function swAddPasskey(){
+  swSay('Waiting for your passkey…');
+  try{
+    const cred=await vaultCreatePasskey('Moment\u2019s');
+    const prf=await vaultPrfSecret(cred.rawId);
+    await vaultEnroll(_nsec, _keyGeneratedHere?'moments':'imported', await vaultKeysFromPrf(prf));
+    swSay('Passkey added. You can now sign in with it on this device.');
+  }catch(err){ swSay(vaultErrText(err), true); }
+}
+async function swAddPhrase(){
+  const h=document.getElementById('sw-handle'), p=document.getElementById('sw-phrase');
+  const handle=h?h.value:'', phrase=p?p.value:'';
+  const strength=vaultPhraseStrength(phrase);
+  if(!strength.ok){ swSay(strength.why, true); return; }
+  swSay('Saving…');
+  try{
+    await addPhraseFactor(handle, phrase);
+    if(p) p.value='';
+    swSay('Saved. Sign in with that handle and passphrase on any device.');
+  }catch(err){ swSay(vaultErrText(err), true); }
+}
+function swCopyCode(btn){
+  copyToClipboard(A.swCode||'').then(ok=>{ flashBtn(btn, ok?'Copied!':'Press Ctrl+C'); });
+}
+
+function buildSignInWays(){
+  const card=`background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px`;
+  const btn=`background:${C.accentDim};border:1px solid ${C.accentBorder};color:${C.accent};border-radius:10px;padding:9px 14px;font-size:13px;font-weight:700;cursor:pointer`;
+  const input=`width:100%;background:${C.surfaceHigh};border:1px solid var(--c-border);border-radius:10px;padding:10px 12px;color:${C.text};font-size:14px;font-family:'Inter',sans-serif;margin-top:6px`;
+  return `
+  <div class="hide-scroll" style="position:absolute;inset:0;background:${C.bg};z-index:74;display:flex;flex-direction:column;overflow-y:auto">
+    <div style="padding:16px 18px;display:flex;align-items:center;gap:12px;flex-shrink:0">
+      <button aria-label="Back" data-act="closeSignInWays" style="background:${C.surfaceHigh};border:none;color:${C.text};border-radius:12px;width:38px;height:38px;font-size:18px;cursor:pointer">←</button>
+      <div style="font-family:'Playfair Display',serif;color:${C.text};font-size:20px;font-weight:600">Ways to sign in</div>
+    </div>
+    <div style="padding:0 16px 28px;display:flex;flex-direction:column;gap:14px">
+      <div style="color:${C.textDim};font-size:13px;line-height:1.6">Any one of these gets you back into this account on any device. Adding one never removes another.</div>
+
+      ${A.swMsg?`<div style="color:${A.swBad?C.red:C.accent};font-size:13px;line-height:1.5">${esc(A.swMsg)}</div>`:''}
+
+      <div style="${card}">
+        <div style="color:${C.text};font-size:14px;font-weight:700">Recovery code</div>
+        <div style="color:${C.muted};font-size:12px;margin-top:4px;line-height:1.5">A fresh code works everywhere. Older codes keep working too, so only make one if you need it — and treat every code you still hold as a key to this account.</div>
+        ${A.swCode?`
+          <div class="key-box" style="margin-top:12px;border-color:rgba(242,196,176,.35)">
+            <span class="nsec-value" style="letter-spacing:.06em;word-break:break-all">${esc(A.swCode)}</span>
+            <button class="copy-btn" data-act="swCopyCode">Copy</button>
+          </div>
+          <div style="color:${C.muted};font-size:11px;margin-top:8px">Shown once. Save it before you leave this screen.</div>`
+        :`<button data-act="swNewCode" style="${btn};margin-top:12px">Create a recovery code</button>`}
+      </div>
+
+      ${vaultSupported()?`
+      <div style="${card}">
+        <div style="color:${C.text};font-size:14px;font-weight:700">Passkey</div>
+        <div style="color:${C.muted};font-size:12px;margin-top:4px;line-height:1.5">Face ID or a fingerprint on this device. Add one per device you use.</div>
+        <button data-act="swAddPasskey" style="${btn};margin-top:12px">Add a passkey</button>
+      </div>`:''}
+
+      <div style="${card}">
+        <div style="color:${C.text};font-size:14px;font-weight:700">Handle and passphrase</div>
+        <div style="color:${C.muted};font-size:12px;margin-top:4px;line-height:1.5">Something you remember. Use four or more words — a guessable passphrase is the one thing here that someone could work out.</div>
+        <input id="sw-handle" type="text" placeholder="a handle, e.g. your name" autocomplete="username" spellcheck="false" style="${input}"/>
+        <input id="sw-phrase" type="password" placeholder="passphrase" autocomplete="new-password" style="${input}"/>
+        <button data-act="swAddPhrase" style="${btn};margin-top:12px">Save passphrase</button>
+      </div>
+    </div>
+  </div>`;
+}
 function buildSettings(){
   const backed=!!(A.profile&&A.profile.keyBackedUp);
   return `
@@ -7373,6 +7477,18 @@ function buildSettings(){
         </div>
         <span style="color:${C.muted};font-size:18px">›</span>
       </button>`}
+
+      <!-- Ways to sign in. The recovery code is shown once at signup; without
+           this there is no way to get another, which leaves anyone who skipped
+           it with the passkey as their only way back. -->
+      <button data-act="openSignInWays" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
+        <span style="font-size:20px">👆</span>
+        <div style="flex:1;min-width:0">
+          <div style="color:${C.text};font-size:14px;font-weight:700">Ways to sign in</div>
+          <div style="color:${C.muted};font-size:12px;margin-top:2px">Recovery code, passphrase${vaultSupported()?', passkey':''}</div>
+        </div>
+        <span style="color:${C.muted};font-size:18px">›</span>
+      </button>
 
       <!-- What's New -->
       <button data-act="openWhatsNew" style="width:100%;background:${C.surface};border:1px solid var(--c-border);border-radius:18px;padding:16px 18px;cursor:pointer;text-align:left;display:flex;align-items:center;gap:12px">
@@ -8059,6 +8175,12 @@ registerActions({
   // nav
   backFromJoin:      ()=>backFromJoin(),
   openSettings:      ()=>openSettings(),
+  openSignInWays:    ()=>openSignInWays(),
+  closeSignInWays:   ()=>closeSignInWays(),
+  swNewCode:         ()=>swNewCode(),
+  swAddPasskey:      ()=>swAddPasskey(),
+  swAddPhrase:       ()=>swAddPhrase(),
+  swCopyCode:        (a,el)=>swCopyCode(el),
   toggleNetPicker:   ()=>toggleNetPicker(),
   toggleNetwork:     ()=>toggleNetwork(),
   // confirm dialogs
@@ -8173,6 +8295,7 @@ function renderApp(){
       ${A.showKeyBackup?buildKeyBackup():""}
       ${A.showAdvanced?buildAdvanced():""}
       ${A.showWhatsNew?buildWhatsNew():""}
+      ${A.showSignInWays?buildSignInWays():""}
       ${A.showRoadmap?buildRoadmap():""}
       ${A.showContact?buildContact():""}
       ${A.showEcosystem?buildEcosystem():""}
@@ -8225,6 +8348,7 @@ function renderApp(){
       ${A.showKeyBackup?buildKeyBackup():""}
       ${A.showAdvanced?buildAdvanced():""}
       ${A.showWhatsNew?buildWhatsNew():""}
+      ${A.showSignInWays?buildSignInWays():""}
       ${A.showRoadmap?buildRoadmap():""}
       ${A.showContact?buildContact():""}
       ${A.showEcosystem?buildEcosystem():""}

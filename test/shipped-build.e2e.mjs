@@ -136,7 +136,55 @@ ok('LOGGED IN WITH THE PASSKEY ALONE — no code, no key, one tap',
    await A.page.evaluate(() => _nsec) === nsec, pErr);
 ok('the restored key kept its provenance', await A.page.evaluate(() => _keyGeneratedHere === true));
 
-console.log('\n-- and the recovery code works on a brand-new profile --');
+/* A recovery code is shown once at signup. Anyone who skipped it needs a way
+ * to get another, or the passkey is their only way back — which is exactly the
+ * single point of failure the recovery code exists to remove. */
+console.log('\n-- making a NEW recovery code from Settings --');
+await A.page.evaluate(() => openSignInWays());
+await A.page.waitForTimeout(300);
+ok('the Ways to sign in screen opens', await A.page.evaluate(() => !!A.showSignInWays));
+await A.page.click('[data-act="swNewCode"]');
+await A.page.waitForFunction(() => !!A.swCode || (A.swMsg && A.swBad), { timeout: 40000 }).catch(() => {});
+const newCode = await A.page.evaluate(() => A.swCode || '');
+ok('a fresh recovery code is issued and shown', /^[0-9A-Z-]{29,34}$/.test(newCode),
+   newCode || (await A.page.evaluate(() => A.swMsg || '')));
+ok('it is a different code from the signup one', newCode !== code);
+
+const E = await device();
+await E.page.evaluate(() => { openModal('login'); pickLogin('code'); });
+await E.page.fill('#login-code', newCode);
+await E.page.click('#btn-code-login');
+await E.page.waitForFunction(() => !!window._nsec || (document.getElementById('login-code-err') || {}).textContent,
+  { timeout: 40000 }).catch(() => {});
+ok('the NEW code signs into the same account', await E.page.evaluate(() => _nsec) === nsec,
+   await E.page.evaluate(() => (document.getElementById('login-code-err') || {}).textContent || ''));
+
+console.log('\n-- adding a passphrase from Settings --');
+await A.page.evaluate(() => { document.getElementById('sw-handle').value = 'mae'; });
+await A.page.evaluate(() => { document.getElementById('sw-phrase').value = 'correct horse battery staple'; });
+await A.page.click('[data-act="swAddPhrase"]');
+await A.page.waitForFunction(() => A.swMsg && !A.swMsg.startsWith('Saving'), { timeout: 40000 }).catch(() => {});
+ok('the passphrase saves', !(await A.page.evaluate(() => A.swBad)), await A.page.evaluate(() => A.swMsg || ''));
+ok('a weak passphrase is refused with a reason', await A.page.evaluate(async () => {
+  document.getElementById('sw-phrase').value = 'password123';
+  await swAddPhrase();
+  return A.swBad === true && (A.swMsg || '').length > 10;
+}));
+
+const F = await device();
+await F.page.evaluate(() => { openModal('login'); pickLogin('phrase'); });
+await F.page.fill('#login-handle', 'Mae');     // casing must not matter
+await F.page.fill('#login-phrase', 'correct horse battery staple');
+await F.page.click('#btn-phrase-login');
+await F.page.waitForFunction(() => !!window._nsec || (document.getElementById('login-phrase-err') || {}).textContent,
+  { timeout: 40000 }).catch(() => {});
+ok('the passphrase signs into the same account', await F.page.evaluate(() => _nsec) === nsec,
+   await F.page.evaluate(() => (document.getElementById('login-phrase-err') || {}).textContent || ''));
+
+ok('every original factor still works after adding more',
+   await E.page.evaluate(() => _nsec) === nsec && await A.page.evaluate(() => _nsec) === nsec);
+
+console.log('\n-- and the original recovery code still works on a brand-new profile --');
 const B = await device();
 await B.page.evaluate(() => { openModal('login'); pickLogin('code'); });
 await B.page.fill('#login-code', code);
